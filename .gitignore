@@ -1,0 +1,42 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+dist/
+
+# ===== Node.js =====
+node_modules/
+npm-debug.log*
+
+# ===== Build output =====
+frontend/dist/
+backend/dist/
+backend/build/
+
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== TestSprite =====
+.testsprite/
+testsprite_tests/
+
+# ===== Uploaded books & fonts (user data) =====
+backend/books/*
+!backend/books/.gitkeep
+backend/fonts/*
+!backend/fonts/.gitkeep
+
+# ===== OS =====
+Desktop.ini
+ehthumbs.db

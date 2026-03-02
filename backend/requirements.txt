@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+python-multipart
+chardet
+ebooklib
+lxml
+beautifulsoup4
+natsort

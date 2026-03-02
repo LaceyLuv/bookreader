@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="./vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --app-bg: #f8f8f8;
+      --app-fg: #111;
+    }
+
+    html,
+    body,
+    #root {
+      min-height: 100%;
+    }
+
+    body {
+      margin: 0;
+      background: var(--app-bg);
+      color: var(--app-fg);
+    }
+  </style>
+  <script>
+    ;(() => {
+      const MOUNT_FLAG = '__BOOKREADER_MOUNTED__'
+      const SAFE_MODE_KEY = '__BOOKREADER_SAFE_MODE__'
+      const SAFE_BAR_ID = '__bookreader_safe_bar'
+      const OVERLAY_ID = '__bookreader_boot_overlay'
+      const HUD_WHITELIST_ID = 'bookreader-boot-hud'
+      const MAX_ERRORS = 20
+      const bootErrors = []
+      const startedAt = Date.now()
+      let watchdogTimer = null
+      let failed = false
+      const originalConsoleError = console.error.bind(console)
+      const hasOwn = Object.prototype.hasOwnProperty
+
+      let safeMode = false
+      try {
+        const params = new URLSearchParams(window.location.search)
+        safeMode = params.get('safe') === '1'
+        if (safeMode) {
+          localStorage.setItem(SAFE_MODE_KEY, '1')
+        } else {
+          safeMode = localStorage.getItem(SAFE_MODE_KEY) === '1'
+        }
+      } catch {
+        safeMode = false
+      }
+
+      const toText = (value) => {
+        if (value == null) return ''
+        if (typeof value === 'string') return value
+        if (value instanceof Error) return value.stack || value.message || String(value)
+        try {
+          return JSON.stringify(value)
+        } catch {
+          return String(value)
+        }
+      }
+
+      const isoNow = () => new Date().toISOString()
+
+      const recordError = (kind, message, extra = '', stack = '') => {
+        const entry = {
+          ts: isoNow(),
+          kind,
+          message: toText(message),
+          extra: toText(extra),
+          stack: toText(stack),
+        }
+        bootErrors.unshift(entry)
+        if (bootErrors.length > MAX_ERRORS) bootErrors.length = MAX_ERRORS
+        originalConsoleError('[safe-ui]', entry)
+      }
+
+      const readComputed = (node) => {
+        if (!node) {
+          return { exists: false, display: '(missing)', visibility: '(missing)', opacity: '(missing)' }
+        }
+        const s = window.getComputedStyle(node)
+        return {
+          exists: true,
+          display: s.display,
+          visibility: s.visibility,
+          opacity: s.opacity,
+        }
+      }
+
+      const readDiagnostics = () => {
+        const root = document.getElementById('root')
+        const body = document.body
+        const html = document.documentElement
+        const rootStyle = readComputed(root)
+        const bodyStyle = readComputed(body)
+        const htmlStyle = readComputed(html)
+        const htmlComputed = html ? window.getComputedStyle(html) : null
+        return {
+          mounted: window[MOUNT_FLAG] === true,
+          safeMode,
+          href: window.location.href,
+          bodyExists: !!body,
+          rootExists: !!root,
+          rootChildCount: root ? root.childElementCount : 0,
+          styles: {
+            body: bodyStyle,
+            html: htmlStyle,
+            root: rootStyle,
+          },
+          cssVars: {
+            appBg: htmlComputed ? htmlComputed.getPropertyValue('--app-bg').trim() || '(empty)' : '(missing)',
+            appFg: htmlComputed ? htmlComputed.getPropertyValue('--app-fg').trim() || '(empty)' : '(missing)',
+          },
+        }
+      }
+
+      const ensureOverlay = () => {
+        let pre = document.getElementById(OVERLAY_ID)
+        if (!pre) {
+          pre = document.createElement('pre')
+          pre.id = OVERLAY_ID
+          pre.style.all = 'initial'
+          pre.style.position = 'fixed'
+          pre.style.top = '28px'
+          pre.style.left = '0'
+          pre.style.right = '0'
+          pre.style.zIndex = '2147483647'
+          pre.style.display = 'none'
+          pre.style.maxHeight = '45vh'
+          pre.style.overflow = 'auto'
+          pre.style.padding = '10px'
+          pre.style.whiteSpace = 'pre-wrap'
+          pre.style.background = '#111'
+          pre.style.color = '#fff'
+          pre.style.font = '12px/1.4 system-ui'
+          pre.style.boxSizing = 'border-box'
+          pre.style.margin = '0'
+          if (document.body) {
+            document.body.prepend(pre)
+          } else {
+            document.documentElement.appendChild(pre)
+          }
+        }
+        return pre
+      }
+
+      const ensureSafeBar = () => {
+        let bar = document.getElementById(SAFE_BAR_ID)
+        if (!bar) {
+          bar = document.createElement('div')
+          bar.id = SAFE_BAR_ID
+          bar.style.all = 'initial'
+          bar.style.position = 'fixed'
+          bar.style.top = '0'
+          bar.style.left = '0'
+          bar.style.right = '0'
+          bar.style.zIndex = '2147483646'
+          bar.style.display = 'flex'
+          bar.style.alignItems = 'center'
+          bar.style.gap = '8px'
+          bar.style.height = '28px'
+          bar.style.padding = '0 10px'
+          bar.style.background = '#111'
+          bar.style.color = '#fff'
+          bar.style.font = '12px/1.4 system-ui'
+          bar.style.boxSizing = 'border-box'
+          bar.style.overflow = 'hidden'
+          bar.style.pointerEvents = 'auto'
+
+          const text = document.createElement('span')
+          text.style.all = 'initial'
+          text.style.color = '#fff'
+          text.style.font = '12px/1.4 system-ui'
+          text.style.whiteSpace = 'nowrap'
+          text.textContent = '[SAFE BAR] BookReader booting...'
+
+          const resetButton = document.createElement('button')
+          resetButton.type = 'button'
+          resetButton.style.all = 'initial'
+          resetButton.style.cursor = 'pointer'
+          resetButton.style.background = '#2b2b2b'
+          resetButton.style.color = '#fff'
+          resetButton.style.border = '1px solid #555'
+          resetButton.style.padding = '2px 8px'
+          resetButton.style.font = '12px/1.4 system-ui'
+          resetButton.textContent = 'Reset UI'
+          resetButton.onclick = () => {
+            try {
+              localStorage.removeItem('bookreader_settings')
+              localStorage.removeItem('bookreader_progress')
+            } catch {
+              // ignore
+            }
+            window.location.reload()
+          }
+
+          const safeReloadButton = document.createElement('button')
+          safeReloadButton.type = 'button'
+          safeReloadButton.style.all = 'initial'
+          safeReloadButton.style.cursor = 'pointer'
+          safeReloadButton.style.background = '#2b2b2b'
+          safeReloadButton.style.color = '#fff'
+          safeReloadButton.style.border = '1px solid #555'
+          safeReloadButton.style.padding = '2px 8px'
+          safeReloadButton.style.font = '12px/1.4 system-ui'
+          safeReloadButton.textContent = 'Safe Reload'
+          safeReloadButton.onclick = () => {
+            const next = new URL(window.location.href)
+            next.searchParams.set('safe', '1')
+            window.location.replace(next.toString())
+          }
+
+          bar.appendChild(text)
+          bar.appendChild(resetButton)
+          bar.appendChild(safeReloadButton)
+          if (document.body) {
+            document.body.prepend(bar)
+          } else {
+            document.documentElement.appendChild(bar)
+          }
+        }
+        return bar
+      }
+
+      const healBootUi = () => {
+        const bar = ensureSafeBar()
+        const overlay = ensureOverlay()
+        if (document.body) {
+          if (bar.parentNode !== document.body) {
+            document.body.prepend(bar)
+          }
+          if (overlay.parentNode !== document.body) {
+            document.body.prepend(overlay)
+          }
+          if (document.body.firstElementChild !== bar) {
+            document.body.prepend(bar)
+          }
+          if (bar.nextElementSibling !== overlay) {
+            bar.insertAdjacentElement('afterend', overlay)
+          }
+
+          const hud = document.getElementById(HUD_WHITELIST_ID)
+          if (hud) {
+            if (hud.parentNode !== document.body) {
+              document.body.appendChild(hud)
+            }
+            hud.style.display = 'block'
+            hud.style.visibility = 'visible'
+            hud.style.opacity = '1'
+          }
+        }
+      }
+
+      const setSafeBarVisible = (visible) => {
+        const bar = ensureSafeBar()
+        bar.style.display = visible ? 'flex' : 'none'
+      }
+
+      const updateSafeBarText = (text) => {
+        const bar = ensureSafeBar()
+        const textNode = bar.firstElementChild
+        if (textNode) textNode.textContent = `[SAFE BAR] ${text}`
+      }
+
+      const renderOverlay = (status, reason = '') => {
+        const snapshot = readDiagnostics()
+        const lines = []
+        lines.push('BOOKREADER SAFE UI')
+        lines.push(`ts: ${isoNow()}`)
+        lines.push(`status: ${status}`)
+        if (reason) lines.push(`reason: ${reason}`)
+        lines.push(`uptimeMs: ${Date.now() - startedAt}`)
+        lines.push(`href: ${snapshot.href}`)
+        lines.push(`mountedFlag(${MOUNT_FLAG}): ${snapshot.mounted}`)
+        lines.push(`safeMode: ${snapshot.safeMode}`)
+        lines.push(`dom: body=${snapshot.bodyExists} root=${snapshot.rootExists} rootChildCount=${snapshot.rootChildCount}`)
+        lines.push(
+          `styles(body): display=${snapshot.styles.body.display} visibility=${snapshot.styles.body.visibility} opacity=${snapshot.styles.body.opacity}`
+        )
+        lines.push(
+          `styles(html): display=${snapshot.styles.html.display} visibility=${snapshot.styles.html.visibility} opacity=${snapshot.styles.html.opacity}`
+        )
+        lines.push(
+          `styles(#root): display=${snapshot.styles.root.display} visibility=${snapshot.styles.root.visibility} opacity=${snapshot.styles.root.opacity}`
+        )
+        lines.push(`css-vars: --app-bg=${snapshot.cssVars.appBg} --app-fg=${snapshot.cssVars.appFg}`)
+        lines.push('last-errors:')
+        if (bootErrors.length === 0) {
+          lines.push('- (none)')
+        } else {
+          bootErrors.forEach((item, idx) => {
+            lines.push(
+              `${idx + 1}. [${item.ts}] ${item.kind}: ${item.message}${item.extra ? ` | ${item.extra}` : ''}${item.stack ? ` | stack=${item.stack}` : ''}`
+            )
+          })
+        }
+        const overlay = ensureOverlay()
+        overlay.style.display = 'block'
+        overlay.textContent = lines.join('\n')
+      }
+
+      const failBoot = (status, reason) => {
+        failed = true
+        setSafeBarVisible(true)
+        updateSafeBarText(`${status} (check dump panel)`)
+        recordError('watchdog', status, reason)
+        renderOverlay(status, reason)
+      }
+
+      const monitorDomIntegrity = () => {
+        const now = Date.now()
+        const elapsed = now - startedAt
+        const root = document.getElementById('root')
+        const rootStyle = readComputed(root)
+        const htmlStyle = readComputed(document.documentElement)
+        const bodyStyle = readComputed(document.body)
+        const hidden = !document.body ||
+          htmlStyle.display === 'none' ||
+          htmlStyle.visibility === 'hidden' ||
+          htmlStyle.opacity === '0' ||
+          bodyStyle.display === 'none' ||
+          bodyStyle.visibility === 'hidden' ||
+          bodyStyle.opacity === '0' ||
+          !root ||
+          rootStyle.display === 'none' ||
+          rootStyle.visibility === 'hidden' ||
+          rootStyle.opacity === '0'
+        const rootTooEmpty = elapsed > (safeMode ? 800 : 400) && root && root.childElementCount === 0
+
+        if (hidden) {
+          failBoot(
+            'DOM CLEARED/HIDDEN',
+            `rootExists=${!!root} rootDisplay=${rootStyle.display} rootVisibility=${rootStyle.visibility} rootOpacity=${rootStyle.opacity} bodyDisplay=${bodyStyle.display} bodyVisibility=${bodyStyle.visibility} bodyOpacity=${bodyStyle.opacity}`
+          )
+          return true
+        }
+        if (rootTooEmpty && !window[MOUNT_FLAG]) {
+          failBoot('ROOT EMPTY', '#root has no child elements during boot window')
+          return true
+        }
+        return false
+      }
+
+      const bootTimeoutMs = safeMode ? 4000 : 2000
+
+      if (!hasOwn.call(window, MOUNT_FLAG)) {
+        window[MOUNT_FLAG] = false
+      }
+      healBootUi()
+      setSafeBarVisible(true)
+      updateSafeBarText(`BookReader booting...${safeMode ? ' (safe mode)' : ''}`)
+
+      const tick = () => {
+        healBootUi()
+        if (window[MOUNT_FLAG] === true) {
+          if (!failed) {
+            updateSafeBarText('BookReader ready')
+            setSafeBarVisible(false)
+          }
+          if (watchdogTimer) {
+            clearInterval(watchdogTimer)
+            watchdogTimer = null
+          }
+          return
+        }
+        setSafeBarVisible(true)
+        if (!failed) {
+          updateSafeBarText(`BookReader booting... ${Date.now() - startedAt}ms`)
+        }
+        if (monitorDomIntegrity()) return
+        if (!failed && Date.now() - startedAt > bootTimeoutMs) {
+          failBoot('MOUNT TIMEOUT', `${MOUNT_FLAG} was not true within ${bootTimeoutMs}ms`)
+        }
+      }
+
+      watchdogTimer = setInterval(tick, safeMode ? 100 : 200)
+      tick()
+
+      window.onerror = function (message, source, lineno, colno, error) {
+        recordError('window.onerror', error || message, `${source || '(unknown)'}:${lineno ?? '-'}:${colno ?? '-'}`, error && error.stack ? error.stack : '')
+        failBoot('WINDOW ERROR', toText(message))
+        return false
+      }
+
+      window.onunhandledrejection = function (event) {
+        const reason = event && 'reason' in event ? event.reason : event
+        recordError('window.onunhandledrejection', reason, '', reason && reason.stack ? reason.stack : '')
+        failBoot('UNHANDLED REJECTION', toText(reason))
+      }
+
+      console.error = (...args) => {
+        recordError('console.error', args.map((item) => toText(item)).join(' | '))
+        return originalConsoleError(...args)
+      }
+
+      const observer = new MutationObserver(() => {
+        healBootUi()
+        if (!window[MOUNT_FLAG] || failed) {
+          monitorDomIntegrity()
+        }
+      })
+      observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class', 'hidden'],
+      })
+    })()
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Merriweather:ital,wght@0,400;0,700;1,400&family=Noto+Sans+KR:wght@100..900&display=swap"
+    rel="stylesheet" />
+  <title>Universal Book Reader</title>
+</head>
+
+<body>
+  <div id="root"></div>
+  <!-- BOOKREADER_BOOT_HUD_MARKER -->
+  <script type="module" src="/src/bootHud.js"></script>
+  <script type="module" src="./src/main.jsx"></script>
+</body>
+
+</html>
