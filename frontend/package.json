@@ -1,12 +1,19 @@
 {
     "name": "bookreader-frontend",
     "private": true,
-    "version": "0.1.0",
+    "version": "0.1.1",
     "type": "module",
     "scripts": {
         "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
         "build": "vite build",
-        "preview": "vite preview --host 127.0.0.1 --port 5174 --strictPort"
+        "build:desktop": "vite build --configLoader runner",
+        "preview": "vite preview --host 127.0.0.1 --port 5174 --strictPort",
+        "tauri": "tauri",
+        "desktop:dev": "node scripts/tauri-wrapper.cjs dev --dev-backend-python",
+        "desktop:build": "npm run tauri -- build",
+        "desktop:info": "npm run tauri -- info",
+        "desktop:sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\backend\\build_sidecar.ps1",
+        "desktop:preflight": "npm run desktop:info && npm run build:desktop && npm run desktop:build"
     },
     "dependencies": {
         "react": "^19.0.0",
@@ -14,6 +21,7 @@
         "react-router-dom": "^7.3.0"
     },
     "devDependencies": {
+        "@tauri-apps/cli": "^2.10.0",
         "@vitejs/plugin-react": "^4.3.0",
         "autoprefixer": "^10.4.24",
         "postcss": "^8.5.6",

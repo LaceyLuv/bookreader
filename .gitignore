@@ -17,6 +17,10 @@ npm-debug.log*
 frontend/dist/
 backend/dist/
 backend/build/
+backend/build-sidecar/
+backend/dist-sidecar/
+frontend/src-tauri/binaries/
+frontend/*.log
 
 # ===== IDE / Editor =====
 .vscode/

@@ -24,6 +24,7 @@ function ReaderProgressBar({
     const [pageInput, setPageInput] = useState(String(currentPage))
     const [isEditingPage, setIsEditingPage] = useState(false)
     const skipPageCommitRef = useRef(false)
+    const [isCollapsed, setIsCollapsed] = useState(false)
 
     useEffect(() => {
         if (!isDragging) setDraftProgress(normalizedProgress)
@@ -60,11 +61,43 @@ function ReaderProgressBar({
     const previewPercent = Math.round(draftProgress * 100)
     const maxPageText = hasTotalPages ? totalPages : '?'
 
+    if (isCollapsed) {
+        return (
+            <div className="group relative shrink-0 h-3" style={{ borderTop: '1px solid var(--panel-border)' }}>
+                <button
+                    type="button"
+                    title="Show progress bar"
+                    aria-label="Show progress bar"
+                    onClick={() => setIsCollapsed(false)}
+                    className="absolute left-1/2 bottom-0 z-10 h-5 w-10 -translate-x-1/2 rounded-t-md border border-b-0 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+                    style={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--panel-border)', color: 'var(--reader-page-fg)' }}
+                >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" className="mx-auto">
+                        <path d="M6 15l6-6 6 6" />
+                    </svg>
+                </button>
+            </div>
+        )
+    }
+
     return (
-        <div className="shrink-0 px-4 py-2" style={{ borderTop: '1px solid var(--panel-border)' }}>
-            <div className="mx-auto w-full max-w-4xl rounded-xl border px-3 py-2.5 shadow-sm"
+        <div className="relative shrink-0 px-4 py-1" style={{ borderTop: '1px solid var(--panel-border)' }}>
+            <button
+                type="button"
+                title="Hide progress bar"
+                aria-label="Hide progress bar"
+                onClick={() => setIsCollapsed(true)}
+                className="absolute left-1/2 top-0 z-10 h-5 w-10 -translate-x-1/2 -translate-y-[55%] rounded-t-md border border-b-0"
+                style={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--panel-border)', color: 'var(--reader-page-fg)' }}
+            >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" className="mx-auto">
+                    <path d="M6 9l6 6 6-6" />
+                </svg>
+            </button>
+
+            <div className="mx-auto w-full max-w-4xl rounded-lg border px-3 py-1.5 shadow-sm"
                 style={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--panel-border)' }}>
-                <div className="mb-2 flex items-center justify-between text-[11px] tabular-nums opacity-80">
+                <div className="mb-1 flex items-center justify-between text-[10px] tabular-nums opacity-80">
                     <span>{previewPage} / {maxPageText}</span>
                     <span>{previewPercent}%</span>
                 </div>
@@ -78,13 +111,13 @@ function ReaderProgressBar({
                     onPointerUp={() => { setIsDragging(false); commitProgressSeek() }}
                     onMouseUp={() => { if (!isDragging) return; setIsDragging(false); commitProgressSeek() }}
                     onTouchEnd={() => { if (!isDragging) return; setIsDragging(false); commitProgressSeek() }}
-                    className="h-3 w-full cursor-pointer"
+                    className="h-2 w-full cursor-pointer"
                     style={{ accentColor: 'var(--accent)' }}
                 />
 
-                <div className="mt-2 flex items-center justify-between">
-                    <div className="text-[11px] opacity-55 truncate pr-2">{extraInfo}</div>
-                    <div className="flex items-center gap-1.5 text-[12px] tabular-nums">
+                <div className="mt-1.5 flex items-center justify-between">
+                    <div className="text-[10px] opacity-55 truncate pr-2">{extraInfo}</div>
+                    <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
                         <input
                             type="number" min={1} max={hasTotalPages ? totalPages : undefined}
                             value={hasTotalPages ? pageInput : ''} disabled={!canSeekPage} placeholder="?"
@@ -102,7 +135,7 @@ function ReaderProgressBar({
                                     setPageInput(String(currentPage)); setIsEditingPage(false); e.currentTarget.blur()
                                 }
                             }}
-                            className="w-16 rounded-md border px-2 py-1 text-right leading-none outline-none disabled:opacity-40"
+                            className="w-14 rounded-md border px-2 py-0.5 text-right leading-none outline-none disabled:opacity-40"
                             style={{ borderColor: 'var(--panel-border)', backgroundColor: 'color-mix(in srgb, var(--panel-bg) 85%, transparent)', color: 'var(--reader-page-fg)' }}
                         />
                         <span className="opacity-55">/ {maxPageText}</span>

@@ -1,8 +1,8 @@
-fastapi
-uvicorn[standard]
-python-multipart
-chardet
-ebooklib
-lxml
-beautifulsoup4
-natsort
+fastapi==0.129.0
+uvicorn[standard]==0.40.0
+python-multipart==0.0.22
+chardet==5.2.0
+ebooklib==0.20
+lxml==6.0.2
+beautifulsoup4==4.14.3
+natsort==8.4.0

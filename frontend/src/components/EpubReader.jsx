@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
+﻿import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useReaderSettings } from '../hooks/useReaderSettings'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
@@ -9,6 +9,8 @@ import ResumeToast from './ResumeToast'
 import { API_BOOKS_BASE } from '../lib/apiBase'
 
 const API = API_BOOKS_BASE
+const FIRST_IMG_SRC_RE = /<img[^>]+src=["']([^"']+)["']/i
+const FIRST_FONT_URL_RE = /url\((?:["']?)([^)"']+)(?:["']?)\)/i
 
 function EpubReader() {
     const { id } = useParams()
@@ -22,14 +24,22 @@ function EpubReader() {
     const [chapter, setChapter] = useState(null)
     const [loading, setLoading] = useState(true)
     const [sidebarOpen, setSidebarOpen] = useState(false)
+    const [debugInfo, setDebugInfo] = useState(null)
 
     const [chapterPage, setChapterPage] = useState(0)
     const [chapterTotalPages, setChapterTotalPages] = useState(1)
     const [pageWidth, setPageWidth] = useState(0)
+    const [pageHeight, setPageHeight] = useState(0)
+    const [chapterPageCounts, setChapterPageCounts] = useState({})
     const frameRef = useRef(null)
     const scrollerRef = useRef(null)
     const contentRef = useRef(null)
+    const measureHostRef = useRef(null)
     const stepRef = useRef(0)
+    const pendingPageRef = useRef(null)
+    const pendingPageUntilRef = useRef(0)
+    const pendingChapterPageRef = useRef(null)
+    const chapterPageCountsRef = useRef({})
 
     const [totalChapters, setTotalChapters] = useState(1)
     const progress = useReadingProgress(id, { totalPages: totalChapters, type: 'epub' })
@@ -39,36 +49,244 @@ function EpubReader() {
     const isSpread = layout === 'spread' || layout === 'dual'
     const useEmbeddedFonts = fontMode === 'embedded'
 
+    const paginationSignature = useMemo(() => JSON.stringify({
+        id,
+        layout,
+        columnGap,
+        lineHeight,
+        letterSpacing,
+        fontMode,
+        fontSize: contentStyle.fontSize,
+        fontWeight: contentStyle.fontWeight,
+        fontFamily: useEmbeddedFonts ? 'embedded' : contentStyle.fontFamily,
+        pageWidth,
+        pageHeight,
+        sidebarOpen,
+    }), [
+        id,
+        layout,
+        columnGap,
+        lineHeight,
+        letterSpacing,
+        fontMode,
+        contentStyle.fontSize,
+        contentStyle.fontWeight,
+        contentStyle.fontFamily,
+        useEmbeddedFonts,
+        pageWidth,
+        pageHeight,
+        sidebarOpen,
+    ])
+
+    const overallPagination = useMemo(() => {
+        const offsets = []
+        let totalPages = 0
+        let knownCount = 0
+
+        for (let i = 0; i < totalChapters; i += 1) {
+            offsets[i] = totalPages
+            const pages = chapterPageCounts[i]
+            if (Number.isFinite(pages) && pages > 0) {
+                totalPages += pages
+                knownCount += 1
+            }
+        }
+
+        const currentPage = (offsets[chapterIndex] || 0) + chapterPage + 1
+        return {
+            offsets,
+            currentPage,
+            totalPages: Math.max(totalPages, currentPage),
+            ready: totalChapters > 0 && knownCount === totalChapters,
+        }
+    }, [chapterIndex, chapterPage, chapterPageCounts, totalChapters])
+
+    const lockPendingPage = useCallback((page) => {
+        pendingPageRef.current = page
+        pendingPageUntilRef.current = Date.now() + 400
+    }, [])
+
+    const getPendingPage = useCallback(() => {
+        if (pendingPageRef.current == null) return null
+        if (Date.now() > pendingPageUntilRef.current) {
+            pendingPageRef.current = null
+            pendingPageUntilRef.current = 0
+            return null
+        }
+        return pendingPageRef.current
+    }, [])
+
+    useEffect(() => {
+        chapterPageCountsRef.current = chapterPageCounts
+    }, [chapterPageCounts])
+
+    useEffect(() => {
+        chapterPageCountsRef.current = {}
+        setChapterPageCounts({})
+    }, [paginationSignature])
+
+    // ??? S4: Parallel TOC + first chapter fetch ???
     useEffect(() => {
         ; (async () => {
             try {
-                const res = await fetch(`${API}/${id}/toc`)
-                if (!res.ok) throw new Error(`HTTP ${res.status}`)
-                const data = await res.json()
-                setBookTitle(data.title)
-                setToc(data.toc)
-                setTotalChapters(data.toc.length || 1)
-                loadChapter(0)
+                const [tocRes, chapterRes] = await Promise.all([
+                    fetch(`${API}/${id}/toc`),
+                    fetch(`${API}/${id}/chapter/0`),
+                ])
+                if (!tocRes.ok) throw new Error(`TOC HTTP ${tocRes.status}`)
+                const tocData = await tocRes.json()
+                const tocItems = Array.isArray(tocData?.toc) ? tocData.toc : []
+                setBookTitle(tocData.title)
+                setToc(tocItems)
+
+                if (chapterRes.ok) {
+                    const firstChapter = await chapterRes.json()
+                    setChapter(firstChapter)
+                    setTotalChapters(Math.max(1, firstChapter?.total || tocItems.length || 1))
+                } else {
+                    setChapter({ title: 'Error', html: '<p>Failed to load chapter.</p>', index: 0, total: 0 })
+                    setTotalChapters(Math.max(1, tocItems.length || 1))
+                }
             } catch (err) {
-                console.error('Failed to load TOC', err)
-                setLoading(false)
+                console.error('Failed to load EPUB', err)
             }
+            setLoading(false)
         })()
     }, [id])
 
-    const loadChapter = async (index) => {
+    const loadChapter = async (index, options = {}) => {
+        const rawInitialPage = options?.page
+        const initialPage = rawInitialPage === 'last'
+            ? 'last'
+            : Math.max(0, Number.isFinite(rawInitialPage) ? rawInitialPage : 0)
+
+        pendingChapterPageRef.current = initialPage
         setLoading(true)
         setChapterIndex(index)
-        setChapterPage(0)
+        setChapterPage(initialPage === 'last' ? 0 : initialPage)
         try {
             const res = await fetch(`${API}/${id}/chapter/${index}`)
             if (!res.ok) throw new Error(`HTTP ${res.status}`)
-            setChapter(await res.json())
+            const nextChapter = await res.json()
+            setChapter(nextChapter)
+            if (Number.isFinite(nextChapter?.total) && nextChapter.total > 0) {
+                setTotalChapters(nextChapter.total)
+            }
         } catch {
             setChapter({ title: 'Error', html: '<p>Failed to load chapter.</p>', index, total: 0 })
         }
         setLoading(false)
     }
+
+    const waitForMeasuredAssets = useCallback(async (root) => {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+
+        const images = Array.from(root.querySelectorAll('img')).filter((img) => !img.complete)
+        if (images.length > 0) {
+            await new Promise((resolve) => {
+                let pending = images.length
+                const cleanup = []
+                const finish = () => {
+                    while (cleanup.length > 0) cleanup.pop()()
+                    resolve()
+                }
+                const timeout = window.setTimeout(finish, 1200)
+                cleanup.push(() => window.clearTimeout(timeout))
+                const onSettled = () => {
+                    pending -= 1
+                    if (pending <= 0) finish()
+                }
+                for (const img of images) {
+                    img.addEventListener('load', onSettled, { once: true })
+                    img.addEventListener('error', onSettled, { once: true })
+                    cleanup.push(() => img.removeEventListener('load', onSettled))
+                    cleanup.push(() => img.removeEventListener('error', onSettled))
+                }
+            })
+        }
+
+        if (typeof document !== 'undefined' && document.fonts?.ready) {
+            await Promise.race([
+                document.fonts.ready,
+                new Promise((resolve) => window.setTimeout(resolve, 500)),
+            ]).catch(() => {})
+        }
+
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+    }, [])
+
+    const measureChapterHtml = useCallback(async (html) => {
+        const host = measureHostRef.current
+        if (!host || pageWidth <= 0 || pageHeight <= 0) return 1
+
+        host.innerHTML = ''
+
+        const scroller = document.createElement('div')
+        scroller.className = 'reader-scroller'
+        scroller.style.position = 'relative'
+        scroller.style.width = `${pageWidth}px`
+        scroller.style.height = `${pageHeight}px`
+        scroller.style.overflowX = 'auto'
+        scroller.style.overflowY = 'hidden'
+        scroller.style.scrollSnapType = 'none'
+        scroller.style.scrollbarGutter = 'stable'
+
+        const contentEl = document.createElement('div')
+        contentEl.className = 'select-text epub-content'
+        contentEl.style.height = '100%'
+        contentEl.style.boxSizing = 'border-box'
+        contentEl.style.display = 'block'
+        contentEl.style.backgroundColor = 'var(--reader-page-bg)'
+        contentEl.style.color = 'var(--reader-page-fg)'
+        if (useEmbeddedFonts) contentEl.style.removeProperty('font-family')
+        else contentEl.style.fontFamily = contentStyle.fontFamily
+        contentEl.style.fontWeight = String(contentStyle.fontWeight)
+        contentEl.style.fontSize = contentStyle.fontSize
+        contentEl.style.lineHeight = `${lineHeight}`
+        contentEl.style.letterSpacing = `${letterSpacing}em`
+        contentEl.style.textAlign = 'left'
+        contentEl.style.hyphens = 'auto'
+        contentEl.style.setProperty('-webkit-hyphens', 'auto')
+        contentEl.style.wordBreak = 'break-word'
+        contentEl.style.overflowWrap = 'break-word'
+        contentEl.style.columnCount = isSpread ? '2' : '1'
+        contentEl.style.columnGap = `${columnGap}px`
+        contentEl.style.columnFill = 'auto'
+        contentEl.style.columnRule = isSpread ? '1px solid transparent' : 'none'
+        contentEl.style.breakInside = 'avoid-column'
+        contentEl.innerHTML = html
+
+        scroller.appendChild(contentEl)
+        host.appendChild(scroller)
+
+        const W = scroller.clientWidth
+        const H = Math.max(1, Math.floor(scroller.clientHeight))
+        const cs = getComputedStyle(contentEl)
+        const rawGap = cs.columnGap
+        const fallbackGap = parseFloat(cs.fontSize) || 16
+        const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
+        const colW = isSpread ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
+
+        contentEl.style.columnWidth = `${colW}px`
+        contentEl.style.columnCount = isSpread ? '2' : '1'
+        contentEl.style.columnFill = 'auto'
+        contentEl.style.height = `${H}px`
+        contentEl.style.display = 'block'
+        contentEl.style.textAlign = 'left'
+        contentEl.style.columnRule = isSpread ? '1px solid transparent' : 'none'
+
+        await waitForMeasuredAssets(contentEl)
+
+        const finalStyles = getComputedStyle(contentEl)
+        const measuredRawGap = finalStyles.columnGap
+        const measuredFallbackGap = parseFloat(finalStyles.fontSize) || 16
+        const measuredGap = measuredRawGap === 'normal' ? measuredFallbackGap : (parseFloat(measuredRawGap) || 0)
+        const step = W + measuredGap
+        const pages = step > 0 ? Math.max(1, Math.ceil((scroller.scrollWidth + measuredGap) / step)) : 1
+
+        host.innerHTML = ''
+        return pages
+    }, [columnGap, contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, isSpread, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
 
     const measure = useCallback(() => {
         const scroller = scrollerRef.current; const contentEl = contentRef.current
@@ -83,15 +301,26 @@ function EpubReader() {
         contentEl.style.textAlign = 'left'; contentEl.style.columnRule = isSpread ? '1px solid transparent' : 'none'
         const step = W + gap; if (step <= 0) return
         const oldStep = stepRef.current > 0 ? stepRef.current : step; const oldLeft = scroller.scrollLeft
-        const idxFromScroll = Math.round(oldLeft / oldStep); stepRef.current = step; setPageWidth(W)
+        stepRef.current = step; setPageWidth(W); setPageHeight(H)
         const pages = Math.max(1, Math.ceil((scroller.scrollWidth + gap) / step)); setChapterTotalPages(pages)
+        const pendingPage = getPendingPage()
+        const requestedChapterPage = pendingChapterPageRef.current
+        if (requestedChapterPage != null) pendingChapterPageRef.current = null
+        const idxFromScroll = requestedChapterPage === 'last'
+            ? pages - 1
+            : (Number.isFinite(requestedChapterPage) ? requestedChapterPage : (pendingPage ?? Math.round(oldLeft / oldStep)))
         const clamped = Math.max(0, Math.min(idxFromScroll, pages - 1))
         scroller.scrollTo({ left: Math.round(clamped * step), behavior: 'auto' })
         setChapterPage(prev => (prev === clamped ? prev : clamped))
-    }, [isSpread, setChapterPage])
+    }, [getPendingPage, isSpread])
 
+    useEffect(() => {
+        if (chapter?.index == null || !Number.isFinite(chapterTotalPages) || chapterTotalPages < 1) return
+        setChapterPageCounts((prev) => (prev[chapter.index] === chapterTotalPages ? prev : { ...prev, [chapter.index]: chapterTotalPages }))
+    }, [chapter?.index, chapterTotalPages, paginationSignature])
+
+    // S7: Single useLayoutEffect for measure (removed redundant setTimeout variant)
     useLayoutEffect(() => { if (!loading && chapter) measure() }, [loading, chapter, measure, settings.fontSize, settings.font, layout, columnGap, hMargin, vMargin, lineHeight, letterSpacing, sidebarOpen])
-    useEffect(() => { if (!loading && chapter) { const t = setTimeout(measure, 250); return () => clearTimeout(t) } }, [loading, chapter, measure, settings.fontSize, settings.font, layout, columnGap, hMargin, vMargin, lineHeight, letterSpacing, sidebarOpen])
     useEffect(() => { window.addEventListener('resize', measure); return () => window.removeEventListener('resize', measure) }, [measure])
     useEffect(() => { const frame = frameRef.current; if (!frame || typeof ResizeObserver === 'undefined') return; const ro = new ResizeObserver(() => measure()); ro.observe(frame); return () => ro.disconnect() }, [measure])
 
@@ -102,21 +331,78 @@ function EpubReader() {
         const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
         const step = W + gap; if (step <= 0) return; stepRef.current = step
+        lockPendingPage(target)
         s.scrollTo({ left: Math.round(target * step), behavior: 'auto' }); setChapterPage(target)
-    }, [chapterTotalPages])
+    }, [chapterTotalPages, lockPendingPage])
+
+    const goToOverallPage = useCallback((overallPage) => {
+        if (!overallPagination.ready || overallPagination.totalPages <= 0) return
+        const target = Math.max(0, Math.min(overallPage, overallPagination.totalPages - 1))
+        for (let i = 0; i < totalChapters; i += 1) {
+            const start = overallPagination.offsets[i] || 0
+            const end = i + 1 < totalChapters ? overallPagination.offsets[i + 1] : overallPagination.totalPages
+            if (target < end) {
+                const targetPage = target - start
+                if (i === chapterIndex) goToPage(targetPage)
+                else loadChapter(i, { page: targetPage })
+                return
+            }
+        }
+    }, [chapterIndex, goToPage, overallPagination, totalChapters])
+
+    const seekToOverallProgress = useCallback((progressValue) => {
+        if (!overallPagination.ready || overallPagination.totalPages <= 1) return
+        goToOverallPage(Math.round(progressValue * (overallPagination.totalPages - 1)))
+    }, [goToOverallPage, overallPagination])
 
     useEffect(() => { const s = scrollerRef.current; const c = contentRef.current; if (!s || !c) return; const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const step = W + gap; if (step <= 0) return; stepRef.current = step; s.scrollTo({ left: Math.round(chapterPage * step), behavior: 'auto' }) }, [chapterPage])
 
     useEffect(() => {
         const s = scrollerRef.current; const c = contentRef.current; if (!s || !c) return; let timer = null
-        const onScroll = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const step = W + gap; if (step <= 0) return; stepRef.current = step; const idx = Math.round(s.scrollLeft / step); const snapLeft = Math.round(idx * step); if (Math.abs(s.scrollLeft - snapLeft) >= 1) s.scrollTo({ left: snapLeft, behavior: 'auto' }); const clamped = Math.max(0, Math.min(idx, chapterTotalPages - 1)); setChapterPage(prev => (prev === clamped ? prev : clamped)) }, 120) }
+        const onScroll = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const step = W + gap; if (step <= 0) return; stepRef.current = step; const pendingPage = getPendingPage(); const idx = pendingPage ?? Math.round(s.scrollLeft / step); const snapLeft = Math.round(idx * step); if (Math.abs(s.scrollLeft - snapLeft) >= 1) s.scrollTo({ left: snapLeft, behavior: 'auto' }); const clamped = Math.max(0, Math.min(idx, chapterTotalPages - 1)); setChapterPage(prev => (prev === clamped ? prev : clamped)) }, 120) }
         s.addEventListener('scroll', onScroll, { passive: true }); return () => { if (timer) clearTimeout(timer); s.removeEventListener('scroll', onScroll) }
-    }, [chapterTotalPages])
+    }, [chapterTotalPages, getPendingPage])
 
-    const goNext = useCallback(() => { if (chapterPage < chapterTotalPages - 1) goToPage(chapterPage + 1); else if (chapter && chapterIndex < chapter.total - 1) loadChapter(chapterIndex + 1) }, [chapterPage, chapterTotalPages, chapter, chapterIndex, goToPage])
-    const goPrev = useCallback(() => { if (chapterPage > 0) goToPage(chapterPage - 1); else if (chapterIndex > 0) loadChapter(chapterIndex - 1) }, [chapterPage, chapterIndex, goToPage])
-    const seekToBookProgress = useCallback((p) => { if (totalChapters <= 1) return; const target = Math.round(p * (totalChapters - 1)); if (target !== chapterIndex) loadChapter(target) }, [chapterIndex, totalChapters])
+    useEffect(() => {
+        if (loading || totalChapters <= 0 || pageWidth <= 0 || pageHeight <= 0) return
+        let cancelled = false
+        const controller = new AbortController()
 
+        const run = async () => {
+            for (let index = 0; index < totalChapters; index += 1) {
+                if (cancelled) return
+                const knownPages = chapterPageCountsRef.current[index]
+                if (Number.isFinite(knownPages) && knownPages > 0) continue
+
+                let html = index === chapter?.index ? chapter?.html : ''
+                if (!html) {
+                    const res = await fetch(`${API}/${id}/chapter/${index}`, { signal: controller.signal })
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+                    const data = await res.json()
+                    html = data?.html || ''
+                }
+
+                const pages = await measureChapterHtml(html)
+                if (cancelled) return
+                setChapterPageCounts((prev) => (prev[index] === pages ? prev : { ...prev, [index]: pages }))
+            }
+        }
+
+        run().catch((err) => {
+            if (!cancelled && err?.name !== 'AbortError') {
+                console.error('Failed to measure EPUB page counts', err)
+            }
+        })
+
+        return () => {
+            cancelled = true
+            controller.abort()
+            if (measureHostRef.current) measureHostRef.current.innerHTML = ''
+        }
+    }, [chapter?.html, chapter?.index, id, loading, measureChapterHtml, pageHeight, pageWidth, paginationSignature, totalChapters])
+
+    const goNext = useCallback(() => { if (chapterPage < chapterTotalPages - 1) goToPage(chapterPage + 1); else if (chapter && chapterIndex < chapter.total - 1) loadChapter(chapterIndex + 1, { page: 0 }) }, [chapterPage, chapterTotalPages, chapter, chapterIndex, goToPage])
+    const goPrev = useCallback(() => { if (chapterPage > 0) goToPage(chapterPage - 1); else if (chapterIndex > 0) loadChapter(chapterIndex - 1, { page: 'last' }) }, [chapterPage, chapterIndex, goToPage])
     useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true })
 
     const openEpubImageInWindow = useCallback((imgEl) => {
@@ -147,6 +433,85 @@ function EpubReader() {
         popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Image Preview</title><style>html,body{margin:0;width:100%;height:100%;background:#111;display:flex;align-items:center;justify-content:center}img{max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain}</style></head><body><img src="${safeSrc}" alt=""></body></html>`)
         popup.document.close()
     }, [])
+
+    useEffect(() => {
+        if (!chapter?.html) {
+            setDebugInfo(null)
+            return
+        }
+
+        const firstImgSrc = chapter.html.match(FIRST_IMG_SRC_RE)?.[1] || ''
+        const firstFontUrl = chapter.html.match(FIRST_FONT_URL_RE)?.[1] || ''
+        const snapshot = {
+            chapterIndex,
+            chapterTitle: chapter.title,
+            fontMode,
+            useEmbeddedFonts,
+            firstImgSrc,
+            firstFontUrl,
+            htmlHasAssetUrl: chapter.html.includes('/api/books/') || chapter.html.includes('http://127.0.0.1:8000/api/books/'),
+        }
+        setDebugInfo((prev) => ({ ...prev, ...snapshot }))
+        console.log('[epub-debug] html', snapshot)
+    }, [chapter, chapterIndex, fontMode, useEmbeddedFonts])
+
+    useEffect(() => {
+        if (!chapter || loading) return
+
+        const timers = new Set()
+        const contentEl = contentRef.current
+        if (!contentEl) return
+
+        const scheduleMeasure = (delay = 0) => {
+            const timer = window.setTimeout(() => {
+                timers.delete(timer)
+                measure()
+            }, delay)
+            timers.add(timer)
+        }
+
+        const updateDomSnapshot = () => {
+            const firstImg = contentEl.querySelector('img')
+            const domSnapshot = {
+                domFirstImgSrc: firstImg?.getAttribute('src') || firstImg?.currentSrc || '',
+                domFirstImgLoaded: !!firstImg && firstImg.complete && firstImg.naturalWidth > 0,
+                domFirstImgWidth: firstImg?.naturalWidth || 0,
+                fontReady: typeof document !== 'undefined' && document.fonts ? document.fonts.check('16px "\uBC14\uD0D5"') : null,
+            }
+            setDebugInfo((prev) => ({ ...prev, ...domSnapshot }))
+            console.log('[epub-debug] dom', domSnapshot)
+        }
+
+        const snapshotTimer = window.setTimeout(() => {
+            timers.delete(snapshotTimer)
+            updateDomSnapshot()
+        }, 400)
+        timers.add(snapshotTimer)
+
+        const images = Array.from(contentEl.querySelectorAll('img'))
+        const onAssetSettled = () => scheduleMeasure(0)
+        for (const img of images) {
+            if (img.complete) continue
+            img.addEventListener('load', onAssetSettled)
+            img.addEventListener('error', onAssetSettled)
+        }
+
+        if (typeof document !== 'undefined' && document.fonts?.ready) {
+            document.fonts.ready.then(() => scheduleMeasure(0)).catch(() => {})
+        }
+
+        scheduleMeasure(0)
+        scheduleMeasure(250)
+        scheduleMeasure(800)
+
+        return () => {
+            for (const timer of timers) window.clearTimeout(timer)
+            for (const img of images) {
+                img.removeEventListener('load', onAssetSettled)
+                img.removeEventListener('error', onAssetSettled)
+            }
+        }
+    }, [chapter?.html, loading, fontMode, measure])
 
     useEffect(() => {
         const contentEl = contentRef.current
@@ -188,7 +553,7 @@ function EpubReader() {
                     <span className="text-[10px] uppercase tracking-widest opacity-30 shrink-0" style={{ color: themeStyle.text }}>{tt('bookmarks')}</span>
                     {bookmarks.map(b => (
                         <button key={b.position} onClick={() => { goToBookmark(b.position); loadChapter(b.position) }} className="px-2 py-0.5 rounded text-[11px] border transition-all hover:opacity-70 shrink-0" style={{ borderColor: themeStyle.border, color: themeStyle.text }}>
-                            {tt('chapter')} {b.position + 1}<span onClick={(e) => { e.stopPropagation(); removeBookmark(b.position) }} className="ml-1.5 opacity-30 hover:opacity-100 cursor-pointer">×</span>
+                            {tt('chapter')} {b.position + 1}<span onClick={(e) => { e.stopPropagation(); removeBookmark(b.position) }} className="ml-1.5 opacity-30 hover:opacity-100 cursor-pointer">횞</span>
                         </button>
                     ))}
                 </div>
@@ -214,9 +579,9 @@ function EpubReader() {
 
                     <div ref={frameRef} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
                         {loading ? (
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}><div className="animate-spin text-4xl">⏳</div></div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}><div className="text-sm opacity-60">Loading...</div></div>
                         ) : chapter ? (
-                            <div ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
+                            <div key={chapter?.index ?? 0} ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
                                 <div ref={contentRef} className="select-text epub-content [&_p]:mb-4 [&_p]:break-inside-avoid [&_h1]:text-2xl [&_h1]:mb-5 [&_h1]:break-after-avoid [&_h2]:text-xl [&_h2]:mb-4 [&_h2]:break-after-avoid [&_h3]:text-lg [&_h3]:mb-3 [&_h3]:break-after-avoid [&_img]:max-w-full [&_img]:max-h-[50vh] [&_img]:rounded-lg [&_img]:mx-auto [&_img]:my-4 [&_img]:break-inside-avoid [&_img]:cursor-zoom-in [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:opacity-80 [&_blockquote]:break-inside-avoid"
                                     style={{ height: '100%', boxSizing: 'border-box', display: 'block', backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isSpread ? 2 : 1, columnGap: `${columnGap}px`, columnFill: 'auto', columnRule: isSpread ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
                                     dangerouslySetInnerHTML={{ __html: chapter.html }}
@@ -224,15 +589,34 @@ function EpubReader() {
                             </div>
                         ) : null}
                     </div>
+                    {debugInfo && (
+                        <div
+                            className="reader-ui absolute bottom-4 right-4 z-30 max-w-[26rem] rounded-lg border px-3 py-2 text-[10px] leading-4 shadow-lg"
+                            style={{ borderColor: themeStyle.border, backgroundColor: `${themeStyle.card}ee`, color: themeStyle.text }}
+                        >
+                            <div className="font-semibold opacity-70">EPUB Debug</div>
+                            <div>chapter: {debugInfo.chapterIndex} / mode: {debugInfo.fontMode}</div>
+                            <div>embedded: {String(debugInfo.useEmbeddedFonts)} / fontReady: {String(debugInfo.fontReady)}</div>
+                            <div>imgLoaded: {String(debugInfo.domFirstImgLoaded)} / imgWidth: {debugInfo.domFirstImgWidth || 0}</div>
+                            <div className="truncate">img: {debugInfo.domFirstImgSrc || debugInfo.firstImgSrc || '-'}</div>
+                            <div className="truncate">font: {debugInfo.firstFontUrl || '-'}</div>
+                        </div>
+                    )}
                 </div>
             </div>
 
             <div className="reader-ui">
-                {chapter && (<ReaderProgressBar currentPage={chapterIndex + 1} totalPages={null} progress={totalChapters > 1 ? chapterIndex / (totalChapters - 1) : 0} onSeekProgress={seekToBookProgress} extraInfo={`${tt('chapter')} ${chapterIndex + 1}/${chapter?.total || '?'}  |  ${chapterPage + 1}/${chapterTotalPages}`} />)}
+                {chapter && (<ReaderProgressBar currentPage={overallPagination.currentPage} totalPages={overallPagination.totalPages} onSeekPage={overallPagination.ready ? (p) => goToOverallPage(p - 1) : undefined} progress={overallPagination.totalPages > 1 ? (overallPagination.currentPage - 1) / (overallPagination.totalPages - 1) : 0} onSeekProgress={overallPagination.ready ? seekToOverallProgress : undefined} extraInfo={`${tt('chapter')} ${chapterIndex + 1}/${chapter?.total || totalChapters}`} />)}
                 <ResumeToast resumePrompt={resumePrompt} onResume={() => { resumeReading(); if (resumePrompt) loadChapter(resumePrompt.position) }} onDismiss={dismissResume} tt={tt} />
             </div>
+
+            <div ref={measureHostRef} aria-hidden="true" style={{ position: 'fixed', left: '-100000px', top: '0', width: '1px', height: '1px', overflow: 'hidden', visibility: 'hidden', pointerEvents: 'none' }} />
         </div>
     )
 }
 
 export default EpubReader
+
+
+
+

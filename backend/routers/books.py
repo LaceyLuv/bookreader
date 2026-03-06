@@ -1,9 +1,12 @@
 import hashlib
+import json
+import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from fastapi.responses import Response
 
 from models import BookMeta, TxtContent, EpubToc, EpubChapter, ZipImageList
@@ -15,6 +18,30 @@ from services.zip_service import list_zip_images, get_zip_image
 router = APIRouter(prefix="/api/books", tags=["books"])
 
 ALLOWED_EXTENSIONS = {"txt", "epub", "zip"}
+
+EPUB_DEBUG_LOG_PATH = Path(tempfile.gettempdir()) / "bookreader_epub_debug.log"
+HTML_IMG_SRC_RE = re.compile(r"<img[^>]+src=[\"']([^\"']+)[\"']", re.IGNORECASE)
+HTML_FONT_URL_RE = re.compile(r"url\((?:[\"']?)([^)\"']+)(?:[\"']?)\)", re.IGNORECASE)
+
+
+def _append_epub_debug(event: str, **fields):
+    payload = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "event": event,
+        **fields,
+    }
+    try:
+        with EPUB_DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _first_html_match(pattern, html: str | None) -> str:
+    if not html:
+        return ""
+    match = pattern.search(html)
+    return match.group(1) if match else ""
 
 
 def _get_file_type(filename: str) -> str:
@@ -42,10 +69,42 @@ def _get_book_meta(filepath: Path) -> BookMeta:
 
 
 def _find_book_path(book_id: str) -> Path:
-    for f in BOOKS_DIR.iterdir():
-        if f.is_file() and _make_id(f.name) == book_id:
-            return f
-    raise HTTPException(status_code=404, detail="Book not found")
+    """Look up a book by ID using a cached directory index (O(1) after first scan)."""
+    idx = _get_book_index()
+    path = idx.get(book_id)
+    if not path or not path.exists():
+        _invalidate_book_index()
+        idx = _get_book_index()
+        path = idx.get(book_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return path
+
+
+# ─── In-memory book index ───────────────────────────────────────
+
+_book_index: dict[str, Path] = {}
+_book_index_mtime: float = 0.0
+
+
+def _get_book_index() -> dict[str, Path]:
+    global _book_index, _book_index_mtime
+    try:
+        current_mtime = BOOKS_DIR.stat().st_mtime
+    except FileNotFoundError:
+        return {}
+    if current_mtime != _book_index_mtime:
+        _book_index = {}
+        for f in BOOKS_DIR.iterdir():
+            if f.is_file() and _get_file_type(f.name):
+                _book_index[_make_id(f.name)] = f
+        _book_index_mtime = current_mtime
+    return _book_index
+
+
+def _invalidate_book_index():
+    global _book_index_mtime
+    _book_index_mtime = 0.0
 
 
 # ─── Library CRUD ───────────────────────────────────────────────
@@ -75,6 +134,7 @@ async def upload_book(file: UploadFile = File(...)):
     with open(dest, "wb") as f:
         f.write(content)
 
+    _invalidate_book_index()
     return _get_book_meta(dest)
 
 
@@ -83,6 +143,7 @@ async def delete_book(book_id: str):
     """Delete a book from the library."""
     path = _find_book_path(book_id)
     path.unlink()
+    _invalidate_book_index()
     return {"detail": "Book deleted"}
 
 
@@ -111,17 +172,35 @@ async def get_toc(book_id: str):
 
 
 @router.get("/{book_id}/chapter/{chapter_index}", response_model=EpubChapter)
-async def get_chapter(book_id: str, chapter_index: int):
+async def get_chapter(book_id: str, chapter_index: int, request: Request):
     """Get the HTML content of a specific EPUB chapter."""
     path = _find_book_path(book_id)
     if _get_file_type(path.name) != "epub":
         raise HTTPException(status_code=400, detail="Not an EPUB file")
-    result = get_epub_chapter(str(path), chapter_index, book_id)
+    asset_base_url = f"{str(request.base_url).rstrip('/')}/api/books/{book_id}/asset"
+    _append_epub_debug(
+        "chapter_request",
+        book_id=book_id,
+        chapter_index=chapter_index,
+        asset_base_url=asset_base_url,
+        origin=request.headers.get("origin"),
+        referer=request.headers.get("referer"),
+    )
+    result = get_epub_chapter(str(path), chapter_index, book_id, asset_base_url=asset_base_url)
+    _append_epub_debug(
+        "chapter_response",
+        book_id=book_id,
+        chapter_index=chapter_index,
+        title=result.get("title"),
+        html_len=len(result.get("html", "")),
+        first_img_src=_first_html_match(HTML_IMG_SRC_RE, result.get("html")),
+        first_font_url=_first_html_match(HTML_FONT_URL_RE, result.get("html")),
+    )
     return EpubChapter(**result)
 
 
 @router.get("/{book_id}/asset/{asset_path:path}")
-async def get_epub_asset_file(book_id: str, asset_path: str):
+async def get_epub_asset_file(book_id: str, asset_path: str, request: Request):
     """Serve a single asset from an EPUB archive (image/font/css/etc)."""
     path = _find_book_path(book_id)
     if _get_file_type(path.name) != "epub":
@@ -130,8 +209,24 @@ async def get_epub_asset_file(book_id: str, asset_path: str):
     try:
         data, media_type = get_epub_asset(str(path), asset_path)
     except FileNotFoundError:
+        _append_epub_debug(
+            "asset_missing",
+            book_id=book_id,
+            asset_path=asset_path,
+            origin=request.headers.get("origin"),
+            referer=request.headers.get("referer"),
+        )
         raise HTTPException(status_code=404, detail="Asset not found") from None
 
+    _append_epub_debug(
+        "asset_response",
+        book_id=book_id,
+        asset_path=asset_path,
+        media_type=media_type,
+        size=len(data),
+        origin=request.headers.get("origin"),
+        referer=request.headers.get("referer"),
+    )
     return Response(
         content=data,
         media_type=media_type,

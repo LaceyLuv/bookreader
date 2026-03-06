@@ -164,9 +164,16 @@ export default function ReaderToolbar({ settings, readerType = '' }) {
         { key: 'system', label: tt('systemFont') },
     ]
     const selectedBuiltinFontKey = font === 'noto' ? 'notoSansKr' : (FONTS?.[font] ? font : 'system')
-    const selectedFontValue = fontFamily || `__builtin:${selectedBuiltinFontKey}`
+    const builtinFontKeyFromFamily = fontFamily
+        ? (BUILTIN_FONT_OPTIONS.find((item) => FONTS?.[item.key]?.family === fontFamily)?.key || null)
+        : null
+    const effectiveBuiltinFontKey = builtinFontKeyFromFamily || selectedBuiltinFontKey
+    const selectedBuiltinFontFamily = FONTS?.[effectiveBuiltinFontKey]?.family || FONTS?.system?.family || 'system-ui'
+    const selectedFontPreviewFamily = fontFamily || selectedBuiltinFontFamily
+    const selectedFontValue = (fontFamily && !builtinFontKeyFromFamily) ? fontFamily : `__builtin:${effectiveBuiltinFontKey}`
     const isBuiltinFontFamily = !!fontFamily && Object.values(FONTS || {}).some((f) => f?.family === fontFamily)
-    const hasDetachedFontValue = !!fontFamily && !userFonts.some((f) => `UserFont_${f.id}` === fontFamily) && !isBuiltinFontFamily
+    const isBuiltinSelectedValue = selectedFontValue.startsWith('__builtin:')
+    const hasDetachedFontValue = !isBuiltinSelectedValue && !userFonts.some((f) => `UserFont_${f.id}` === selectedFontValue) && !isBuiltinFontFamily
 
     const handleFontSelectChange = (nextValue) => {
         if (!nextValue) return
@@ -246,6 +253,7 @@ export default function ReaderToolbar({ settings, readerType = '' }) {
                                         borderColor: 'var(--settings-border)',
                                         backgroundColor: 'var(--settings-input-bg)',
                                         color: 'var(--settings-fg)',
+                                        fontFamily: selectedFontPreviewFamily,
                                     }}
                                 >
                                     {BUILTIN_FONT_OPTIONS.map((item) => (

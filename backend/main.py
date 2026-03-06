@@ -1,10 +1,20 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers.books import router as books_router
 from routers.fonts import router as fonts_router
 from paths import BOOKS_DIR, FONTS_DIR
 
-app = FastAPI(title="Universal Book Reader API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    BOOKS_DIR.mkdir(parents=True, exist_ok=True)
+    FONTS_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+
+
+app = FastAPI(title="Universal Book Reader API", version="1.0.0", lifespan=lifespan)
 
 # CORS — allow the React dev server
 app.add_middleware(
@@ -26,11 +36,6 @@ app.add_middleware(
 # Mount routers
 app.include_router(books_router)
 app.include_router(fonts_router)
-
-@app.on_event("startup")
-async def startup():
-    BOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    FONTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/api/health")

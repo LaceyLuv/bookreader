@@ -24,32 +24,28 @@ function removeExtraWhitespaceAndEmptyLines(text) {
         .join('\n')
 }
 
-function splitDenseParagraphs(text) {
-    if (typeof text !== 'string' || !text) return ''
-    const normalized = text.replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ').trim()
-    if (!normalized) return ''
+function splitDenseBlock(block) {
+    const lines = block
+        .split('\n')
+        .map((line) => line.replace(/[ \t]{2,}/g, ' ').trim())
+        .filter(Boolean)
 
-    const sentenceParts = normalized.match(/[^.!?\n]+(?:[.!?]+|$)/g) || []
-    if (sentenceParts.length <= 1) {
-        const chunks = []
-        const chunkSize = 220
-        for (let i = 0; i < normalized.length; i += chunkSize) {
-            chunks.push(normalized.slice(i, i + chunkSize).trim())
-        }
-        return chunks.join('\n\n')
-    }
+    if (lines.length === 0) return ''
+    if (lines.length > 1) return lines.join('\n')
+
+    const source = lines[0]
+    if (source.length < 280) return source
+
+    const sentenceParts = source.match(/[^.!?\n]+(?:[.!?]+|$)/g) || []
+    if (sentenceParts.length < 2) return source
 
     const paragraphs = []
     let current = ''
     for (const raw of sentenceParts) {
         const sentence = raw.trim()
         if (!sentence) continue
-        if (!current) {
-            current = sentence
-            continue
-        }
-        const next = `${current} ${sentence}`
-        if (next.length > 220) {
+        const next = current ? `${current} ${sentence}` : sentence
+        if (current && next.length > 240 && current.length >= 80) {
             paragraphs.push(current)
             current = sentence
         } else {
@@ -58,6 +54,18 @@ function splitDenseParagraphs(text) {
     }
     if (current) paragraphs.push(current)
     return paragraphs.join('\n\n')
+}
+
+function splitDenseParagraphs(text) {
+    if (typeof text !== 'string' || !text) return ''
+    const normalized = text.replace(/\r\n/g, '\n').trim()
+    if (!normalized) return ''
+
+    return normalized
+        .split(/\n\s*\n+/)
+        .map((block) => splitDenseBlock(block))
+        .filter(Boolean)
+        .join('\n\n')
 }
 
 function TxtReader() {

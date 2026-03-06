@@ -15,4 +15,4 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    uvicorn.run("main:app", host=args.host, port=args.port, reload=True)
+    uvicorn.run("main:app", host=args.host, port=args.port)
