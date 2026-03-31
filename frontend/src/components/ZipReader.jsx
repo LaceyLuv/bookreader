@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useReaderSettings } from '../hooks/useReaderSettings'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
 import { useReadingProgress } from '../hooks/useReadingProgress'
@@ -13,6 +13,8 @@ const API = API_BOOKS_BASE
 function ZipReader() {
     const { id } = useParams()
     const navigate = useNavigate()
+    const location = useLocation()
+    const legacyId = location.state?.legacyId ?? null
     const settings = useReaderSettings()
     const { themeStyle, layout, hMargin, vMargin, zipImageScale, tt, toggleTitleBar } = settings
 
@@ -33,7 +35,7 @@ function ZipReader() {
         })()
     }, [id])
 
-    const progress = useReadingProgress(id, { totalPages: images.length, type: 'zip' })
+    const progress = useReadingProgress(id, { totalPages: images.length, type: 'zip', legacyId })
     const {
         currentPosition: currentPage,
         setCurrentPosition: setCurrentPage,
@@ -133,3 +135,6 @@ function ZipReader() {
 }
 
 export default ZipReader
+
+
+

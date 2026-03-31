@@ -1,4 +1,4 @@
-﻿import mimetypes
+import mimetypes
 import posixpath
 import re
 from functools import lru_cache
@@ -27,6 +27,11 @@ def _read_epub_cached(file_path: str):
     """Cache parsed EPUB books to avoid re-parsing on repeated access."""
     return epub.read_epub(file_path)
 
+
+def clear_epub_caches() -> None:
+    """Drop cached EPUB parse/style entries after library mutations."""
+    _read_epub_cached.cache_clear()
+    _collect_rewritten_styles_cached.cache_clear()
 
 def get_epub_toc(file_path: str) -> dict:
     """Extract table of contents from an EPUB file.

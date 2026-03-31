@@ -167,3 +167,28 @@
   - `frontend/src-tauri/binaries/bookreader-backend-<target-triple>.exe`
 - Validation:
   - both PowerShell scripts parse successfully (`[scriptblock]::Create(...)`).
+
+
+## Optimization Plan (2026-03-07)
+- [x] Defer non-critical EPUB total-page measurement so initial chapter render is prioritized.
+- [x] Stream backend file uploads and block silent duplicate filename overwrites.
+- [x] Clear EPUB service caches when library files change.
+- [x] Reduce synchronous `localStorage` write pressure from reader progress/settings updates.
+- [x] Remove low-value EPUB debug/runtime drift and verify web build.
+
+## Optimization Review (2026-03-07)
+- EPUB reader:
+  - delayed background full-book page counting with idle scheduling so first chapter render wins.
+  - removed frontend debug overlay/log snapshot path.
+- Backend uploads:
+  - books now stream to disk and reject duplicate filenames with HTTP 409 instead of silent overwrite.
+  - font uploads now hash/write incrementally through a temp file instead of reading full content into memory.
+  - EPUB caches are cleared when EPUB library files are added/removed.
+  - backend EPUB temp debug log writes now stay off unless `BOOKREADER_EPUB_DEBUG=1`.
+- Reader state:
+  - debounced settings/progress persistence and flush on `pagehide`.
+  - normalized legacy `spread` layout to current `dual`.
+  - removed redundant TXT delayed re-measure path.
+- Validation:
+  - `python -m compileall backend` succeeded.
+  - `cmd /c npm run build` succeeded.

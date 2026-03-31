@@ -1,33 +1,111 @@
-﻿import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useReaderSettings } from '../hooks/useReaderSettings'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
 import { useReadingProgress } from '../hooks/useReadingProgress'
 import ReaderToolbar from './ReaderToolbar'
 import ReaderProgressBar from './ReaderProgressBar'
 import ResumeToast from './ResumeToast'
+import ReaderSearchPanel from './ReaderSearchPanel'
+import ReaderAnnotationsPanel from './ReaderAnnotationsPanel'
+import ReaderSelectionMenu from './ReaderSelectionMenu'
 import { API_BOOKS_BASE } from '../lib/apiBase'
+import { clearSearchHighlights, highlightSearchMatchInElement, scrollSearchMarkIntoView } from '../lib/searchHighlighter'
+import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
+import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
+import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annotationColors'
 
 const API = API_BOOKS_BASE
-const FIRST_IMG_SRC_RE = /<img[^>]+src=["']([^"']+)["']/i
-const FIRST_FONT_URL_RE = /url\((?:["']?)([^)"']+)(?:["']?)\)/i
+const API_ROOT = API.replace(/\/books$/, '')
+const PAGE_COUNT_START_DELAY_MS = 2200
+const PAGE_COUNT_IDLE_TIMEOUT_MS = 1500
+
+function scheduleBackgroundWork(callback, delay = 0) {
+    if (typeof window === 'undefined') return () => {}
+
+    let timeoutId = null
+    let idleId = null
+
+    const run = () => {
+        if (typeof window.requestIdleCallback === 'function') {
+            idleId = window.requestIdleCallback(() => callback(), { timeout: PAGE_COUNT_IDLE_TIMEOUT_MS })
+            return
+        }
+        timeoutId = window.setTimeout(() => callback(), 0)
+    }
+
+    if (delay > 0) timeoutId = window.setTimeout(run, delay)
+    else run()
+
+    return () => {
+        if (timeoutId != null) window.clearTimeout(timeoutId)
+        if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+            window.cancelIdleCallback(idleId)
+        }
+    }
+}
+
+function scheduleAfterPaint(callback) {
+    if (typeof window === 'undefined') return () => {}
+
+    let frameA = null
+    let frameB = null
+
+    frameA = window.requestAnimationFrame(() => {
+        frameB = window.requestAnimationFrame(() => {
+            callback()
+        })
+    })
+
+    return () => {
+        if (frameA != null) window.cancelAnimationFrame(frameA)
+        if (frameB != null) window.cancelAnimationFrame(frameB)
+    }
+}
+
+function scheduleOnNextFrame(callback) {
+    if (typeof window === 'undefined') return () => {}
+
+    const frameId = window.requestAnimationFrame(() => {
+        callback()
+    })
+
+    return () => {
+        window.cancelAnimationFrame(frameId)
+    }
+}
 
 function EpubReader() {
     const { id } = useParams()
     const navigate = useNavigate()
+    const location = useLocation()
+    const legacyId = location.state?.legacyId ?? null
     const settings = useReaderSettings()
     const { contentStyle, themeStyle, layout, columnGap, hMargin, vMargin,
-        lineHeight, letterSpacing, fontMode, tt, toggleTitleBar } = settings
+        lineHeight, letterSpacing, fontMode, lang, tt, toggleTitleBar } = settings
 
     const [toc, setToc] = useState([])
     const [bookTitle, setBookTitle] = useState('')
     const [chapter, setChapter] = useState(null)
     const [loading, setLoading] = useState(true)
     const [sidebarOpen, setSidebarOpen] = useState(false)
-    const [debugInfo, setDebugInfo] = useState(null)
+    const [searchOpen, setSearchOpen] = useState(false)
+    const [searchDraft, setSearchDraft] = useState('')
+    const [searchQuery, setSearchQuery] = useState('')
+    const [searchRequestId, setSearchRequestId] = useState(0)
+    const [searchLoading, setSearchLoading] = useState(false)
+    const [searchResults, setSearchResults] = useState([])
+    const [activeSearchIndex, setActiveSearchIndex] = useState(null)
+    const [activeChapterMatchIndex, setActiveChapterMatchIndex] = useState(null)
+    const [annotationsOpen, setAnnotationsOpen] = useState(false)
+    const [annotationsLoading, setAnnotationsLoading] = useState(false)
+    const [annotations, setAnnotations] = useState([])
+    const [activeAnnotationId, setActiveAnnotationId] = useState(null)
+    const [selectionSnapshot, setSelectionSnapshot] = useState(null)
 
     const [chapterPage, setChapterPage] = useState(0)
     const [chapterTotalPages, setChapterTotalPages] = useState(1)
+    const [chapterPaginationReady, setChapterPaginationReady] = useState(false)
     const [pageWidth, setPageWidth] = useState(0)
     const [pageHeight, setPageHeight] = useState(0)
     const [chapterPageCounts, setChapterPageCounts] = useState({})
@@ -40,14 +118,60 @@ function EpubReader() {
     const pendingPageUntilRef = useRef(0)
     const pendingChapterPageRef = useRef(null)
     const chapterPageCountsRef = useRef({})
+    const pendingSearchResultRef = useRef(null)
+    const initialMeasureDoneRef = useRef(false)
+    const scheduledMeasureCleanupRef = useRef(null)
 
     const [totalChapters, setTotalChapters] = useState(1)
-    const progress = useReadingProgress(id, { totalPages: totalChapters, type: 'epub' })
+    const progress = useReadingProgress(id, { totalPages: totalChapters, type: 'epub', legacyId })
     const { currentPosition: chapterIndex, setCurrentPosition: setChapterIndex,
         bookmarks, addBookmark, removeBookmark, goToBookmark,
         resumePrompt, resumeReading, dismissResume } = progress
-    const isSpread = layout === 'spread' || layout === 'dual'
+    const isDualLayout = layout === 'dual'
     const useEmbeddedFonts = fontMode === 'embedded'
+    const isSearchActive = searchOpen && !!searchQuery.trim()
+    const shouldRenderSearchHighlight = isSearchActive && activeChapterMatchIndex != null
+
+    const handleSearchQueryChange = useCallback((value) => {
+        const trimmedValue = value.trim()
+        setSearchDraft(value)
+        if (!trimmedValue) {
+            setSearchQuery('')
+            setSearchLoading(false)
+            setSearchResults([])
+            setActiveSearchIndex(null)
+            setActiveChapterMatchIndex(null)
+            pendingSearchResultRef.current = null
+            return
+        }
+        if (trimmedValue !== searchQuery) {
+            setSearchQuery('')
+            setSearchLoading(false)
+            setSearchResults([])
+            setActiveSearchIndex(null)
+            setActiveChapterMatchIndex(null)
+            pendingSearchResultRef.current = null
+        }
+    }, [searchQuery])
+
+    const handleSearchSubmit = useCallback(() => {
+        const trimmedQuery = searchDraft.trim()
+        if (!trimmedQuery) {
+            setSearchQuery('')
+            setSearchLoading(false)
+            setSearchResults([])
+            setActiveSearchIndex(null)
+            setActiveChapterMatchIndex(null)
+            pendingSearchResultRef.current = null
+            return
+        }
+        setSearchQuery(trimmedQuery)
+        setSearchRequestId((value) => value + 1)
+    }, [searchDraft])
+    const currentChapterAnnotations = useMemo(
+        () => annotations.filter((annotation) => annotation.chapter_index == null || annotation.chapter_index === chapter?.index),
+        [annotations, chapter?.index],
+    )
 
     const paginationSignature = useMemo(() => JSON.stringify({
         id,
@@ -120,6 +244,67 @@ function EpubReader() {
         chapterPageCountsRef.current = chapterPageCounts
     }, [chapterPageCounts])
 
+    const loadAnnotations = useCallback(async () => {
+        setAnnotationsLoading(true)
+        try {
+            const res = await fetch(`${API}/${id}/annotations`)
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const data = await res.json()
+            setAnnotations(Array.isArray(data) ? data : [])
+        } catch (err) {
+            console.error('Failed to load annotations', err)
+            setAnnotations([])
+        }
+        setAnnotationsLoading(false)
+    }, [id, tt])
+
+    useEffect(() => {
+        loadAnnotations()
+    }, [loadAnnotations])
+
+    useEffect(() => {
+        if (!searchOpen) return
+        const trimmedQuery = searchQuery.trim()
+        if (!trimmedQuery) {
+            setSearchLoading(false)
+            setSearchResults([])
+            setActiveSearchIndex(null)
+            setActiveChapterMatchIndex(null)
+            pendingSearchResultRef.current = null
+            return
+        }
+
+        let cancelled = false
+
+        ; (async () => {
+            setSearchLoading(true)
+            try {
+                const res = await fetch(`${API}/${id}/search?q=${encodeURIComponent(trimmedQuery)}`)
+                if (!res.ok) throw new Error(`HTTP ${res.status}`)
+                const data = await res.json()
+                if (!cancelled) {
+                    setSearchResults(Array.isArray(data?.results) ? data.results : [])
+                    setActiveSearchIndex(null)
+                    setActiveChapterMatchIndex(null)
+                    pendingSearchResultRef.current = null
+                }
+            } catch (err) {
+                if (!cancelled) {
+                    console.error('Failed to search EPUB', err)
+                    setSearchResults([])
+                    setActiveSearchIndex(null)
+                    setActiveChapterMatchIndex(null)
+                    pendingSearchResultRef.current = null
+                }
+            }
+            if (!cancelled) setSearchLoading(false)
+        })()
+
+        return () => {
+            cancelled = true
+        }
+    }, [id, searchOpen, searchQuery, searchRequestId])
+
     useEffect(() => {
         chapterPageCountsRef.current = {}
         setChapterPageCounts({})
@@ -144,7 +329,7 @@ function EpubReader() {
                     setChapter(firstChapter)
                     setTotalChapters(Math.max(1, firstChapter?.total || tocItems.length || 1))
                 } else {
-                    setChapter({ title: 'Error', html: '<p>Failed to load chapter.</p>', index: 0, total: 0 })
+                    setChapter({ title: tt('error'), html: `<p>${tt('loadChapterFailed')}</p>`, index: 0, total: 0 })
                     setTotalChapters(Math.max(1, tocItems.length || 1))
                 }
             } catch (err) {
@@ -173,7 +358,7 @@ function EpubReader() {
                 setTotalChapters(nextChapter.total)
             }
         } catch {
-            setChapter({ title: 'Error', html: '<p>Failed to load chapter.</p>', index, total: 0 })
+            setChapter({ title: tt('error'), html: `<p>${tt('loadChapterFailed')}</p>`, index, total: 0 })
         }
         setLoading(false)
     }
@@ -249,10 +434,10 @@ function EpubReader() {
         contentEl.style.setProperty('-webkit-hyphens', 'auto')
         contentEl.style.wordBreak = 'break-word'
         contentEl.style.overflowWrap = 'break-word'
-        contentEl.style.columnCount = isSpread ? '2' : '1'
+        contentEl.style.columnCount = isDualLayout ? '2' : '1'
         contentEl.style.columnGap = `${columnGap}px`
         contentEl.style.columnFill = 'auto'
-        contentEl.style.columnRule = isSpread ? '1px solid transparent' : 'none'
+        contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
         contentEl.style.breakInside = 'avoid-column'
         contentEl.innerHTML = html
 
@@ -265,15 +450,15 @@ function EpubReader() {
         const rawGap = cs.columnGap
         const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const colW = isSpread ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
+        const colW = isDualLayout ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
 
         contentEl.style.columnWidth = `${colW}px`
-        contentEl.style.columnCount = isSpread ? '2' : '1'
+        contentEl.style.columnCount = isDualLayout ? '2' : '1'
         contentEl.style.columnFill = 'auto'
         contentEl.style.height = `${H}px`
         contentEl.style.display = 'block'
         contentEl.style.textAlign = 'left'
-        contentEl.style.columnRule = isSpread ? '1px solid transparent' : 'none'
+        contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
 
         await waitForMeasuredAssets(contentEl)
 
@@ -286,7 +471,7 @@ function EpubReader() {
 
         host.innerHTML = ''
         return pages
-    }, [columnGap, contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, isSpread, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
+    }, [columnGap, contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, isDualLayout, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
 
     const measure = useCallback(() => {
         const scroller = scrollerRef.current; const contentEl = contentRef.current
@@ -294,15 +479,15 @@ function EpubReader() {
         const W = scroller.clientWidth; const cs = getComputedStyle(contentEl)
         const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const colW = isSpread ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
+        const colW = isDualLayout ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
         const H = Math.max(1, Math.floor(scroller.clientHeight))
-        contentEl.style.columnWidth = `${colW}px`; contentEl.style.columnCount = isSpread ? '2' : '1'
+        contentEl.style.columnWidth = `${colW}px`; contentEl.style.columnCount = isDualLayout ? '2' : '1'
         contentEl.style.columnFill = 'auto'; contentEl.style.height = `${H}px`; contentEl.style.display = 'block'
-        contentEl.style.textAlign = 'left'; contentEl.style.columnRule = isSpread ? '1px solid transparent' : 'none'
+        contentEl.style.textAlign = 'left'; contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
         const step = W + gap; if (step <= 0) return
         const oldStep = stepRef.current > 0 ? stepRef.current : step; const oldLeft = scroller.scrollLeft
         stepRef.current = step; setPageWidth(W); setPageHeight(H)
-        const pages = Math.max(1, Math.ceil((scroller.scrollWidth + gap) / step)); setChapterTotalPages(pages)
+        const pages = Math.max(1, Math.ceil((scroller.scrollWidth + gap) / step)); initialMeasureDoneRef.current = true; setChapterPaginationReady(true); setChapterTotalPages(pages)
         const pendingPage = getPendingPage()
         const requestedChapterPage = pendingChapterPageRef.current
         if (requestedChapterPage != null) pendingChapterPageRef.current = null
@@ -312,17 +497,63 @@ function EpubReader() {
         const clamped = Math.max(0, Math.min(idxFromScroll, pages - 1))
         scroller.scrollTo({ left: Math.round(clamped * step), behavior: 'auto' })
         setChapterPage(prev => (prev === clamped ? prev : clamped))
-    }, [getPendingPage, isSpread])
+    }, [getPendingPage, isDualLayout])
 
     useEffect(() => {
         if (chapter?.index == null || !Number.isFinite(chapterTotalPages) || chapterTotalPages < 1) return
         setChapterPageCounts((prev) => (prev[chapter.index] === chapterTotalPages ? prev : { ...prev, [chapter.index]: chapterTotalPages }))
     }, [chapter?.index, chapterTotalPages, paginationSignature])
 
-    // S7: Single useLayoutEffect for measure (removed redundant setTimeout variant)
-    useLayoutEffect(() => { if (!loading && chapter) measure() }, [loading, chapter, measure, settings.fontSize, settings.font, layout, columnGap, hMargin, vMargin, lineHeight, letterSpacing, sidebarOpen])
-    useEffect(() => { window.addEventListener('resize', measure); return () => window.removeEventListener('resize', measure) }, [measure])
-    useEffect(() => { const frame = frameRef.current; if (!frame || typeof ResizeObserver === 'undefined') return; const ro = new ResizeObserver(() => measure()); ro.observe(frame); return () => ro.disconnect() }, [measure])
+    const clearScheduledMeasure = useCallback(() => {
+        if (scheduledMeasureCleanupRef.current) {
+            scheduledMeasureCleanupRef.current()
+            scheduledMeasureCleanupRef.current = null
+        }
+    }, [])
+
+    const scheduleMeasure = useCallback(() => {
+        clearScheduledMeasure()
+        scheduledMeasureCleanupRef.current = scheduleOnNextFrame(() => {
+            scheduledMeasureCleanupRef.current = null
+            measure()
+        })
+    }, [clearScheduledMeasure, measure])
+
+    useEffect(() => clearScheduledMeasure, [clearScheduledMeasure])
+
+    useEffect(() => {
+        if (loading || !chapter) {
+            clearScheduledMeasure()
+            initialMeasureDoneRef.current = false
+            setChapterPaginationReady(false)
+            return undefined
+        }
+
+        clearScheduledMeasure()
+        initialMeasureDoneRef.current = false
+        setChapterPaginationReady(false)
+
+        return scheduleAfterPaint(() => {
+            scheduleMeasure()
+        })
+    }, [chapter, clearScheduledMeasure, loading, scheduleMeasure])
+
+    useEffect(() => {
+        if (typeof ResizeObserver !== 'undefined') return undefined
+        window.addEventListener('resize', scheduleMeasure)
+        return () => window.removeEventListener('resize', scheduleMeasure)
+    }, [scheduleMeasure])
+
+    useEffect(() => {
+        const frame = frameRef.current
+        if (!frame || typeof ResizeObserver === 'undefined') return undefined
+        const ro = new ResizeObserver(() => {
+            if (!initialMeasureDoneRef.current) return
+            scheduleMeasure()
+        })
+        ro.observe(frame)
+        return () => ro.disconnect()
+    }, [scheduleMeasure])
 
     const goToPage = useCallback((page) => {
         const s = scrollerRef.current; const c = contentRef.current; if (!s || !c) return
@@ -364,15 +595,30 @@ function EpubReader() {
     }, [chapterTotalPages, getPendingPage])
 
     useEffect(() => {
-        if (loading || totalChapters <= 0 || pageWidth <= 0 || pageHeight <= 0) return
+        if (loading || !chapterPaginationReady || totalChapters <= 0 || pageWidth <= 0 || pageHeight <= 0) return
         let cancelled = false
+        let cancelScheduledWork = () => {}
         const controller = new AbortController()
 
+        const waitForTurn = (delay = 0) => new Promise((resolve) => {
+            cancelScheduledWork()
+            cancelScheduledWork = scheduleBackgroundWork(() => {
+                cancelScheduledWork = () => {}
+                resolve()
+            }, delay)
+        })
+
         const run = async () => {
+            let firstPendingChapter = true
+
             for (let index = 0; index < totalChapters; index += 1) {
                 if (cancelled) return
                 const knownPages = chapterPageCountsRef.current[index]
                 if (Number.isFinite(knownPages) && knownPages > 0) continue
+
+                await waitForTurn(firstPendingChapter ? PAGE_COUNT_START_DELAY_MS : 0)
+                firstPendingChapter = false
+                if (cancelled) return
 
                 let html = index === chapter?.index ? chapter?.html : ''
                 if (!html) {
@@ -396,10 +642,11 @@ function EpubReader() {
 
         return () => {
             cancelled = true
+            cancelScheduledWork()
             controller.abort()
             if (measureHostRef.current) measureHostRef.current.innerHTML = ''
         }
-    }, [chapter?.html, chapter?.index, id, loading, measureChapterHtml, pageHeight, pageWidth, paginationSignature, totalChapters])
+    }, [chapter?.html, chapter?.index, chapterPaginationReady, id, loading, measureChapterHtml, pageHeight, pageWidth, paginationSignature, totalChapters])
 
     const goNext = useCallback(() => { if (chapterPage < chapterTotalPages - 1) goToPage(chapterPage + 1); else if (chapter && chapterIndex < chapter.total - 1) loadChapter(chapterIndex + 1, { page: 0 }) }, [chapterPage, chapterTotalPages, chapter, chapterIndex, goToPage])
     const goPrev = useCallback(() => { if (chapterPage > 0) goToPage(chapterPage - 1); else if (chapterIndex > 0) loadChapter(chapterIndex - 1, { page: 'last' }) }, [chapterPage, chapterIndex, goToPage])
@@ -434,26 +681,6 @@ function EpubReader() {
         popup.document.close()
     }, [])
 
-    useEffect(() => {
-        if (!chapter?.html) {
-            setDebugInfo(null)
-            return
-        }
-
-        const firstImgSrc = chapter.html.match(FIRST_IMG_SRC_RE)?.[1] || ''
-        const firstFontUrl = chapter.html.match(FIRST_FONT_URL_RE)?.[1] || ''
-        const snapshot = {
-            chapterIndex,
-            chapterTitle: chapter.title,
-            fontMode,
-            useEmbeddedFonts,
-            firstImgSrc,
-            firstFontUrl,
-            htmlHasAssetUrl: chapter.html.includes('/api/books/') || chapter.html.includes('http://127.0.0.1:8000/api/books/'),
-        }
-        setDebugInfo((prev) => ({ ...prev, ...snapshot }))
-        console.log('[epub-debug] html', snapshot)
-    }, [chapter, chapterIndex, fontMode, useEmbeddedFonts])
 
     useEffect(() => {
         if (!chapter || loading) return
@@ -462,34 +689,16 @@ function EpubReader() {
         const contentEl = contentRef.current
         if (!contentEl) return
 
-        const scheduleMeasure = (delay = 0) => {
+        const scheduleDelayedMeasure = (delay = 0) => {
             const timer = window.setTimeout(() => {
                 timers.delete(timer)
-                measure()
+                scheduleMeasure()
             }, delay)
             timers.add(timer)
         }
 
-        const updateDomSnapshot = () => {
-            const firstImg = contentEl.querySelector('img')
-            const domSnapshot = {
-                domFirstImgSrc: firstImg?.getAttribute('src') || firstImg?.currentSrc || '',
-                domFirstImgLoaded: !!firstImg && firstImg.complete && firstImg.naturalWidth > 0,
-                domFirstImgWidth: firstImg?.naturalWidth || 0,
-                fontReady: typeof document !== 'undefined' && document.fonts ? document.fonts.check('16px "\uBC14\uD0D5"') : null,
-            }
-            setDebugInfo((prev) => ({ ...prev, ...domSnapshot }))
-            console.log('[epub-debug] dom', domSnapshot)
-        }
-
-        const snapshotTimer = window.setTimeout(() => {
-            timers.delete(snapshotTimer)
-            updateDomSnapshot()
-        }, 400)
-        timers.add(snapshotTimer)
-
         const images = Array.from(contentEl.querySelectorAll('img'))
-        const onAssetSettled = () => scheduleMeasure(0)
+        const onAssetSettled = () => scheduleDelayedMeasure(0)
         for (const img of images) {
             if (img.complete) continue
             img.addEventListener('load', onAssetSettled)
@@ -497,12 +706,12 @@ function EpubReader() {
         }
 
         if (typeof document !== 'undefined' && document.fonts?.ready) {
-            document.fonts.ready.then(() => scheduleMeasure(0)).catch(() => {})
+            document.fonts.ready.then(() => scheduleDelayedMeasure(0)).catch(() => {})
         }
 
-        scheduleMeasure(0)
-        scheduleMeasure(250)
-        scheduleMeasure(800)
+        scheduleDelayedMeasure(0)
+        scheduleDelayedMeasure(250)
+        scheduleDelayedMeasure(800)
 
         return () => {
             for (const timer of timers) window.clearTimeout(timer)
@@ -511,7 +720,7 @@ function EpubReader() {
                 img.removeEventListener('error', onAssetSettled)
             }
         }
-    }, [chapter?.html, loading, fontMode, measure])
+    }, [chapter?.html, loading, fontMode, scheduleMeasure])
 
     useEffect(() => {
         const contentEl = contentRef.current
@@ -531,8 +740,181 @@ function EpubReader() {
         return () => contentEl.removeEventListener('click', onClick)
     }, [chapter?.index, openEpubImageInWindow])
 
-    return (
-        <div className="readerRoot h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}>
+    useEffect(() => {
+        if (loading) return
+        const handleSelectionChange = () => {
+            const nextSelection = getSelectionSnapshot(contentRef.current)
+            setSelectionSnapshot(nextSelection)
+        }
+        document.addEventListener('selectionchange', handleSelectionChange)
+        return () => document.removeEventListener('selectionchange', handleSelectionChange)
+    }, [loading, chapter?.index, chapter?.html, chapterPage])
+
+    useEffect(() => {
+        setSelectionSnapshot(null)
+        clearCurrentSelection()
+    }, [chapter?.index, chapterPage, searchOpen, annotationsOpen])
+
+    useEffect(() => {
+        const root = contentRef.current
+        if (!root || loading) return
+
+        clearSearchHighlights(root)
+        if (shouldRenderSearchHighlight) {
+            clearAnnotationHighlights(root)
+            const pendingResult = pendingSearchResultRef.current
+            const targetIndex = pendingResult && pendingResult.chapter_index === chapter?.index
+                ? (pendingResult.chapter_match_index ?? 0)
+                : activeChapterMatchIndex
+            if (targetIndex == null) return
+            const target = highlightSearchMatchInElement(root, searchQuery, targetIndex)
+            if (target) scrollSearchMarkIntoView(target)
+            if (pendingResult && pendingResult.chapter_index === chapter?.index) {
+                pendingSearchResultRef.current = null
+            }
+            return
+        }
+
+        highlightAnnotationsInElement(root, currentChapterAnnotations)
+    }, [activeChapterMatchIndex, chapter?.html, chapter?.index, currentChapterAnnotations, loading, searchQuery, shouldRenderSearchHighlight])
+
+    useEffect(() => {
+        const root = contentRef.current
+        if (!root || loading || shouldRenderSearchHighlight || !activeAnnotationId) return
+        const target = activateAnnotationHighlight(root, activeAnnotationId)
+        if (target) scrollAnnotationIntoView(target)
+    }, [activeAnnotationId, chapter?.html, chapter?.index, chapterPage, currentChapterAnnotations, loading, shouldRenderSearchHighlight])
+
+    const handleSearchResultClick = useCallback((result) => {
+        setAnnotationsOpen(false)
+        setActiveAnnotationId(null)
+        setActiveSearchIndex(result.index)
+        const chapterMatchIndex = Number.isFinite(result.chapter_match_index) ? result.chapter_match_index : 0
+        if (result.chapter_index == null || result.chapter_index === chapterIndex) {
+            pendingSearchResultRef.current = null
+            setActiveChapterMatchIndex(chapterMatchIndex)
+            return
+        }
+        pendingSearchResultRef.current = result
+        setActiveChapterMatchIndex(chapterMatchIndex)
+        loadChapter(result.chapter_index, { page: 0 })
+    }, [chapterIndex])
+
+    const updateAnnotationItem = useCallback(async (annotationId, patch) => {
+        const res = await fetch(`${API_ROOT}/annotations/${annotationId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patch),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const updated = await res.json()
+        setAnnotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+        if (activeAnnotationId === updated.id) setActiveAnnotationId(updated.id)
+        return updated
+    }, [activeAnnotationId, tt])
+
+    const createAnnotation = useCallback(async (kind) => {
+        if (!selectionSnapshot) return
+
+        let noteText = null
+        if (kind === 'note') {
+            const rawNote = window.prompt(tt('addNoteForSelectionPrompt'), '')
+            if (rawNote == null) return
+            noteText = rawNote.trim()
+            if (!noteText) return
+        }
+
+        try {
+            const res = await fetch(`${API}/${id}/annotations`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind,
+                    locator: `chapter:${chapterIndex}:page:${chapterPage}`,
+                    page: chapterPage,
+                    chapter_index: chapterIndex,
+                    chapter_title: chapter?.title || null,
+                    start_offset: selectionSnapshot.startOffset,
+                    end_offset: selectionSnapshot.endOffset,
+                    selected_text: selectionSnapshot.selectedText,
+                    note_text: noteText,
+                    color: getDefaultAnnotationColor(kind),
+                    snippet: selectionSnapshot.snippet,
+                }),
+            })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const created = await res.json()
+            setAnnotations((prev) => [created, ...prev])
+            setAnnotationsOpen(true)
+            setSearchOpen(false)
+            setActiveSearchIndex(null)
+            setActiveChapterMatchIndex(null)
+            pendingSearchResultRef.current = null
+            setActiveAnnotationId(created.id)
+            setSelectionSnapshot(null)
+            clearCurrentSelection()
+        } catch (err) {
+            console.error('Failed to create annotation', err)
+            window.alert(tt('annotationSaveFailed'))
+        }
+    }, [chapter?.title, chapterIndex, chapterPage, id, selectionSnapshot, tt])
+
+    const handleEditAnnotation = useCallback(async (annotation) => {
+        if (annotation.kind !== 'note') return
+        const rawNote = window.prompt(tt('editNotePrompt'), annotation.note_text || '')
+        if (rawNote == null) return
+        const noteText = rawNote.trim()
+        if (!noteText) return
+        try {
+            await updateAnnotationItem(annotation.id, { note_text: noteText })
+        } catch (err) {
+            console.error('Failed to update annotation', err)
+            window.alert(tt('annotationUpdateFailed'))
+        }
+    }, [tt, updateAnnotationItem])
+
+    const handleCycleAnnotationColor = useCallback(async (annotation) => {
+        try {
+            await updateAnnotationItem(annotation.id, { color: getNextAnnotationColor(annotation.kind, annotation.color) })
+        } catch (err) {
+            console.error('Failed to update annotation color', err)
+            window.alert(tt('annotationColorUpdateFailed'))
+        }
+    }, [tt, updateAnnotationItem])
+
+    const handleDeleteAnnotation = useCallback(async (annotation) => {
+        const confirmed = window.confirm(tt('deleteAnnotationConfirm'))
+        if (!confirmed) return
+
+        try {
+            const res = await fetch(`${API_ROOT}/annotations/${annotation.id}`, { method: 'DELETE' })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            setAnnotations((prev) => prev.filter((item) => item.id !== annotation.id))
+            if (activeAnnotationId === annotation.id) setActiveAnnotationId(null)
+        } catch (err) {
+            console.error('Failed to delete annotation', err)
+            window.alert(tt('annotationDeleteFailed'))
+        }
+    }, [activeAnnotationId, tt])
+
+    const handleAnnotationClick = useCallback((annotation) => {
+        setSearchOpen(false)
+        setActiveSearchIndex(null)
+        setActiveChapterMatchIndex(null)
+        pendingSearchResultRef.current = null
+        setActiveAnnotationId(annotation.id)
+
+        if (annotation.chapter_index != null && annotation.chapter_index !== chapterIndex) {
+            loadChapter(annotation.chapter_index, { page: Number.isFinite(annotation.page) ? annotation.page : 0 })
+            return
+        }
+
+        if (Number.isFinite(annotation.page)) {
+            goToPage(annotation.page)
+        }
+    }, [chapterIndex, goToPage])
+
+    return (        <div className="readerRoot h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}>
 
             <div className="reader-ui shrink-0 flex items-center justify-between px-6 py-2.5" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
                 <div className="flex items-center gap-3">
@@ -542,6 +924,8 @@ function EpubReader() {
                     <span className="text-sm opacity-60 truncate max-w-[18rem]" style={{ color: themeStyle.text }}>{bookTitle}</span>
                 </div>
                 <div className="flex items-center gap-2">
+                    <button onClick={() => { setSearchOpen((open) => !open); setAnnotationsOpen(false); setActiveAnnotationId(null) }} title={tt('search')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: searchOpen ? '#5c7cfa' : themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.35-4.35" /></svg></button>
+                    <button onClick={() => { setAnnotationsOpen((open) => !open); setSearchOpen(false) }} title={tt('annotations')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: annotationsOpen ? '#ff922b' : themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z" /></svg></button>
                     <button onClick={addBookmark} title={tt('bookmark')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg></button>
                     <button onClick={() => setSidebarOpen(o => !o)} title={tt('toc')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="15" y2="12" /><line x1="3" y1="18" x2="18" y2="18" /></svg></button>
                     <ReaderToolbar settings={settings} readerType="epub" />
@@ -572,6 +956,9 @@ function EpubReader() {
                 )}
 
                 <div className="flex-1 relative min-h-0">
+                    <ReaderSearchPanel open={searchOpen} themeStyle={themeStyle} query={searchDraft} submittedQuery={searchQuery} loading={searchLoading} results={searchResults} activeIndex={activeSearchIndex} onQueryChange={handleSearchQueryChange} onSubmit={handleSearchSubmit} onClose={() => setSearchOpen(false)} onResultClick={handleSearchResultClick} tt={tt} />
+                    <ReaderAnnotationsPanel open={annotationsOpen} themeStyle={themeStyle} loading={annotationsLoading} annotations={annotations} activeAnnotationId={activeAnnotationId} onClose={() => setAnnotationsOpen(false)} onItemClick={handleAnnotationClick} onDeleteItem={handleDeleteAnnotation} onEditItem={handleEditAnnotation} onColorItem={handleCycleAnnotationColor} tt={tt} lang={lang} />
+                    <ReaderSelectionMenu selection={selectionSnapshot} themeStyle={themeStyle} onHighlight={() => createAnnotation('highlight')} onNote={() => createAnnotation('note')} onClear={() => { setSelectionSnapshot(null); clearCurrentSelection() }} tt={tt} />
                     <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{(chapterPage > 0 || chapterIndex > 0) && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
                     <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{(chapterPage < chapterTotalPages - 1 || (chapter && chapterIndex < chapter.total - 1)) && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
 
@@ -579,29 +966,16 @@ function EpubReader() {
 
                     <div ref={frameRef} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
                         {loading ? (
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}><div className="text-sm opacity-60">Loading...</div></div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}><div className="text-sm opacity-60">{tt('loading')}</div></div>
                         ) : chapter ? (
                             <div key={chapter?.index ?? 0} ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
                                 <div ref={contentRef} className="select-text epub-content [&_p]:mb-4 [&_p]:break-inside-avoid [&_h1]:text-2xl [&_h1]:mb-5 [&_h1]:break-after-avoid [&_h2]:text-xl [&_h2]:mb-4 [&_h2]:break-after-avoid [&_h3]:text-lg [&_h3]:mb-3 [&_h3]:break-after-avoid [&_img]:max-w-full [&_img]:max-h-[50vh] [&_img]:rounded-lg [&_img]:mx-auto [&_img]:my-4 [&_img]:break-inside-avoid [&_img]:cursor-zoom-in [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:opacity-80 [&_blockquote]:break-inside-avoid"
-                                    style={{ height: '100%', boxSizing: 'border-box', display: 'block', backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isSpread ? 2 : 1, columnGap: `${columnGap}px`, columnFill: 'auto', columnRule: isSpread ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
+                                    style={{ height: '100%', boxSizing: 'border-box', display: 'block', backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${columnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
                                     dangerouslySetInnerHTML={{ __html: chapter.html }}
                                 />
                             </div>
                         ) : null}
                     </div>
-                    {debugInfo && (
-                        <div
-                            className="reader-ui absolute bottom-4 right-4 z-30 max-w-[26rem] rounded-lg border px-3 py-2 text-[10px] leading-4 shadow-lg"
-                            style={{ borderColor: themeStyle.border, backgroundColor: `${themeStyle.card}ee`, color: themeStyle.text }}
-                        >
-                            <div className="font-semibold opacity-70">EPUB Debug</div>
-                            <div>chapter: {debugInfo.chapterIndex} / mode: {debugInfo.fontMode}</div>
-                            <div>embedded: {String(debugInfo.useEmbeddedFonts)} / fontReady: {String(debugInfo.fontReady)}</div>
-                            <div>imgLoaded: {String(debugInfo.domFirstImgLoaded)} / imgWidth: {debugInfo.domFirstImgWidth || 0}</div>
-                            <div className="truncate">img: {debugInfo.domFirstImgSrc || debugInfo.firstImgSrc || '-'}</div>
-                            <div className="truncate">font: {debugInfo.firstFontUrl || '-'}</div>
-                        </div>
-                    )}
                 </div>
             </div>
 
@@ -616,6 +990,17 @@ function EpubReader() {
 }
 
 export default EpubReader
+
+
+
+
+
+
+
+
+
+
+
 
 
 

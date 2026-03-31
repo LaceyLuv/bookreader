@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+﻿import { useState, useEffect, useCallback, useRef } from 'react'
 
 const STORAGE_KEY = 'bookreader_progress'
 
@@ -15,40 +15,115 @@ function saveAllProgress(data) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
 }
 
+function calculatePercent(position, totalPages) {
+    if (totalPages <= 0) return 0
+    return Math.round(((position + 1) / totalPages) * 100)
+}
+
+function buildProgressEntry(currentPosition, totalPages, type, bookmarks) {
+    return {
+        position: currentPosition,
+        totalPages,
+        type,
+        percent: calculatePercent(currentPosition, totalPages),
+        bookmarks,
+        updatedAt: new Date().toISOString(),
+    }
+}
+
+function normalizeProgressEntry(entry, fallbackType = 'txt') {
+    const position = Number.isFinite(entry?.position) ? entry.position : 0
+    const totalPages = Number.isFinite(entry?.totalPages) && entry.totalPages > 0 ? entry.totalPages : 1
+    const type = typeof entry?.type === 'string' ? entry.type : fallbackType
+    const bookmarks = Array.isArray(entry?.bookmarks) ? entry.bookmarks : []
+    return {
+        position,
+        totalPages,
+        type,
+        percent: Number.isFinite(entry?.percent) ? entry.percent : calculatePercent(position, totalPages),
+        bookmarks,
+        updatedAt: entry?.updatedAt || new Date().toISOString(),
+    }
+}
+
+function resolveStoredEntry(allProgress, bookId, legacyId) {
+    if (bookId && allProgress[bookId]) {
+        return { entry: allProgress[bookId], sourceKey: bookId }
+    }
+    if (legacyId && allProgress[legacyId]) {
+        return { entry: allProgress[legacyId], sourceKey: legacyId }
+    }
+    return { entry: null, sourceKey: null }
+}
+
+function persistProgressEntry(bookId, legacyId, entry) {
+    if (!bookId) return
+    const all = getAllProgress()
+    all[bookId] = entry
+    if (legacyId && legacyId !== bookId && Object.prototype.hasOwnProperty.call(all, legacyId)) {
+        delete all[legacyId]
+    }
+    saveAllProgress(all)
+}
+
 /**
  * Hook for managing reading progress for a specific book.
  */
-export function useReadingProgress(bookId, { totalPages = 1, type = 'txt' } = {}) {
+export function useReadingProgress(bookId, { totalPages = 1, type = 'txt', legacyId = null } = {}) {
     const [currentPosition, setCurrentPosition] = useState(0)
     const [bookmarks, setBookmarks] = useState([])
     const [resumePrompt, setResumePrompt] = useState(null)
+    const latestEntryRef = useRef(buildProgressEntry(0, totalPages, type, []))
 
     useEffect(() => {
+        setCurrentPosition(0)
+        setBookmarks([])
+        setResumePrompt(null)
+        latestEntryRef.current = buildProgressEntry(0, totalPages, type, [])
+
         if (!bookId) return
         const all = getAllProgress()
-        const saved = all[bookId]
-        if (saved && saved.position > 0) {
+        const { entry, sourceKey } = resolveStoredEntry(all, bookId, legacyId)
+        if (!entry) return
+
+        const normalized = normalizeProgressEntry(entry, type)
+        latestEntryRef.current = normalized
+        setBookmarks(normalized.bookmarks)
+        if (normalized.position > 0) {
             setResumePrompt({
-                position: saved.position,
-                percent: totalPages > 0 ? Math.round((saved.position / totalPages) * 100) : 0,
+                position: normalized.position,
+                percent: calculatePercent(normalized.position, totalPages),
             })
-            setBookmarks(saved.bookmarks || [])
         }
-    }, [bookId])
+
+        if (sourceKey && sourceKey !== bookId) {
+            persistProgressEntry(bookId, legacyId, normalized)
+        }
+    }, [bookId, legacyId])
+
+    useEffect(() => {
+        latestEntryRef.current = buildProgressEntry(currentPosition, totalPages, type, bookmarks)
+    }, [currentPosition, totalPages, type, bookmarks])
 
     useEffect(() => {
         if (!bookId) return
-        const all = getAllProgress()
-        all[bookId] = {
-            position: currentPosition,
-            totalPages,
-            type,
-            percent: totalPages > 0 ? Math.round((currentPosition / totalPages) * 100) : 0,
-            bookmarks: bookmarks,
-            updatedAt: new Date().toISOString(),
+        const timer = window.setTimeout(() => {
+            persistProgressEntry(bookId, legacyId, latestEntryRef.current)
+        }, 180)
+        return () => window.clearTimeout(timer)
+    }, [bookId, legacyId, currentPosition, totalPages, type, bookmarks])
+
+    useEffect(() => {
+        if (!bookId) return
+        const flush = () => {
+            persistProgressEntry(bookId, legacyId, latestEntryRef.current)
         }
-        saveAllProgress(all)
-    }, [bookId, currentPosition, totalPages, type, bookmarks])
+        window.addEventListener('pagehide', flush)
+        return () => {
+            window.removeEventListener('pagehide', flush)
+            flush()
+        }
+    }, [bookId, legacyId])
 
     const resumeReading = useCallback(() => {
         if (resumePrompt) {
@@ -78,7 +153,7 @@ export function useReadingProgress(bookId, { totalPages = 1, type = 'txt' } = {}
         setCurrentPosition(position)
     }, [])
 
-    const percent = totalPages > 0 ? Math.round(((currentPosition + 1) / totalPages) * 100) : 0
+    const percent = calculatePercent(currentPosition, totalPages)
 
     return {
         currentPosition, setCurrentPosition,
@@ -91,9 +166,10 @@ export function useReadingProgress(bookId, { totalPages = 1, type = 'txt' } = {}
 /**
  * Get reading progress summary for a book (used by Dashboard).
  */
-export function getBookProgress(bookId) {
+export function getBookProgress(bookId, legacyId = null) {
     const all = getAllProgress()
-    const saved = all[bookId]
+    const { entry } = resolveStoredEntry(all, bookId, legacyId)
+    const saved = entry ? normalizeProgressEntry(entry) : null
     if (!saved || saved.position === 0) return null
     return {
         percent: saved.percent || 0,

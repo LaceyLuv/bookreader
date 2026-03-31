@@ -1,6 +1,8 @@
 import hashlib
 import mimetypes
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -15,6 +17,7 @@ router = APIRouter(prefix="/api/fonts", tags=["fonts"])
 ALLOWED_FONT_EXTS = {".ttf", ".otf", ".woff", ".woff2"}
 FONT_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _safe_name(name: str) -> str:
@@ -58,7 +61,7 @@ async def list_fonts():
     return [_font_meta(path) for path in _list_font_files()]
 
 
-@router.post("")
+@router.post("", response_model=FontMeta)
 async def upload_font(file: UploadFile = File(...)):
     FONTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -67,22 +70,39 @@ async def upload_font(file: UploadFile = File(...)):
     if ext not in ALLOWED_FONT_EXTS:
         raise HTTPException(status_code=400, detail="Unsupported font type. Allowed: .ttf, .otf, .woff, .woff2")
 
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Empty font file")
+    temp_fd, temp_name = tempfile.mkstemp(prefix="font-upload-", suffix=ext, dir=FONTS_DIR)
+    temp_path = Path(temp_name)
+    hasher = hashlib.md5()
+    total_bytes = 0
 
-    font_id = hashlib.md5(content).hexdigest()[:12]
-    existing = _find_font_path(font_id)
-    if existing:
-        return _font_meta(existing)
+    try:
+        with os.fdopen(temp_fd, "wb") as temp_file:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                hasher.update(chunk)
+                temp_file.write(chunk)
 
-    base_name = _safe_name(Path(original_name).stem)
-    saved_name = f"{font_id}-{base_name}{ext}"
-    destination = FONTS_DIR / saved_name
-    with open(destination, "wb") as f:
-        f.write(content)
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="Empty font file")
 
-    return _font_meta(destination)
+        font_id = hasher.hexdigest()[:12]
+        existing = _find_font_path(font_id)
+        if existing:
+            temp_path.unlink(missing_ok=True)
+            return _font_meta(existing)
+
+        base_name = _safe_name(Path(original_name).stem)
+        saved_name = f"{font_id}-{base_name}{ext}"
+        destination = FONTS_DIR / saved_name
+        temp_path.replace(destination)
+        return _font_meta(destination)
+    finally:
+        await file.close()
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
 
 @router.get("/{font_id}")

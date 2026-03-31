@@ -1,256 +1,319 @@
-import hashlib
-import json
+﻿import json
+import os
 import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 
-from models import BookMeta, TxtContent, EpubToc, EpubChapter, ZipImageList
+from models import BookInfo, BookMeta, BookMetaUpdate, BookSearchResponse, EpubChapter, EpubToc, TxtContent, ZipImageList
 from paths import BOOKS_DIR
-from services.txt_service import read_txt_file
-from services.epub_service import get_epub_toc, get_epub_chapter, get_epub_asset
-from services.zip_service import list_zip_images, get_zip_image
+from services.annotation_store import delete_book_annotations, get_annotation_counts_by_book
+from services.epub_service import clear_epub_caches, get_epub_asset, get_epub_chapter, get_epub_toc
+from services.library_store import add_book_record, delete_book_record, get_book_path, get_book_record, list_book_records, prepare_upload, touch_book, update_book_record
+from services.search_service import clear_search_caches, prewarm_search_cache, search_epub_file, search_txt_file
+from services.txt_service import clear_txt_caches, read_txt_file
+from services.zip_service import get_zip_image, list_zip_images
 
-router = APIRouter(prefix="/api/books", tags=["books"])
+router = APIRouter(prefix='/api/books', tags=['books'])
 
-ALLOWED_EXTENSIONS = {"txt", "epub", "zip"}
+ALLOWED_EXTENSIONS = {'txt', 'epub', 'zip'}
+EPUB_DEBUG_ENABLED = os.getenv('BOOKREADER_EPUB_DEBUG') == '1'
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
-EPUB_DEBUG_LOG_PATH = Path(tempfile.gettempdir()) / "bookreader_epub_debug.log"
-HTML_IMG_SRC_RE = re.compile(r"<img[^>]+src=[\"']([^\"']+)[\"']", re.IGNORECASE)
-HTML_FONT_URL_RE = re.compile(r"url\((?:[\"']?)([^)\"']+)(?:[\"']?)\)", re.IGNORECASE)
+EPUB_DEBUG_LOG_PATH = Path(tempfile.gettempdir()) / 'bookreader_epub_debug.log'
+HTML_IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+HTML_FONT_URL_RE = re.compile(r'url\((?:["\']?)([^)"\']+)(?:["\']?)\)', re.IGNORECASE)
 
 
 def _append_epub_debug(event: str, **fields):
+    if not EPUB_DEBUG_ENABLED:
+        return
     payload = {
-        "ts": datetime.now().isoformat(timespec="seconds"),
-        "event": event,
+        'ts': datetime.now().isoformat(timespec='seconds'),
+        'event': event,
         **fields,
     }
     try:
-        with EPUB_DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        with EPUB_DEBUG_LOG_PATH.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + '\n')
     except OSError:
         pass
 
 
 def _first_html_match(pattern, html: str | None) -> str:
     if not html:
-        return ""
+        return ''
     match = pattern.search(html)
-    return match.group(1) if match else ""
+    return match.group(1) if match else ''
 
 
-def _get_file_type(filename: str) -> str:
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext in ALLOWED_EXTENSIONS:
-        return ext
-    return ""
+def _book_meta_from_record(record: dict, annotation_count: int = 0) -> BookMeta:
+    return BookMeta(**record, annotation_count=annotation_count)
 
 
-def _make_id(filename: str) -> str:
-    return hashlib.md5(filename.encode()).hexdigest()[:12]
+def _book_info_from_record(record: dict, annotation_count: int = 0) -> BookInfo:
+    payload = dict(record)
+    payload['path'] = str(get_book_path(record))
+    payload['annotation_count'] = annotation_count
+    return BookInfo(**payload)
 
 
-def _get_book_meta(filepath: Path) -> BookMeta:
-    stat = filepath.stat()
-    filename = filepath.name
-    return BookMeta(
-        id=_make_id(filename),
-        title=filepath.stem,
-        file_type=_get_file_type(filename),
-        filename=filename,
-        size=stat.st_size,
-        upload_date=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-    )
+def _clear_related_caches(file_type: str) -> None:
+    if file_type == 'txt':
+        clear_txt_caches()
+        clear_search_caches()
+    elif file_type == 'epub':
+        clear_epub_caches()
+        clear_search_caches()
 
 
-def _find_book_path(book_id: str) -> Path:
-    """Look up a book by ID using a cached directory index (O(1) after first scan)."""
-    idx = _get_book_index()
-    path = idx.get(book_id)
-    if not path or not path.exists():
-        _invalidate_book_index()
-        idx = _get_book_index()
-        path = idx.get(book_id)
-    if not path:
-        raise HTTPException(status_code=404, detail="Book not found")
-    return path
-
-
-# ─── In-memory book index ───────────────────────────────────────
-
-_book_index: dict[str, Path] = {}
-_book_index_mtime: float = 0.0
-
-
-def _get_book_index() -> dict[str, Path]:
-    global _book_index, _book_index_mtime
+async def _save_upload_file(file: UploadFile, destination: Path) -> None:
     try:
-        current_mtime = BOOKS_DIR.stat().st_mtime
-    except FileNotFoundError:
-        return {}
-    if current_mtime != _book_index_mtime:
-        _book_index = {}
-        for f in BOOKS_DIR.iterdir():
-            if f.is_file() and _get_file_type(f.name):
-                _book_index[_make_id(f.name)] = f
-        _book_index_mtime = current_mtime
-    return _book_index
+        with destination.open('wb') as f:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                f.write(chunk)
+    except Exception:
+        try:
+            destination.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        await file.close()
 
 
-def _invalidate_book_index():
-    global _book_index_mtime
-    _book_index_mtime = 0.0
+def _get_record_or_404(book_id: str) -> dict:
+    record = get_book_record(book_id)
+    if not record:
+        raise HTTPException(status_code=404, detail='Book not found')
+    return record
 
 
-# ─── Library CRUD ───────────────────────────────────────────────
+def _resolve_book_file(book_id: str) -> tuple[dict, Path]:
+    record = _get_record_or_404(book_id)
+    path = get_book_path(record)
+    if not path.exists():
+        _clear_related_caches(record['file_type'])
+        delete_book_record(record['id'])
+        delete_book_annotations(record['id'])
+        raise HTTPException(status_code=404, detail='Book file not found')
+    return record, path
 
-@router.get("", response_model=List[BookMeta])
+
+def _touch_book_open(record: dict) -> dict:
+    return touch_book(record['id'], opened=True, read=True) or record
+
+
+def _schedule_search_prewarm(background_tasks: BackgroundTasks | None, path: Path, file_type: str) -> None:
+    if background_tasks is None or file_type not in {'txt', 'epub'}:
+        return
+    background_tasks.add_task(prewarm_search_cache, str(path), file_type)
+
+
+@router.get('', response_model=List[BookMeta])
 async def list_books():
-    """List all books in the library."""
-    BOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    books = []
-    for f in sorted(BOOKS_DIR.iterdir()):
-        if f.is_file() and _get_file_type(f.name):
-            books.append(_get_book_meta(f))
-    return books
+    counts = get_annotation_counts_by_book()
+    return [_book_meta_from_record(record, counts.get(record['id'], 0)) for record in list_book_records()]
 
 
-@router.post("", response_model=BookMeta)
+@router.post('', response_model=BookMeta)
 async def upload_book(file: UploadFile = File(...)):
-    """Upload a new book file."""
-    file_type = _get_file_type(file.filename)
-    if not file_type:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
+    try:
+        upload_plan = prepare_upload(file.filename)
+    except ValueError:
+        allowed = ', '.join(sorted(ALLOWED_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f'Unsupported file type. Allowed: {allowed}') from None
 
     BOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = BOOKS_DIR / file.filename
+    destination = BOOKS_DIR / upload_plan['stored_filename']
 
-    content = await file.read()
-    with open(dest, "wb") as f:
-        f.write(content)
+    await _save_upload_file(file, destination)
+    try:
+        record = add_book_record(
+            book_id=upload_plan['id'],
+            filename=upload_plan['filename'],
+            stored_filename=upload_plan['stored_filename'],
+        )
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
-    _invalidate_book_index()
-    return _get_book_meta(dest)
+    _clear_related_caches(upload_plan['file_type'])
+    return _book_meta_from_record(record, 0)
 
 
-@router.delete("/{book_id}")
+@router.get('/{book_id}', response_model=BookInfo)
+async def get_book_info(book_id: str):
+    record = _get_record_or_404(book_id)
+    counts = get_annotation_counts_by_book()
+    return _book_info_from_record(record, counts.get(record['id'], 0))
+
+
+@router.patch('/{book_id}', response_model=BookMeta)
+async def patch_book(book_id: str, payload: BookMetaUpdate):
+    try:
+        record = update_book_record(book_id, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not record:
+        raise HTTPException(status_code=404, detail='Book not found')
+    counts = get_annotation_counts_by_book()
+    return _book_meta_from_record(record, counts.get(record['id'], 0))
+
+
+@router.post('/{book_id}/open', response_model=BookMeta)
+async def mark_book_open(book_id: str, background_tasks: BackgroundTasks):
+    record, path = _resolve_book_file(book_id)
+    record = touch_book(record['id'], opened=True, read=True)
+    if not record:
+        raise HTTPException(status_code=404, detail='Book not found')
+    _schedule_search_prewarm(background_tasks, path, record['file_type'])
+    counts = get_annotation_counts_by_book()
+    return _book_meta_from_record(record, counts.get(record['id'], 0))
+
+
+@router.delete('/{book_id}')
 async def delete_book(book_id: str):
-    """Delete a book from the library."""
-    path = _find_book_path(book_id)
-    path.unlink()
-    _invalidate_book_index()
-    return {"detail": "Book deleted"}
+    record = _get_record_or_404(book_id)
+    path = get_book_path(record)
+    file_type = record['file_type']
+    if path.exists():
+        path.unlink()
+    delete_book_record(record['id'])
+    delete_book_annotations(record['id'])
+    _clear_related_caches(file_type)
+    return {'detail': 'Book deleted'}
 
 
-# ─── TXT Reader ─────────────────────────────────────────────────
-
-@router.get("/{book_id}/content", response_model=TxtContent)
-async def get_txt_content(book_id: str):
-    """Get the text content of a TXT file with auto-detected encoding."""
-    path = _find_book_path(book_id)
-    if _get_file_type(path.name) != "txt":
-        raise HTTPException(status_code=400, detail="Not a TXT file")
+@router.get('/{book_id}/content', response_model=TxtContent)
+async def get_txt_content(book_id: str, background_tasks: BackgroundTasks):
+    record, path = _resolve_book_file(book_id)
+    if record['file_type'] != 'txt':
+        raise HTTPException(status_code=400, detail='Not a TXT file')
+    _touch_book_open(record)
+    _schedule_search_prewarm(background_tasks, path, record['file_type'])
     result = read_txt_file(str(path))
     return TxtContent(**result)
 
 
-# ─── EPUB Reader ────────────────────────────────────────────────
-
-@router.get("/{book_id}/toc", response_model=EpubToc)
-async def get_toc(book_id: str):
-    """Get the table of contents of an EPUB file."""
-    path = _find_book_path(book_id)
-    if _get_file_type(path.name) != "epub":
-        raise HTTPException(status_code=400, detail="Not an EPUB file")
+@router.get('/{book_id}/toc', response_model=EpubToc)
+async def get_toc(book_id: str, background_tasks: BackgroundTasks):
+    record, path = _resolve_book_file(book_id)
+    if record['file_type'] != 'epub':
+        raise HTTPException(status_code=400, detail='Not an EPUB file')
+    _touch_book_open(record)
+    _schedule_search_prewarm(background_tasks, path, record['file_type'])
     result = get_epub_toc(str(path))
     return EpubToc(**result)
 
 
-@router.get("/{book_id}/chapter/{chapter_index}", response_model=EpubChapter)
-async def get_chapter(book_id: str, chapter_index: int, request: Request):
-    """Get the HTML content of a specific EPUB chapter."""
-    path = _find_book_path(book_id)
-    if _get_file_type(path.name) != "epub":
-        raise HTTPException(status_code=400, detail="Not an EPUB file")
-    asset_base_url = f"{str(request.base_url).rstrip('/')}/api/books/{book_id}/asset"
-    _append_epub_debug(
-        "chapter_request",
-        book_id=book_id,
-        chapter_index=chapter_index,
-        asset_base_url=asset_base_url,
-        origin=request.headers.get("origin"),
-        referer=request.headers.get("referer"),
-    )
-    result = get_epub_chapter(str(path), chapter_index, book_id, asset_base_url=asset_base_url)
-    _append_epub_debug(
-        "chapter_response",
-        book_id=book_id,
-        chapter_index=chapter_index,
-        title=result.get("title"),
-        html_len=len(result.get("html", "")),
-        first_img_src=_first_html_match(HTML_IMG_SRC_RE, result.get("html")),
-        first_font_url=_first_html_match(HTML_FONT_URL_RE, result.get("html")),
-    )
+@router.get('/{book_id}/chapter/{chapter_index}', response_model=EpubChapter)
+async def get_chapter(book_id: str, chapter_index: int, request: Request, background_tasks: BackgroundTasks):
+    record, path = _resolve_book_file(book_id)
+    if record['file_type'] != 'epub':
+        raise HTTPException(status_code=400, detail='Not an EPUB file')
+
+    _touch_book_open(record)
+    _schedule_search_prewarm(background_tasks, path, record['file_type'])
+    asset_base_url = f"{str(request.base_url).rstrip('/')}/api/books/{record['id']}/asset"
+    if EPUB_DEBUG_ENABLED:
+        _append_epub_debug(
+            'chapter_request',
+            book_id=record['id'],
+            chapter_index=chapter_index,
+            asset_base_url=asset_base_url,
+            origin=request.headers.get('origin'),
+            referer=request.headers.get('referer'),
+        )
+
+    result = get_epub_chapter(str(path), chapter_index, record['id'], asset_base_url=asset_base_url)
+    if EPUB_DEBUG_ENABLED:
+        _append_epub_debug(
+            'chapter_response',
+            book_id=record['id'],
+            chapter_index=chapter_index,
+            title=result.get('title'),
+            html_len=len(result.get('html', '')),
+            first_img_src=_first_html_match(HTML_IMG_SRC_RE, result.get('html')),
+            first_font_url=_first_html_match(HTML_FONT_URL_RE, result.get('html')),
+        )
     return EpubChapter(**result)
 
 
-@router.get("/{book_id}/asset/{asset_path:path}")
+@router.get('/{book_id}/asset/{asset_path:path}')
 async def get_epub_asset_file(book_id: str, asset_path: str, request: Request):
-    """Serve a single asset from an EPUB archive (image/font/css/etc)."""
-    path = _find_book_path(book_id)
-    if _get_file_type(path.name) != "epub":
-        raise HTTPException(status_code=400, detail="Not an EPUB file")
+    record, path = _resolve_book_file(book_id)
+    if record['file_type'] != 'epub':
+        raise HTTPException(status_code=400, detail='Not an EPUB file')
 
     try:
         data, media_type = get_epub_asset(str(path), asset_path)
     except FileNotFoundError:
-        _append_epub_debug(
-            "asset_missing",
-            book_id=book_id,
-            asset_path=asset_path,
-            origin=request.headers.get("origin"),
-            referer=request.headers.get("referer"),
-        )
-        raise HTTPException(status_code=404, detail="Asset not found") from None
+        if EPUB_DEBUG_ENABLED:
+            _append_epub_debug(
+                'asset_missing',
+                book_id=record['id'],
+                asset_path=asset_path,
+                origin=request.headers.get('origin'),
+                referer=request.headers.get('referer'),
+            )
+        raise HTTPException(status_code=404, detail='Asset not found') from None
 
-    _append_epub_debug(
-        "asset_response",
-        book_id=book_id,
-        asset_path=asset_path,
-        media_type=media_type,
-        size=len(data),
-        origin=request.headers.get("origin"),
-        referer=request.headers.get("referer"),
-    )
+    if EPUB_DEBUG_ENABLED:
+        _append_epub_debug(
+            'asset_response',
+            book_id=record['id'],
+            asset_path=asset_path,
+            media_type=media_type,
+            size=len(data),
+            origin=request.headers.get('origin'),
+            referer=request.headers.get('referer'),
+        )
     return Response(
         content=data,
         media_type=media_type,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={'Cache-Control': 'public, max-age=3600'},
     )
 
 
-# ─── ZIP/Comic Reader ──────────────────────────────────────────
+@router.get('/{book_id}/search', response_model=BookSearchResponse)
+async def search_book(book_id: str, q: str = Query('', min_length=0, max_length=120)):
+    record, path = _resolve_book_file(book_id)
+    query = q.strip()
+    if not query:
+        return BookSearchResponse(query='', total=0, results=[])
 
-@router.get("/{book_id}/images", response_model=ZipImageList)
+    _touch_book_open(record)
+    if record['file_type'] == 'txt':
+        result = search_txt_file(str(path), query)
+    elif record['file_type'] == 'epub':
+        result = search_epub_file(str(path), query)
+    else:
+        raise HTTPException(status_code=400, detail='Search is only supported for TXT and EPUB')
+    return BookSearchResponse(**result)
+
+
+@router.get('/{book_id}/images', response_model=ZipImageList)
 async def get_images(book_id: str):
-    """List all images in a ZIP archive."""
-    path = _find_book_path(book_id)
-    if _get_file_type(path.name) != "zip":
-        raise HTTPException(status_code=400, detail="Not a ZIP file")
+    record, path = _resolve_book_file(book_id)
+    if record['file_type'] != 'zip':
+        raise HTTPException(status_code=400, detail='Not a ZIP file')
+    _touch_book_open(record)
     result = list_zip_images(str(path))
     return ZipImageList(**result)
 
 
-@router.get("/{book_id}/image/{image_name:path}")
+@router.get('/{book_id}/image/{image_name:path}')
 async def get_image(book_id: str, image_name: str):
-    """Serve a single image from a ZIP archive."""
-    path = _find_book_path(book_id)
-    if _get_file_type(path.name) != "zip":
-        raise HTTPException(status_code=400, detail="Not a ZIP file")
+    record, path = _resolve_book_file(book_id)
+    if record['file_type'] != 'zip':
+        raise HTTPException(status_code=400, detail='Not a ZIP file')
     data, media_type = get_zip_image(str(path), image_name)
     return Response(content=data, media_type=media_type)

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react'
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { createT } from '../i18n'
 import { withThemeVars } from '../constants/themes'
 import {
@@ -25,6 +25,14 @@ const FONTS = {
 }
 
 const STORAGE_KEY = 'bookreader_settings'
+
+function persistSettings(value) {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(value))
+    } catch {
+        // Ignore storage failures and keep in-memory settings working.
+    }
+}
 
 const DEFAULTS = {
     theme: 'dark',
@@ -62,6 +70,7 @@ function loadSaved() {
             merged.zipImageScale = Number.isFinite(parsedZipScale)
                 ? Math.max(0.5, Math.min(2.5, parsedZipScale))
                 : DEFAULTS.zipImageScale
+            merged.layout = merged.layout === 'dual' || merged.layout === 'spread' ? 'dual' : 'single'
             if (safeMode) {
                 return { ...merged, theme: 'light', bgColor: SAFE_APP_BG, textColor: SAFE_APP_FG }
             }
@@ -78,10 +87,27 @@ export function useReaderSettings() {
     const [s, setS] = useState(loadSaved)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [resetToast, setResetToast] = useState(false)
+    const latestSettingsRef = useRef(s)
 
     useEffect(() => {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
+        latestSettingsRef.current = s
     }, [s])
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            persistSettings(latestSettingsRef.current)
+        }, 120)
+        return () => window.clearTimeout(timer)
+    }, [s])
+
+    useEffect(() => {
+        const flush = () => persistSettings(latestSettingsRef.current)
+        window.addEventListener('pagehide', flush)
+        return () => {
+            window.removeEventListener('pagehide', flush)
+            flush()
+        }
+    }, [])
 
     const set = useCallback((key, val) => setS(prev => ({ ...prev, [key]: val })), [])
 
@@ -92,8 +118,9 @@ export function useReaderSettings() {
 
     const resetDefaults = useCallback(() => {
         const lang = s.lang
-        setS({ ...DEFAULTS, lang })
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULTS, lang }))
+        const next = { ...DEFAULTS, lang }
+        setS(next)
+        persistSettings(next)
         setResetToast(true)
         setTimeout(() => setResetToast(false), 2500)
     }, [s.lang])

@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<body>
+<div id="root"></div>
+<pre id="out"></pre>
+<script>
+const sample = `<?xml version='1.0' encoding='utf-8'?><!DOCTYPE html><html><head><style>body{background:red} p{font-family:'Bar';color:rgb(1,2,3)} img{width:100%!important}</style></head><body><p>hello</p><img src="x"></body></html>`;
+const root = document.getElementById('root');
+root.innerHTML = sample;
+const data = {
+  rootInnerHTML: root.innerHTML,
+  rootStyleCount: root.querySelectorAll('style').length,
+  docStyleCount: document.querySelectorAll('style').length,
+  rootHeadCount: root.querySelectorAll('head').length,
+  rootBodyCount: root.querySelectorAll('body').length,
+  rootPCount: root.querySelectorAll('p').length,
+  rootImgCount: root.querySelectorAll('img').length,
+  firstPColor: getComputedStyle(root.querySelector('p')).color,
+  firstImgWidthStyle: getComputedStyle(root.querySelector('img')).width,
+};
+document.getElementById('out').textContent = JSON.stringify(data, null, 2);
+</script>
+</body>
+</html>

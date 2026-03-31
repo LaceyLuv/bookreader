@@ -3,6 +3,7 @@ import ResumeToast from './ResumeToast'
 import { THEME_PRESETS } from '../constants/themes'
 import { API_FONTS_BASE } from '../lib/apiBase'
 import { emitUserFontsUpdated } from './FontStyleInjector'
+import { readErrorDetail } from '../lib/readErrorDetail'
 
 export default function ReaderToolbar({ settings, readerType = '' }) {
     const {
@@ -114,7 +115,7 @@ export default function ReaderToolbar({ settings, readerType = '' }) {
             const formData = new FormData()
             formData.append('file', file)
             const res = await fetch(API_FONTS_BASE, { method: 'POST', body: formData })
-            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            if (!res.ok) throw new Error(await readErrorDetail(res, tt('fontUploadFailed')))
             const saved = await res.json()
             const family = `UserFont_${saved.id}`
             setFontFamily(family)
@@ -123,8 +124,8 @@ export default function ReaderToolbar({ settings, readerType = '' }) {
             emitUserFontsUpdated()
             setThemeToast(tt('fontUploaded'))
             setTimeout(() => setThemeToast(null), 1800)
-        } catch {
-            setFontError(tt('fontUploadFailed'))
+        } catch (err) {
+            setFontError(err.message || tt('fontUploadFailed'))
         } finally {
             e.target.value = ''
         }
