@@ -192,3 +192,8 @@
 - Validation:
   - `python -m compileall backend` succeeded.
   - `cmd /c npm run build` succeeded.
+
+## Performance/Size Infra Review (2026-03-31)
+- [x] Read integrated optimization plan and cross-check development/QA/operations deliverables for consistency.
+- [x] Define DevSecOps guardrails for sidecar trim, build reproducibility, artifact integrity, and desktop runtime checks.
+- [x] Update `docs/performance-size-plan.md` with infrastructure/security priorities, gates, and risk handling.
