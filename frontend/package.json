@@ -8,12 +8,15 @@
         "build": "vite build",
         "build:desktop": "vite build --configLoader runner",
         "preview": "vite preview --host 127.0.0.1 --port 5174 --strictPort",
-        "tauri": "tauri",
+        "tauri": "node scripts/tauri-cli.cjs",
         "desktop:dev": "node scripts/tauri-wrapper.cjs dev --dev-backend-python",
         "desktop:build": "npm run tauri -- build",
         "desktop:info": "npm run tauri -- info",
         "desktop:sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\backend\\build_sidecar.ps1",
-        "desktop:preflight": "npm run desktop:info && npm run build:desktop && npm run desktop:build"
+        "desktop:preflight": "npm run desktop:info && npm run build:desktop && npm run desktop:build",
+        "perf:report": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\collect-build-metrics.ps1",
+        "perf:report:web": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\collect-build-metrics.ps1 -SkipDesktopSidecar",
+        "perf:report:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\collect-build-metrics.ps1 -SkipWebBuild"
     },
     "dependencies": {
         "react": "^19.0.0",

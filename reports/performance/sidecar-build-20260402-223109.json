@@ -1,0 +1,10 @@
+{
+    "builtAt":  "2026-04-02T22:31:43.0892344+09:00",
+    "durationSeconds":  26.734,
+    "pythonExe":  "python",
+    "targetTriple":  "x86_64-pc-windows-msvc",
+    "sourceExe":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\backend\\dist-sidecar\\bookreader-backend.exe",
+    "sourceExeBytes":  19538051,
+    "copiedExe":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\frontend\\\\src-tauri\\\\binaries\\bookreader-backend-x86_64-pc-windows-msvc.exe",
+    "copiedExeBytes":  19538051
+}

@@ -1,5 +1,6 @@
 param(
-    [string]$PythonExe = ""
+    [string]$PythonExe = "",
+    [string]$MetricsPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,7 @@ $SpecFile = Join-Path $ScriptDir "bookreader-backend.spec"
 $WorkDir = Join-Path $ScriptDir "build-sidecar"
 $DistDir = Join-Path $ScriptDir "dist-sidecar"
 $VenvPython = Join-Path $ScriptDir ".venv\\Scripts\\python.exe"
+$buildStartedAt = Get-Date
 
 if (-not (Test-Path $SpecFile)) {
     throw "spec file not found: $SpecFile"
@@ -49,3 +51,26 @@ if (-not (Test-Path $targetExe)) {
 }
 
 Write-Host "[sidecar] copied to $targetExe"
+
+$metrics = [ordered]@{
+    builtAt = (Get-Date).ToString("o")
+    durationSeconds = [Math]::Round(((Get-Date) - $buildStartedAt).TotalSeconds, 3)
+    pythonExe = $PythonExe
+    targetTriple = $targetTriple
+    sourceExe = $builtExe
+    sourceExeBytes = (Get-Item $builtExe).Length
+    copiedExe = $targetExe
+    copiedExeBytes = (Get-Item $targetExe).Length
+}
+
+$metricsJson = $metrics | ConvertTo-Json -Depth 4
+Write-Host "[sidecar] metrics: $metricsJson"
+
+if (-not [string]::IsNullOrWhiteSpace($MetricsPath)) {
+    $metricsDir = Split-Path -Parent $MetricsPath
+    if (-not [string]::IsNullOrWhiteSpace($metricsDir)) {
+        New-Item -ItemType Directory -Path $metricsDir -Force | Out-Null
+    }
+    Set-Content -Path $MetricsPath -Value $metricsJson
+    Write-Host "[sidecar] metrics written to $MetricsPath"
+}
