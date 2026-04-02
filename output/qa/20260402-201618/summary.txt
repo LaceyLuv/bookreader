@@ -1,0 +1,8 @@
+BookReader QA validation
+frontend: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend
+timestamp: 20260402-201618
+[fail] vite missing: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\node_modules\.bin\vite.cmd
+[fail] tauri missing: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\node_modules\.bin\tauri.cmd
+
+action: run 
+pm install in frontend before QA validation.

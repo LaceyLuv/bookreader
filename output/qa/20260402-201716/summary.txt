@@ -1,0 +1,8 @@
+BookReader QA validation
+frontend: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend
+timestamp: 20260402-201716
+[ok] vite found: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\node_modules\.bin\vite.cmd
+[ok] tauri found: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\node_modules\.bin\tauri.cmd
+
+[web-build]
+cmd: npm run build
