@@ -1,0 +1,100 @@
+{
+    "generatedAt":  "2026-04-02T22:31:09.8363662+09:00",
+    "rootDir":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c",
+    "steps":  [
+                  {
+                      "name":  "web-build",
+                      "status":  "passed",
+                      "durationSeconds":  4.09,
+                      "result":  {
+                                     "logPath":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\reports\\\\performance\\web-build-20260402-223109.log",
+                                     "stderrPath":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\reports\\\\performance\\web-build-20260402-223109.log.stderr",
+                                     "durationSeconds":  4.066
+                                 }
+                  },
+                  {
+                      "name":  "npm-audit",
+                      "status":  "passed",
+                      "durationSeconds":  2.105,
+                      "result":  {
+                                     "logPath":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\reports\\\\performance\\npm-audit-20260402-223109.json",
+                                     "stderrPath":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\reports\\\\performance\\npm-audit-20260402-223109.json.stderr",
+                                     "summary":  {
+                                                     "info":  0,
+                                                     "low":  0,
+                                                     "moderate":  0,
+                                                     "high":  0,
+                                                     "critical":  0,
+                                                     "total":  0
+                                                 }
+                                 }
+                  },
+                  {
+                      "name":  "desktop-sidecar-build",
+                      "status":  "passed",
+                      "durationSeconds":  27.23,
+                      "result":  {
+                                     "logPath":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\reports\\\\performance\\sidecar-build-20260402-223109.log",
+                                     "stderrPath":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\reports\\\\performance\\sidecar-build-20260402-223109.log.stderr",
+                                     "metricsPath":  "C:\\dev\\bookreader\\.climpire-worktrees\\904c611c\\reports\\\\performance\\sidecar-build-20260402-223109.json"
+                                 }
+                  }
+              ],
+    "metrics":  {
+                    "web":  {
+                                "distBytes":  409558,
+                                "assetFiles":  [
+                                                   {
+                                                       "name":  "index-D421frk6.js",
+                                                       "bytes":  249135
+                                                   },
+                                                   {
+                                                       "name":  "router-CEY00VIP.js",
+                                                       "bytes":  47656
+                                                   },
+                                                   {
+                                                       "name":  "ReaderProgressBar-CBBFLWQw.js",
+                                                       "bytes":  25746
+                                                   },
+                                                   {
+                                                       "name":  "EpubReader-C3OIOFRZ.js",
+                                                       "bytes":  25537
+                                                   },
+                                                   {
+                                                       "name":  "index-DzYxHEw6.css",
+                                                       "bytes":  22629
+                                                   },
+                                                   {
+                                                       "name":  "TxtReader-LE2JeS_S.js",
+                                                       "bytes":  16498
+                                                   },
+                                                   {
+                                                       "name":  "annotationColors-DAScpmfm.js",
+                                                       "bytes":  15502
+                                                   },
+                                                   {
+                                                       "name":  "ZipReader-BMr5KCsk.js",
+                                                       "bytes":  6285
+                                                   },
+                                                   {
+                                                       "name":  "react-l0sNRNKZ.js",
+                                                       "bytes":  1
+                                                   }
+                                               ]
+                            },
+                    "desktop":  {
+                                    "sidecarBinaries":  [
+                                                            {
+                                                                "name":  "bookreader-backend-x86_64-pc-windows-msvc.exe",
+                                                                "bytes":  19538051
+                                                            }
+                                                        ],
+                                    "nsisInstallers":  [
+                                                           {
+                                                               "name":  "BookReader_0.1.1_x64-setup.exe",
+                                                               "bytes":  21843932
+                                                           }
+                                                       ]
+                                }
+                }
+}
