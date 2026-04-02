@@ -1,0 +1,103 @@
+BookReader QA validation
+frontend: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend
+timestamp: 20260402-201939
+CI: 1
+npm_config_npm_globalconfig: C:\Program Files\nodejs\etc\npmrc
+npm_config_verify_deps_before_run: false
+npm_config__jsr_registry: https://npm.jsr.io/
+[ok] vite found: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\node_modules\.bin\vite.cmd
+[ok] tauri found: C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\node_modules\.bin\tauri.cmd
+
+[web-build]
+cmd: npm run build
+exit_code: 0
+log: C:\dev\bookreader\.climpire-worktrees\54ee3095\output\qa\20260402-201939\web-build.log
+tail:
+  > bookreader-frontend@0.1.1 build
+  > vite build
+  
+  vite v6.4.1 building for production...
+  transforming...
+  ??66 modules transformed.
+  Generated an empty chunk: "react".
+  rendering chunks...
+  computing gzip size...
+  dist/index.html                              0.57 kB ??gzip:  0.37 kB
+  dist/assets/index-DzYxHEw6.css              22.63 kB ??gzip:  5.35 kB
+  dist/assets/react-l0sNRNKZ.js                0.00 kB ??gzip:  0.02 kB
+  dist/assets/ZipReader-BMr5KCsk.js            6.29 kB ??gzip:  2.20 kB
+  dist/assets/annotationColors-DAScpmfm.js    15.50 kB ??gzip:  4.53 kB
+  dist/assets/TxtReader-LE2JeS_S.js           16.50 kB ??gzip:  5.42 kB
+  dist/assets/EpubReader-C3OIOFRZ.js          25.54 kB ??gzip:  8.27 kB
+  dist/assets/ReaderProgressBar-CBBFLWQw.js   25.75 kB ??gzip:  7.45 kB
+  dist/assets/router-CEY00VIP.js              47.66 kB ??gzip: 16.79 kB
+  dist/assets/index-D421frk6.js              249.14 kB ??gzip: 76.71 kB
+  ??built in 2.22s
+
+[web-artifacts]
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\index-D421frk6.js (249135 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\router-CEY00VIP.js (47656 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\ReaderProgressBar-CBBFLWQw.js (25746 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\EpubReader-C3OIOFRZ.js (25537 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\index-DzYxHEw6.css (22629 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\TxtReader-LE2JeS_S.js (16498 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\annotationColors-DAScpmfm.js (15502 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\ZipReader-BMr5KCsk.js (6285 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\index.html (569 bytes)
+  C:\dev\bookreader\.climpire-worktrees\54ee3095\frontend\dist\assets\react-l0sNRNKZ.js (1 bytes)
+
+[desktop-info]
+cmd: npm run desktop:info
+exit_code: 0
+log: C:\dev\bookreader\.climpire-worktrees\54ee3095\output\qa\20260402-201939\desktop-info.log
+tail:
+      - tauri ??: 2.10.2, (outdated, latest: 2.10.3)
+      - tauri-build ??: 2.5.5, (outdated, latest: 2.5.6)
+      - wry ??: 0.54.2, (outdated, latest: 0.55.0)
+      - tao ??: 0.34.5, (outdated, latest: 0.35.0)
+      - @tauri-apps/api  ⱼₛ: not installed!
+      - @tauri-apps/cli  ⱼₛ: 2.10.0 (outdated, latest: 2.10.1)
+  
+  [-] Plugins
+      - tauri-plugin-shell ??: 2.3.5
+      - @tauri-apps/plugin-shell  ⱼₛ: not installed!
+      - tauri-plugin-log ??: 2.8.0
+      - @tauri-apps/plugin-log  ⱼₛ: not installed!
+  
+  [-] App
+      - build-type: bundle
+      - CSP: unset
+      - frontendDist: ../dist
+      - devUrl: http://127.0.0.1:5174/
+      - framework: React
+      - bundler: Vite
+
+[desktop-build]
+cmd: npm run desktop:build
+exit_code: 2
+log: C:\dev\bookreader\.climpire-worktrees\54ee3095\output\qa\20260402-201939\desktop-build.log
+tail:
+  npm warn Unknown env config "npm-globalconfig". This will stop working in the next major version of npm.
+  npm warn Unknown env config "verify-deps-before-run". This will stop working in the next major version of npm.
+  npm warn Unknown env config "_jsr-registry". This will stop working in the next major version of npm.
+  
+  > bookreader-frontend@0.1.1 desktop:build
+  > npm run tauri -- build
+  
+  npm warn Unknown env config "npm-globalconfig". This will stop working in the next major version of npm.
+  npm warn Unknown env config "verify-deps-before-run". This will stop working in the next major version of npm.
+  npm warn Unknown env config "_jsr-registry". This will stop working in the next major version of npm.
+  
+  > bookreader-frontend@0.1.1 tauri
+  > tauri build
+  
+  error: invalid value '1' for '--ci'
+    [possible values: true, false]
+  
+  For more information, try '--help'.
+
+[result]
+web_build_exit: 0
+desktop_info_exit: 0
+desktop_build_exit: 2
+artifacts: C:\dev\bookreader\.climpire-worktrees\54ee3095\output\qa\20260402-201939
