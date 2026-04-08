@@ -25,6 +25,7 @@ frontend/*.log
 # ===== IDE / Editor =====
 .vscode/
 .idea/
+.worktrees/
 *.swp
 *.swo
 *~
