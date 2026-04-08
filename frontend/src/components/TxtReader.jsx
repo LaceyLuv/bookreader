@@ -17,6 +17,7 @@ import { API_BOOKS_BASE } from '../lib/apiBase'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
 import { clearSearchHighlights } from '../lib/searchHighlighter'
 import { clearSegmentMarks, findSegmentElement, highlightSegmentMatch } from '../lib/txtSegmentDom'
+import { clampViewportPage } from '../lib/txtPagination'
 
 const API = API_BOOKS_BASE
 const API_ROOT = API.replace(/\/books$/, '')
@@ -103,6 +104,8 @@ function TxtReader() {
     const {
         contentStyle,
         themeStyle,
+        layout,
+        columnGap,
         hMargin,
         vMargin,
         lineHeight,
@@ -141,11 +144,11 @@ function TxtReader() {
         error,
     } = useTxtSegmentWindow(id)
 
-    const totalPages = manifest?.segment_count || 1
-    const progress = useReadingProgress(id, { totalPages, type: 'txt', legacyId })
+    const totalViewportPages = manifest?.segment_count || 1
+    const progress = useReadingProgress(id, { totalPages: totalViewportPages, type: 'txt', legacyId })
     const {
-        currentPosition: currentPage,
-        setCurrentPosition: setCurrentPage,
+        currentPosition: currentViewportPage,
+        setCurrentPosition: setCurrentViewportPage,
         bookmarks,
         addBookmark,
         removeBookmark,
@@ -154,6 +157,7 @@ function TxtReader() {
         resumeReading,
         dismissResume,
     } = progress
+    const pagesPerView = layout === 'dual' ? 2 : 1
 
     const displayedSegments = useMemo(() => visibleSegments.map((segment) => {
         let text = segment.text
@@ -163,9 +167,21 @@ function TxtReader() {
     }), [compactWhitespace, splitParagraphs, visibleSegments])
 
     const currentPageAnnotations = useMemo(
-        () => annotations.filter((annotation) => annotation.page == null || annotation.page === currentPage || annotation.segment_id === currentPage),
-        [annotations, currentPage],
+        () => annotations.filter((annotation) => {
+            if (annotation.page == null && annotation.segment_id == null) return true
+            const segmentId = Number.isFinite(annotation.segment_id) ? annotation.segment_id : annotation.page
+            if (!Number.isFinite(segmentId)) return false
+            return segmentId >= currentViewportPage && segmentId < currentViewportPage + pagesPerView
+        }),
+        [annotations, currentViewportPage, pagesPerView],
     )
+
+    const visibleViewportSegments = useMemo(() => {
+        const visibleIds = new Set(
+            Array.from({ length: pagesPerView }, (_, index) => currentViewportPage + index),
+        )
+        return displayedSegments.filter((segment) => visibleIds.has(segment.segment_id))
+    }, [currentViewportPage, displayedSegments, pagesPerView])
 
     const loadAnnotations = useCallback(async () => {
         setAnnotationsLoading(true)
@@ -186,11 +202,11 @@ function TxtReader() {
     }, [loadAnnotations])
 
     useEffect(() => {
-        if (loading || error || !Number.isFinite(currentPage)) return
-        showWindowForSegment(currentPage).catch((err) => {
+        if (loading || error || !Number.isFinite(currentViewportPage)) return
+        showWindowForSegment(currentViewportPage).catch((err) => {
             console.error('Failed to show TXT segment window', err)
         })
-    }, [currentPage, error, loading, showWindowForSegment])
+    }, [currentViewportPage, error, loading, showWindowForSegment])
 
     useEffect(() => {
         if (!searchOpen) return
@@ -245,7 +261,7 @@ function TxtReader() {
     useEffect(() => {
         setSelectionSnapshot(null)
         clearCurrentSelection()
-    }, [currentPage, displayedSegments, searchOpen, annotationsOpen])
+    }, [currentViewportPage, displayedSegments, searchOpen, annotationsOpen])
 
     useEffect(() => {
         const root = contentRef.current
@@ -315,28 +331,32 @@ function TxtReader() {
         setSearchRequestId((value) => value + 1)
     }, [searchDraft])
 
-    const goToPage = useCallback(async (page) => {
-        const target = Math.max(0, Math.min(page, totalPages - 1))
-        setCurrentPage(target)
+    const goToViewportPage = useCallback(async (page) => {
+        const target = clampViewportPage(page, totalViewportPages)
+        setCurrentViewportPage(target)
         try {
             await showWindowForSegment(target)
         } catch (err) {
             console.error('Failed to navigate TXT segment window', err)
         }
-    }, [setCurrentPage, showWindowForSegment, totalPages])
+    }, [setCurrentViewportPage, showWindowForSegment, totalViewportPages])
 
     const goNext = useCallback(() => {
-        if (currentPage < totalPages - 1) void goToPage(currentPage + 1)
-    }, [currentPage, goToPage, totalPages])
+        if (currentViewportPage < totalViewportPages - 1) {
+            void goToViewportPage(currentViewportPage + pagesPerView)
+        }
+    }, [currentViewportPage, goToViewportPage, pagesPerView, totalViewportPages])
 
     const goPrev = useCallback(() => {
-        if (currentPage > 0) void goToPage(currentPage - 1)
-    }, [currentPage, goToPage])
+        if (currentViewportPage > 0) {
+            void goToViewportPage(currentViewportPage - pagesPerView)
+        }
+    }, [currentViewportPage, goToViewportPage, pagesPerView])
 
     const seekToProgress = useCallback((progressValue) => {
-        if (totalPages <= 1) return
-        void goToPage(Math.round(progressValue * (totalPages - 1)))
-    }, [goToPage, totalPages])
+        if (totalViewportPages <= 1) return
+        void goToViewportPage(Math.round(progressValue * (totalViewportPages - 1)))
+    }, [goToViewportPage, totalViewportPages])
 
     const handleSearchResultClick = useCallback(async (result) => {
         setAnnotationsOpen(false)
@@ -344,18 +364,18 @@ function TxtReader() {
         setActiveSearchIndex(result.index)
 
         if (!Number.isFinite(result.segment_id)) {
-            if (Number.isFinite(result.position)) setCurrentPage(result.position)
+            if (Number.isFinite(result.position)) setCurrentViewportPage(result.position)
             return
         }
 
         await showWindowForSegment(result.segment_id)
-        setCurrentPage(result.segment_id)
+        setCurrentViewportPage(result.segment_id)
         setPendingSearchTarget({
             segmentId: result.segment_id,
             start: result.segment_local_start ?? 0,
             end: result.segment_local_end ?? ((result.segment_local_start ?? 0) + searchQuery.length),
         })
-    }, [searchQuery.length, setCurrentPage, showWindowForSegment])
+    }, [searchQuery.length, setCurrentViewportPage, showWindowForSegment])
 
     const updateAnnotationItem = useCallback(async (annotationId, patch) => {
         const res = await fetch(`${API_ROOT}/annotations/${annotationId}`, {
@@ -389,8 +409,8 @@ function TxtReader() {
                     kind,
                     locator: selectionSnapshot.segmentId != null
                         ? `segment:${selectionSnapshot.segmentId}:offset:${selectionSnapshot.segmentLocalStart}`
-                        : `page:${currentPage}`,
-                    page: currentPage,
+                        : `page:${currentViewportPage}`,
+                    page: currentViewportPage,
                     segment_id: selectionSnapshot.segmentId,
                     segment_local_start: selectionSnapshot.segmentLocalStart,
                     segment_local_end: selectionSnapshot.segmentLocalEnd,
@@ -416,7 +436,7 @@ function TxtReader() {
             console.error('Failed to create annotation', err)
             window.alert(tt('annotationSaveFailed'))
         }
-    }, [currentPage, id, selectionSnapshot, tt])
+    }, [currentViewportPage, id, selectionSnapshot, tt])
 
     const handleEditAnnotation = useCallback(async (annotation) => {
         if (annotation.kind !== 'note') return
@@ -461,11 +481,11 @@ function TxtReader() {
         setActiveSearchIndex(null)
         setActiveAnnotationId(annotation.id)
         if (Number.isFinite(annotation.segment_id)) {
-            void goToPage(annotation.segment_id)
+            void goToViewportPage(annotation.segment_id)
         } else if (Number.isFinite(annotation.page)) {
-            void goToPage(annotation.page)
+            void goToViewportPage(annotation.page)
         }
-    }, [goToPage])
+    }, [goToViewportPage])
 
     const handleProgressBarVisibilityChange = useCallback(() => {
         const root = contentRef.current
@@ -602,8 +622,8 @@ function TxtReader() {
                     }}
                     tt={tt}
                 />
-                <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{currentPage > 0 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
-                <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{currentPage < totalPages - 1 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
+                <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{currentViewportPage > 0 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
+                <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{currentViewportPage < totalViewportPages - 1 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
 
                 <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
                     {loading ? (
@@ -611,12 +631,21 @@ function TxtReader() {
                             <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
                         </div>
                     ) : (
-                        <div style={{ position: 'relative', width: '100%', height: '100%', overflowY: 'auto', paddingRight: '1rem' }}>
+                        <div
+                            data-testid="txt-reader-scroller"
+                            style={{
+                                position: 'relative',
+                                width: '100%',
+                                height: '100%',
+                                overflow: 'hidden',
+                            }}
+                        >
                             <div
                                 ref={contentRef}
-                                data-testid="txt-segment-content"
+                                data-testid="txt-reader-content"
                                 className="select-text"
                                 style={{
+                                    height: '100%',
                                     backgroundColor: 'var(--reader-page-bg)',
                                     color: 'var(--reader-page-fg)',
                                     fontFamily: contentStyle.fontFamily,
@@ -628,18 +657,31 @@ function TxtReader() {
                                     whiteSpace: 'pre-wrap',
                                     wordBreak: 'break-word',
                                     overflowWrap: 'break-word',
+                                    display: 'grid',
+                                    gridTemplateColumns: `repeat(${pagesPerView}, minmax(0, 1fr))`,
+                                    gap: `${columnGap}px`,
+                                    alignItems: 'stretch',
                                 }}
                             >
-                                {displayedSegments.length > 0 ? displayedSegments.map((segment) => (
-                                    <p
+                                {visibleViewportSegments.length > 0 ? visibleViewportSegments.map((segment) => (
+                                    <div
                                         key={segment.segment_id}
                                         data-segment-id={segment.segment_id}
                                         data-segment-start={segment.start_offset}
                                         data-segment-end={segment.end_offset}
-                                        style={{ margin: '0 0 1rem 0' }}
+                                        style={{
+                                            minHeight: '100%',
+                                            margin: 0,
+                                            padding: '1.25rem',
+                                            border: `1px solid ${themeStyle.border}`,
+                                            borderRadius: '0.75rem',
+                                            backgroundColor: `${themeStyle.card}66`,
+                                            boxSizing: 'border-box',
+                                            overflow: 'hidden',
+                                        }}
                                     >
                                         {segment.displayText}
-                                    </p>
+                                    </div>
                                 )) : (
                                     <div>{tt('loadContentFailed')}</div>
                                 )}
@@ -650,12 +692,12 @@ function TxtReader() {
             </div>
 
             <ReaderProgressBar
-                currentPage={currentPage + 1}
-                totalPages={totalPages}
-                onSeekPage={(page) => { void goToPage(page - 1) }}
-                progress={totalPages > 1 ? currentPage / (totalPages - 1) : 0}
+                currentPage={currentViewportPage + 1}
+                totalPages={totalViewportPages}
+                onSeekPage={(page) => { void goToViewportPage(page - 1) }}
+                progress={totalViewportPages > 1 ? currentViewportPage / (totalViewportPages - 1) : 0}
                 onSeekProgress={seekToProgress}
-                extraInfo={manifest ? `TXT ${currentPage + 1}/${totalPages}` : `TXT | ${loadingLabel}`}
+                extraInfo={manifest ? `TXT ${currentViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
                 readerFocusRef={readerRootRef}
                 onVisibilityChange={handleProgressBarVisibilityChange}
             />

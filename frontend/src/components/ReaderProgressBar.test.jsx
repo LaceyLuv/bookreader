@@ -128,3 +128,21 @@ test('recent pointer interaction prevents Space from re-activating the hide butt
 
     expect(document.activeElement).toBe(readerRoot)
 })
+
+test('TXT progress seek callback is wired to viewport pages', () => {
+    const onSeekPage = vi.fn()
+
+    render(
+        <ReaderProgressBar
+            currentPage={1}
+            totalPages={12}
+            onSeekPage={onSeekPage}
+            progress={0}
+        />,
+    )
+
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '6' } })
+    fireEvent.blur(screen.getByRole('spinbutton'))
+
+    expect(onSeekPage).toHaveBeenCalledWith(6)
+})
