@@ -9,13 +9,13 @@ from typing import List
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 
-from models import BookInfo, BookMeta, BookMetaUpdate, BookSearchResponse, EpubChapter, EpubToc, TxtContent, ZipImageList
+from models import BookInfo, BookMeta, BookMetaUpdate, BookSearchResponse, EpubChapter, EpubToc, TxtContent, TxtManifest, TxtSegmentWindow, ZipImageList
 from paths import BOOKS_DIR
 from services.annotation_store import delete_book_annotations, get_annotation_counts_by_book
 from services.epub_service import clear_epub_caches, get_epub_asset, get_epub_chapter, get_epub_toc
 from services.library_store import add_book_record, delete_book_record, get_book_path, get_book_record, list_book_records, prepare_upload, touch_book, update_book_record
 from services.search_service import clear_search_caches, prewarm_search_cache, search_epub_file, search_txt_file
-from services.txt_service import clear_txt_caches, read_txt_file
+from services.txt_service import clear_txt_caches, read_txt_file, read_txt_manifest
 from services.zip_service import get_zip_image, list_zip_images
 
 router = APIRouter(prefix='/api/books', tags=['books'])
@@ -201,6 +201,39 @@ async def get_txt_content(book_id: str, background_tasks: BackgroundTasks):
     _schedule_search_prewarm(background_tasks, path, record['file_type'])
     result = read_txt_file(str(path))
     return TxtContent(**result)
+
+
+@router.get('/{book_id}/txt-manifest', response_model=TxtManifest)
+async def get_txt_manifest(book_id: str, background_tasks: BackgroundTasks):
+    record, path = _resolve_book_file(book_id)
+    if record['file_type'] != 'txt':
+        raise HTTPException(status_code=400, detail='Not a TXT file')
+    _touch_book_open(record)
+    _schedule_search_prewarm(background_tasks, path, record['file_type'])
+    manifest = read_txt_manifest(str(path))
+    return TxtManifest(
+        encoding=manifest['encoding'],
+        total_chars=manifest['total_chars'],
+        segment_count=manifest['segment_count'],
+    )
+
+
+@router.get('/{book_id}/txt-segments', response_model=TxtSegmentWindow)
+async def get_txt_segments(book_id: str, start: int = 0, limit: int = 40):
+    record, path = _resolve_book_file(book_id)
+    if record['file_type'] != 'txt':
+        raise HTTPException(status_code=400, detail='Not a TXT file')
+
+    manifest = read_txt_manifest(str(path))
+    safe_start = max(0, start)
+    safe_limit = max(1, min(limit, 120))
+    window = manifest['segments'][safe_start:safe_start + safe_limit]
+    return TxtSegmentWindow(
+        start=safe_start,
+        limit=safe_limit,
+        total=manifest['segment_count'],
+        segments=window,
+    )
 
 
 @router.get('/{book_id}/toc', response_model=EpubToc)

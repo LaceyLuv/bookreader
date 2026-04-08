@@ -6,7 +6,7 @@ from threading import Lock
 from bs4 import BeautifulSoup
 
 from services.epub_service import _decode_text_bytes, _get_spine_items, _read_epub_cached
-from services.txt_service import read_txt_file
+from services.txt_service import read_txt_file, read_txt_manifest
 
 RESULT_LIMIT = 100
 SNIPPET_RADIUS = 72
@@ -107,23 +107,27 @@ def search_txt_file(file_path: str, query: str, limit: int = RESULT_LIMIT) -> di
     if not trimmed_query:
         return {'query': '', 'total': 0, 'results': []}
 
-    cache_key = _resolve_cache_key(file_path)
-    text, lower_text = _get_txt_search_source(*cache_key)
+    manifest = read_txt_manifest(file_path)
     lower_query = trimmed_query.lower()
 
     results = []
     total = 0
-    for start, end in _iter_match_spans(lower_text, lower_query):
-        total += 1
-        if len(results) >= limit:
-            continue
-        results.append({
-            'index': total - 1,
-            'snippet': _build_snippet(text, start, end),
-            'position': start,
-            'locator': f'offset:{start}',
-            'chapter_match_index': total - 1,
-        })
+    for segment in manifest['segments']:
+        lower_text = segment['text'].lower()
+        for start, end in _iter_match_spans(lower_text, lower_query):
+            total += 1
+            if len(results) >= limit:
+                continue
+            results.append({
+                'index': total - 1,
+                'snippet': _build_snippet(segment['text'], start, end),
+                'position': segment['start_offset'] + start,
+                'locator': f"segment:{segment['segment_id']}:offset:{start}",
+                'segment_id': segment['segment_id'],
+                'segment_local_start': start,
+                'segment_local_end': end,
+                'chapter_match_index': total - 1,
+            })
 
     return {
         'query': trimmed_query,

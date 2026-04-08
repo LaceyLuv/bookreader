@@ -1,52 +1,24 @@
-﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { useReaderSettings } from '../hooks/useReaderSettings'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import ReaderAnnotationsPanel from './ReaderAnnotationsPanel'
+import ReaderProgressBar from './ReaderProgressBar'
+import ReaderSearchPanel from './ReaderSearchPanel'
+import ReaderSelectionMenu from './ReaderSelectionMenu'
+import ReaderToolbar from './ReaderToolbar'
+import ResumeToast from './ResumeToast'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
 import { useReadingProgress } from '../hooks/useReadingProgress'
-import ReaderToolbar from './ReaderToolbar'
-import ReaderProgressBar from './ReaderProgressBar'
-import ResumeToast from './ResumeToast'
-import ReaderSearchPanel from './ReaderSearchPanel'
-import ReaderAnnotationsPanel from './ReaderAnnotationsPanel'
-import ReaderSelectionMenu from './ReaderSelectionMenu'
-import { API_BOOKS_BASE } from '../lib/apiBase'
-import { clearSearchHighlights, highlightSearchMatchInElement, scrollSearchMarkIntoView } from '../lib/searchHighlighter'
+import { useReaderSettings } from '../hooks/useReaderSettings'
+import { useTxtSegmentWindow } from '../hooks/useTxtSegmentWindow'
+import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annotationColors'
 import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
-import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annotationColors'
+import { clearSearchHighlights } from '../lib/searchHighlighter'
+import { clearSegmentMarks, findSegmentElement, highlightSegmentMatch } from '../lib/txtSegmentDom'
+import { API_BOOKS_BASE } from '../lib/apiBase'
 
 const API = API_BOOKS_BASE
 const API_ROOT = API.replace(/\/books$/, '')
-
-function scheduleAfterPaint(callback) {
-    if (typeof window === 'undefined') return () => {}
-
-    let frameA = null
-    let frameB = null
-
-    frameA = window.requestAnimationFrame(() => {
-        frameB = window.requestAnimationFrame(() => {
-            callback()
-        })
-    })
-
-    return () => {
-        if (frameA != null) window.cancelAnimationFrame(frameA)
-        if (frameB != null) window.cancelAnimationFrame(frameB)
-    }
-}
-
-function scheduleOnNextFrame(callback) {
-    if (typeof window === 'undefined') return () => {}
-
-    const frameId = window.requestAnimationFrame(() => {
-        callback()
-    })
-
-    return () => {
-        window.cancelAnimationFrame(frameId)
-    }
-}
 
 function removeExtraWhitespaceAndEmptyLines(text) {
     if (typeof text !== 'string' || !text) return ''
@@ -112,8 +84,6 @@ function TxtReader() {
     const {
         contentStyle,
         themeStyle,
-        layout,
-        columnGap,
         hMargin,
         vMargin,
         lineHeight,
@@ -123,9 +93,6 @@ function TxtReader() {
         toggleTitleBar,
     } = settings
 
-    const [fullText, setFullText] = useState('')
-    const [encoding, setEncoding] = useState('')
-    const [loading, setLoading] = useState(true)
     const [compactWhitespace, setCompactWhitespace] = useState(false)
     const [splitParagraphs, setSplitParagraphs] = useState(false)
     const [searchOpen, setSearchOpen] = useState(false)
@@ -135,37 +102,25 @@ function TxtReader() {
     const [searchLoading, setSearchLoading] = useState(false)
     const [searchResults, setSearchResults] = useState([])
     const [activeSearchIndex, setActiveSearchIndex] = useState(null)
+    const [pendingSearchTarget, setPendingSearchTarget] = useState(null)
     const [annotationsOpen, setAnnotationsOpen] = useState(false)
     const [annotationsLoading, setAnnotationsLoading] = useState(false)
     const [annotations, setAnnotations] = useState([])
     const [activeAnnotationId, setActiveAnnotationId] = useState(null)
     const [selectionSnapshot, setSelectionSnapshot] = useState(null)
 
-    const [totalPages, setTotalPages] = useState(1)
-    const [paginationReady, setPaginationReady] = useState(false)
-    const frameRef = useRef(null)
-    const scrollerRef = useRef(null)
+    const readerRootRef = useRef(null)
     const contentRef = useRef(null)
-    const stepRef = useRef(0)
-    const initialMeasureDoneRef = useRef(false)
-    const scheduledMeasureCleanupRef = useRef(null)
-    const lastMeasureSignatureRef = useRef('')
 
-    useEffect(() => {
-        ; (async () => {
-            try {
-                const res = await fetch(`${API}/${id}/content`)
-                if (!res.ok) throw new Error(`HTTP ${res.status}`)
-                const data = await res.json()
-                setFullText(data.text)
-                setEncoding(data.encoding)
-            } catch {
-                setFullText(tt('loadContentFailed'))
-            }
-            setLoading(false)
-        })()
-    }, [id, tt])
+    const {
+        manifest,
+        visibleSegments,
+        showWindowForSegment,
+        loading,
+        error,
+    } = useTxtSegmentWindow(id)
 
+    const totalPages = manifest?.segment_count || 1
     const progress = useReadingProgress(id, { totalPages, type: 'txt', legacyId })
     const {
         currentPosition: currentPage,
@@ -179,63 +134,17 @@ function TxtReader() {
         dismissResume,
     } = progress
 
-    const isDualLayout = layout === 'dual'
-    const isSearchActive = searchOpen && !!searchQuery.trim()
-    const shouldRenderSearchHighlight = isSearchActive && activeSearchIndex != null
+    const displayedSegments = useMemo(() => visibleSegments.map((segment) => {
+        let text = segment.text
+        if (compactWhitespace) text = removeExtraWhitespaceAndEmptyLines(text)
+        if (splitParagraphs) text = splitDenseParagraphs(text)
+        return { ...segment, displayText: text }
+    }), [compactWhitespace, splitParagraphs, visibleSegments])
 
-    const handleSearchQueryChange = useCallback((value) => {
-        const trimmedValue = value.trim()
-        setSearchDraft(value)
-        if (!trimmedValue) {
-            setSearchQuery('')
-            setSearchLoading(false)
-            setSearchResults([])
-            setActiveSearchIndex(null)
-            return
-        }
-        if (trimmedValue !== searchQuery) {
-            setSearchQuery('')
-            setSearchLoading(false)
-            setSearchResults([])
-            setActiveSearchIndex(null)
-        }
-    }, [searchQuery])
-
-    const handleSearchSubmit = useCallback(() => {
-        const trimmedQuery = searchDraft.trim()
-        if (!trimmedQuery) {
-            setSearchQuery('')
-            setSearchLoading(false)
-            setSearchResults([])
-            setActiveSearchIndex(null)
-            return
-        }
-        setSearchQuery(trimmedQuery)
-        setSearchRequestId((value) => value + 1)
-    }, [searchDraft])
     const currentPageAnnotations = useMemo(
-        () => annotations.filter((annotation) => annotation.page == null || annotation.page === currentPage),
+        () => annotations.filter((annotation) => annotation.page == null || annotation.page === currentPage || annotation.segment_id === currentPage),
         [annotations, currentPage],
     )
-
-    const displayedText = useMemo(() => {
-        let nextText = fullText
-        if (compactWhitespace) nextText = removeExtraWhitespaceAndEmptyLines(nextText)
-        if (splitParagraphs) nextText = splitDenseParagraphs(nextText)
-        return nextText
-    }, [fullText, compactWhitespace, splitParagraphs])
-
-    const measureLayoutKey = useMemo(() => JSON.stringify({
-        layout,
-        columnGap,
-        hMargin,
-        vMargin,
-        lineHeight,
-        letterSpacing,
-        fontFamily: contentStyle.fontFamily,
-        fontWeight: contentStyle.fontWeight,
-        fontSize: contentStyle.fontSize,
-    }), [layout, columnGap, hMargin, vMargin, lineHeight, letterSpacing, contentStyle.fontFamily, contentStyle.fontWeight, contentStyle.fontSize])
 
     const loadAnnotations = useCallback(async () => {
         setAnnotationsLoading(true)
@@ -254,6 +163,13 @@ function TxtReader() {
     useEffect(() => {
         loadAnnotations()
     }, [loadAnnotations])
+
+    useEffect(() => {
+        if (loading || error || !Number.isFinite(currentPage)) return
+        showWindowForSegment(currentPage).catch((err) => {
+            console.error('Failed to show TXT segment window', err)
+        })
+    }, [currentPage, error, loading, showWindowForSegment])
 
     useEffect(() => {
         if (!searchOpen) return
@@ -293,47 +209,125 @@ function TxtReader() {
     }, [id, searchOpen, searchQuery, searchRequestId])
 
     useEffect(() => {
-        if (loading) return undefined
+        const root = contentRef.current
+        if (!root || loading) return
+
         const handleSelectionChange = () => {
-            const nextSelection = getSelectionSnapshot(contentRef.current)
+            const nextSelection = getSelectionSnapshot(root)
             setSelectionSnapshot(nextSelection)
         }
+
         document.addEventListener('selectionchange', handleSelectionChange)
         return () => document.removeEventListener('selectionchange', handleSelectionChange)
-    }, [loading, currentPage, displayedText])
+    }, [displayedSegments, loading])
 
     useEffect(() => {
         setSelectionSnapshot(null)
         clearCurrentSelection()
-    }, [currentPage, displayedText, searchOpen, annotationsOpen])
+    }, [currentPage, displayedSegments, searchOpen, annotationsOpen])
 
     useEffect(() => {
         const root = contentRef.current
         if (!root || loading) return
 
         clearSearchHighlights(root)
-        if (shouldRenderSearchHighlight) {
-            clearAnnotationHighlights(root)
-            const target = highlightSearchMatchInElement(root, searchQuery, activeSearchIndex)
-            if (target) scrollSearchMarkIntoView(target)
+        clearSegmentMarks(root)
+        clearAnnotationHighlights(root)
+
+        if (pendingSearchTarget) {
+            const segmentEl = findSegmentElement(root, pendingSearchTarget.segmentId)
+            if (segmentEl) {
+                const mark = highlightSegmentMatch(segmentEl, pendingSearchTarget.start, pendingSearchTarget.end)
+                mark?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            }
             return
         }
 
         highlightAnnotationsInElement(root, currentPageAnnotations)
-    }, [activeSearchIndex, currentPageAnnotations, displayedText, loading, searchQuery, shouldRenderSearchHighlight])
+    }, [currentPageAnnotations, displayedSegments, loading, pendingSearchTarget])
 
     useEffect(() => {
         const root = contentRef.current
-        if (!root || loading || shouldRenderSearchHighlight || !activeAnnotationId) return
+        if (!root || loading || pendingSearchTarget || !activeAnnotationId) return
         const target = activateAnnotationHighlight(root, activeAnnotationId)
         if (target) scrollAnnotationIntoView(target)
-    }, [activeAnnotationId, currentPage, currentPageAnnotations, loading, shouldRenderSearchHighlight])
+    }, [activeAnnotationId, loading, pendingSearchTarget])
 
-    const handleSearchResultClick = useCallback((result) => {
+    const handleSearchQueryChange = useCallback((value) => {
+        const trimmedValue = value.trim()
+        setSearchDraft(value)
+        if (!trimmedValue) {
+            setSearchQuery('')
+            setSearchLoading(false)
+            setSearchResults([])
+            setActiveSearchIndex(null)
+            setPendingSearchTarget(null)
+            return
+        }
+        if (trimmedValue !== searchQuery) {
+            setSearchQuery('')
+            setSearchLoading(false)
+            setSearchResults([])
+            setActiveSearchIndex(null)
+            setPendingSearchTarget(null)
+        }
+    }, [searchQuery])
+
+    const handleSearchSubmit = useCallback(() => {
+        const trimmedQuery = searchDraft.trim()
+        if (!trimmedQuery) {
+            setSearchQuery('')
+            setSearchLoading(false)
+            setSearchResults([])
+            setActiveSearchIndex(null)
+            setPendingSearchTarget(null)
+            return
+        }
+        setSearchQuery(trimmedQuery)
+        setSearchRequestId((value) => value + 1)
+    }, [searchDraft])
+
+    const goToPage = useCallback(async (page) => {
+        const target = Math.max(0, Math.min(page, totalPages - 1))
+        setCurrentPage(target)
+        try {
+            await showWindowForSegment(target)
+        } catch (err) {
+            console.error('Failed to navigate TXT segment window', err)
+        }
+    }, [setCurrentPage, showWindowForSegment, totalPages])
+
+    const goNext = useCallback(() => {
+        if (currentPage < totalPages - 1) void goToPage(currentPage + 1)
+    }, [currentPage, goToPage, totalPages])
+
+    const goPrev = useCallback(() => {
+        if (currentPage > 0) void goToPage(currentPage - 1)
+    }, [currentPage, goToPage])
+
+    const seekToProgress = useCallback((progressValue) => {
+        if (totalPages <= 1) return
+        void goToPage(Math.round(progressValue * (totalPages - 1)))
+    }, [goToPage, totalPages])
+
+    const handleSearchResultClick = useCallback(async (result) => {
         setAnnotationsOpen(false)
         setActiveAnnotationId(null)
         setActiveSearchIndex(result.index)
-    }, [])
+
+        if (!Number.isFinite(result.segment_id)) {
+            if (Number.isFinite(result.position)) setCurrentPage(result.position)
+            return
+        }
+
+        await showWindowForSegment(result.segment_id)
+        setCurrentPage(result.segment_id)
+        setPendingSearchTarget({
+            segmentId: result.segment_id,
+            start: result.segment_local_start ?? 0,
+            end: result.segment_local_end ?? ((result.segment_local_start ?? 0) + searchQuery.length),
+        })
+    }, [searchQuery.length, setCurrentPage, showWindowForSegment])
 
     const updateAnnotationItem = useCallback(async (annotationId, patch) => {
         const res = await fetch(`${API_ROOT}/annotations/${annotationId}`, {
@@ -346,7 +340,7 @@ function TxtReader() {
         setAnnotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
         if (activeAnnotationId === updated.id) setActiveAnnotationId(updated.id)
         return updated
-    }, [activeAnnotationId, tt])
+    }, [activeAnnotationId])
 
     const createAnnotation = useCallback(async (kind) => {
         if (!selectionSnapshot) return
@@ -365,8 +359,13 @@ function TxtReader() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     kind,
-                    locator: `page:${currentPage}`,
+                    locator: selectionSnapshot.segmentId != null
+                        ? `segment:${selectionSnapshot.segmentId}:offset:${selectionSnapshot.segmentLocalStart}`
+                        : `page:${currentPage}`,
                     page: currentPage,
+                    segment_id: selectionSnapshot.segmentId,
+                    segment_local_start: selectionSnapshot.segmentLocalStart,
+                    segment_local_end: selectionSnapshot.segmentLocalEnd,
                     start_offset: selectionSnapshot.startOffset,
                     end_offset: selectionSnapshot.endOffset,
                     selected_text: selectionSnapshot.selectedText,
@@ -380,6 +379,7 @@ function TxtReader() {
             setAnnotations((prev) => [created, ...prev])
             setAnnotationsOpen(true)
             setSearchOpen(false)
+            setPendingSearchTarget(null)
             setActiveSearchIndex(null)
             setActiveAnnotationId(created.id)
             setSelectionSnapshot(null)
@@ -416,11 +416,8 @@ function TxtReader() {
     const handleDeleteAnnotation = useCallback(async (annotation) => {
         const confirmed = window.confirm(tt('deleteAnnotationConfirm'))
         if (!confirmed) return
-
         try {
-            const res = await fetch(`${API_ROOT}/annotations/${annotation.id}`, {
-                method: 'DELETE',
-            })
+            const res = await fetch(`${API_ROOT}/annotations/${annotation.id}`, { method: 'DELETE' })
             if (!res.ok) throw new Error(`HTTP ${res.status}`)
             setAnnotations((prev) => prev.filter((item) => item.id !== annotation.id))
             if (activeAnnotationId === annotation.id) setActiveAnnotationId(null)
@@ -430,188 +427,26 @@ function TxtReader() {
         }
     }, [activeAnnotationId, tt])
 
-
-    const measure = useCallback(() => {
-        const scroller = scrollerRef.current
-        const contentEl = contentRef.current
-        if (!scroller || !contentEl) return
-        const W = scroller.clientWidth
-        const cs = getComputedStyle(contentEl)
-        const rawGap = cs.columnGap
-        const fallbackGap = parseFloat(cs.fontSize) || 16
-        const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const colW = isDualLayout ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
-        const H = Math.max(1, Math.floor(scroller.clientHeight))
-        const signature = `${measureLayoutKey}|${W}|${H}`
-        if (lastMeasureSignatureRef.current === signature) return
-        contentEl.style.columnWidth = `${colW}px`
-        contentEl.style.columnCount = isDualLayout ? '2' : '1'
-        contentEl.style.columnFill = 'auto'
-        contentEl.style.height = `${H}px`
-        contentEl.style.display = 'block'
-        contentEl.style.textAlign = 'left'
-        contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
-        const step = W + gap
-        if (step <= 0) return
-        const oldStep = stepRef.current > 0 ? stepRef.current : step
-        const oldLeft = scroller.scrollLeft
-        const idxFromScroll = Math.round(oldLeft / oldStep)
-        stepRef.current = step
-        const pages = Math.max(1, Math.ceil((scroller.scrollWidth + gap) / step))
-        lastMeasureSignatureRef.current = signature
-        initialMeasureDoneRef.current = true
-        setPaginationReady(true)
-        setTotalPages(pages)
-        const clamped = Math.max(0, Math.min(idxFromScroll, pages - 1))
-        scroller.scrollTo({ left: Math.round(clamped * step), behavior: 'auto' })
-        setCurrentPage((prev) => (prev === clamped ? prev : clamped))
-    }, [isDualLayout, measureLayoutKey, setCurrentPage])
-
-    const clearScheduledMeasure = useCallback(() => {
-        if (scheduledMeasureCleanupRef.current) {
-            scheduledMeasureCleanupRef.current()
-            scheduledMeasureCleanupRef.current = null
-        }
-    }, [])
-
-    const scheduleMeasure = useCallback(() => {
-        clearScheduledMeasure()
-        scheduledMeasureCleanupRef.current = scheduleOnNextFrame(() => {
-            scheduledMeasureCleanupRef.current = null
-            measure()
-        })
-    }, [clearScheduledMeasure, measure])
-
-    useEffect(() => clearScheduledMeasure, [clearScheduledMeasure])
-
-    useEffect(() => {
-        if (loading || !displayedText) {
-            clearScheduledMeasure()
-            lastMeasureSignatureRef.current = ''
-            initialMeasureDoneRef.current = false
-            setPaginationReady(false)
-            return undefined
-        }
-
-        clearScheduledMeasure()
-        lastMeasureSignatureRef.current = ''
-        initialMeasureDoneRef.current = false
-        setPaginationReady(false)
-
-        return scheduleAfterPaint(() => {
-            scheduleMeasure()
-        })
-    }, [loading, displayedText, clearScheduledMeasure, scheduleMeasure])
-
-    useEffect(() => {
-        if (typeof ResizeObserver !== 'undefined') return undefined
-        window.addEventListener('resize', scheduleMeasure)
-        return () => window.removeEventListener('resize', scheduleMeasure)
-    }, [scheduleMeasure])
-
-    useEffect(() => {
-        const frame = frameRef.current
-        if (!frame || typeof ResizeObserver === 'undefined') return undefined
-        const observer = new ResizeObserver(() => {
-            if (!initialMeasureDoneRef.current) return
-            scheduleMeasure()
-        })
-        observer.observe(frame)
-        return () => observer.disconnect()
-    }, [scheduleMeasure])
-
-    const goToPage = useCallback((page) => {
-        const scroller = scrollerRef.current
-        const contentEl = contentRef.current
-        if (!scroller || !contentEl) return
-        const target = Math.max(0, Math.min(page, totalPages - 1))
-        const W = scroller.clientWidth
-        const cs = getComputedStyle(contentEl)
-        const rawGap = cs.columnGap
-        const fallbackGap = parseFloat(cs.fontSize) || 16
-        const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const step = W + gap
-        if (step <= 0) return
-        stepRef.current = step
-        scroller.scrollTo({ left: Math.round(target * step), behavior: 'auto' })
-        setCurrentPage(target)
-    }, [setCurrentPage, totalPages])
-
     const handleAnnotationClick = useCallback((annotation) => {
         setSearchOpen(false)
+        setPendingSearchTarget(null)
         setActiveSearchIndex(null)
         setActiveAnnotationId(annotation.id)
-        if (Number.isFinite(annotation.page)) {
-            goToPage(annotation.page)
+        if (Number.isFinite(annotation.segment_id)) {
+            void goToPage(annotation.segment_id)
+        } else if (Number.isFinite(annotation.page)) {
+            void goToPage(annotation.page)
         }
     }, [goToPage])
 
-    useEffect(() => {
-        const scroller = scrollerRef.current
-        const contentEl = contentRef.current
-        if (!scroller || !contentEl) return
-        const W = scroller.clientWidth
-        const cs = getComputedStyle(contentEl)
-        const rawGap = cs.columnGap
-        const fallbackGap = parseFloat(cs.fontSize) || 16
-        const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const step = W + gap
-        if (step <= 0) return
-        stepRef.current = step
-        scroller.scrollTo({ left: Math.round(currentPage * step), behavior: 'auto' })
-    }, [currentPage])
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true, readerRootRef })
 
-    useEffect(() => {
-        const scroller = scrollerRef.current
-        const contentEl = contentRef.current
-        if (!scroller || !contentEl) return undefined
-        let timer = null
-
-        const onScroll = () => {
-            if (timer) clearTimeout(timer)
-            timer = window.setTimeout(() => {
-                const W = scroller.clientWidth
-                const cs = getComputedStyle(contentEl)
-                const rawGap = cs.columnGap
-                const fallbackGap = parseFloat(cs.fontSize) || 16
-                const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-                const step = W + gap
-                if (step <= 0) return
-                stepRef.current = step
-                const idx = Math.round(scroller.scrollLeft / step)
-                const snapLeft = Math.round(idx * step)
-                if (Math.abs(scroller.scrollLeft - snapLeft) >= 1) {
-                    scroller.scrollTo({ left: snapLeft, behavior: 'auto' })
-                }
-                const clamped = Math.max(0, Math.min(idx, totalPages - 1))
-                setCurrentPage((prev) => (prev === clamped ? prev : clamped))
-            }, 120)
-        }
-
-        scroller.addEventListener('scroll', onScroll, { passive: true })
-        return () => {
-            if (timer) clearTimeout(timer)
-            scroller.removeEventListener('scroll', onScroll)
-        }
-    }, [setCurrentPage, totalPages])
-
-    const goNext = useCallback(() => {
-        if (currentPage < totalPages - 1) goToPage(currentPage + 1)
-    }, [currentPage, goToPage, totalPages])
-
-    const goPrev = useCallback(() => {
-        if (currentPage > 0) goToPage(currentPage - 1)
-    }, [currentPage, goToPage])
-
-    const seekToProgress = useCallback((progressValue) => {
-        if (totalPages <= 1) return
-        goToPage(Math.round(progressValue * (totalPages - 1)))
-    }, [goToPage, totalPages])
-
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true })
+    const loadingLabel = error ? tt('loadContentFailed') : (manifest?.encoding || tt('loading'))
 
     return (
         <div
+            ref={readerRootRef}
+            tabIndex={-1}
             className="readerRoot h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden"
             style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}
         >
@@ -620,7 +455,7 @@ function TxtReader() {
                     <button onClick={() => navigate('/')} title={tt('backToLibrary')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg></button>
                     <div className="h-5 w-px opacity-20" style={{ backgroundColor: themeStyle.text }} />
                     <span className="text-[11px] font-semibold uppercase tracking-widest opacity-40" style={{ color: themeStyle.text }}>TXT</span>
-                    {encoding && <span className="text-[11px] opacity-30" style={{ color: themeStyle.text }}>{encoding}</span>}
+                    {manifest?.encoding && <span className="text-[11px] opacity-30" style={{ color: themeStyle.text }}>{manifest.encoding}</span>}
                 </div>
                 <div className="flex items-center gap-2">
                     <button
@@ -731,33 +566,62 @@ function TxtReader() {
                 <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{currentPage > 0 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
                 <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{currentPage < totalPages - 1 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
 
-                {layout === 'dual' && (<div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-8 z-10 pointer-events-none" style={{ background: `linear-gradient(to right, transparent, ${themeStyle.bg === '#1a1b1e' ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.06)'} 45%, ${themeStyle.bg === '#1a1b1e' ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.08)'} 50%, ${themeStyle.bg === '#1a1b1e' ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.06)'} 55%, transparent)` }} />)}
-
-                <div ref={frameRef} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
+                <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
                     {loading ? (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
                             <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
                         </div>
                     ) : (
-                        <div ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
-                            <div ref={contentRef} className="select-text" style={{ height: '100%', boxSizing: 'border-box', display: 'block', backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', whiteSpace: 'pre-wrap', columnCount: isDualLayout ? 2 : 1, columnGap: `${columnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}>
-                                {displayedText}
+                        <div style={{ position: 'relative', width: '100%', height: '100%', overflowY: 'auto', paddingRight: '1rem' }}>
+                            <div
+                                ref={contentRef}
+                                data-testid="txt-segment-content"
+                                className="select-text"
+                                style={{
+                                    backgroundColor: 'var(--reader-page-bg)',
+                                    color: 'var(--reader-page-fg)',
+                                    fontFamily: contentStyle.fontFamily,
+                                    fontWeight: contentStyle.fontWeight,
+                                    fontSize: contentStyle.fontSize,
+                                    lineHeight: `${lineHeight}`,
+                                    letterSpacing: `${letterSpacing}em`,
+                                    textAlign: 'left',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'break-word',
+                                }}
+                            >
+                                {displayedSegments.length > 0 ? displayedSegments.map((segment) => (
+                                    <p
+                                        key={segment.segment_id}
+                                        data-segment-id={segment.segment_id}
+                                        data-segment-start={segment.start_offset}
+                                        data-segment-end={segment.end_offset}
+                                        style={{ margin: '0 0 1rem 0' }}
+                                    >
+                                        {segment.displayText}
+                                    </p>
+                                )) : (
+                                    <div>{tt('loadContentFailed')}</div>
+                                )}
                             </div>
                         </div>
                     )}
                 </div>
             </div>
 
-            <ReaderProgressBar currentPage={currentPage + 1} totalPages={paginationReady ? totalPages : null} onSeekPage={(page) => goToPage(page - 1)} progress={paginationReady && totalPages > 1 ? currentPage / (totalPages - 1) : 0} onSeekProgress={seekToProgress} extraInfo={paginationReady ? `TXT ${currentPage + 1}/${totalPages}` : `TXT | ${encoding || tt('loading')}`} />
+            <ReaderProgressBar
+                currentPage={currentPage + 1}
+                totalPages={totalPages}
+                onSeekPage={(page) => { void goToPage(page - 1) }}
+                progress={totalPages > 1 ? currentPage / (totalPages - 1) : 0}
+                onSeekProgress={seekToProgress}
+                extraInfo={manifest ? `TXT ${currentPage + 1}/${totalPages}` : `TXT | ${loadingLabel}`}
+                readerFocusRef={readerRootRef}
+            />
             <ResumeToast resumePrompt={resumePrompt} onResume={resumeReading} onDismiss={dismissResume} tt={tt} />
         </div>
     )
 }
 
 export default TxtReader
-
-
-
-
-
-

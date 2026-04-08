@@ -33,6 +33,19 @@ export function getSelectionSnapshot(root) {
     const endOffset = startOffset + range.toString().length
     if (endOffset <= startOffset) return null
 
+    const segmentElement = commonAncestor.closest?.('[data-segment-id]') || null
+    let segmentId = null
+    let segmentLocalStart = null
+    let segmentLocalEnd = null
+    if (segmentElement) {
+        const segmentRange = range.cloneRange()
+        segmentRange.selectNodeContents(segmentElement)
+        segmentRange.setEnd(range.startContainer, range.startOffset)
+        segmentId = Number(segmentElement.dataset.segmentId)
+        segmentLocalStart = segmentRange.toString().length
+        segmentLocalEnd = segmentLocalStart + range.toString().length
+    }
+
     const rect = range.getBoundingClientRect()
     const viewportWidth = window.innerWidth || 1280
     const viewportHeight = window.innerHeight || 720
@@ -44,6 +57,9 @@ export function getSelectionSnapshot(root) {
         selectedText,
         startOffset,
         endOffset,
+        segmentId: Number.isFinite(segmentId) ? segmentId : null,
+        segmentLocalStart,
+        segmentLocalEnd,
         snippet: selectedText.length > 180 ? `${selectedText.slice(0, 177)}...` : selectedText,
         rect: {
             left: centerX,

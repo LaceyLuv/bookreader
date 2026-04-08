@@ -88,8 +88,13 @@ def _normalize_annotation(raw: dict[str, Any]) -> dict[str, Any]:
     note_text = _normalize_optional_text(raw.get("note_text"))
     start_offset = _normalize_nonnegative_int(raw.get("start_offset"))
     end_offset = _normalize_nonnegative_int(raw.get("end_offset"))
+    segment_id = _normalize_nonnegative_int(raw.get("segment_id"))
+    segment_local_start = _normalize_nonnegative_int(raw.get("segment_local_start"))
+    segment_local_end = _normalize_nonnegative_int(raw.get("segment_local_end"))
     if start_offset is not None and end_offset is not None and end_offset < start_offset:
         start_offset, end_offset = end_offset, start_offset
+    if segment_local_start is not None and segment_local_end is not None and segment_local_end < segment_local_start:
+        segment_local_start, segment_local_end = segment_local_end, segment_local_start
 
     created_at = _normalize_optional_text(raw.get("created_at")) or _now_iso()
     updated_at = _normalize_optional_text(raw.get("updated_at")) or created_at
@@ -102,6 +107,9 @@ def _normalize_annotation(raw: dict[str, Any]) -> dict[str, Any]:
         "page": _normalize_nonnegative_int(raw.get("page")),
         "chapter_index": _normalize_nonnegative_int(raw.get("chapter_index")),
         "chapter_title": _normalize_optional_text(raw.get("chapter_title")),
+        "segment_id": segment_id,
+        "segment_local_start": segment_local_start,
+        "segment_local_end": segment_local_end,
         "start_offset": start_offset,
         "end_offset": end_offset,
         "selected_text": selected_text,

@@ -60,3 +60,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\qa-validate.ps1 -I
 - If `npm install` has not been run in `frontend`, both web and desktop validation fail before meaningful build verification starts.
 - In this environment, `CI=1` causes `tauri build` to fail with `invalid value '1' for '--ci'`; the current Tauri CLI expects `true` or `false`.
 - Desktop validation also depends on the local Rust/Tauri toolchain and Python sidecar prerequisites documented in [build-desktop.md](/C:/dev/bookreader/.climpire-worktrees/54ee3095/docs/build-desktop.md).
+## Large TXT segmented-reader checklist
+
+- Open a TXT file larger than 5 MB and confirm the first visible text appears without locking the UI.
+- Search for a word with many hits and click a result near the end of the list; expected result is a direct jump without a whole-page freeze.
+- Add a highlight on a searched segment, reload the page, and confirm the annotation still lands on the same text.
+- Toggle `trimSpaces` and `splitParagraphs` after several search jumps; expected result is no full-document stutter and the visible segment remains stable.

@@ -88,6 +88,9 @@ class BookSearchResult(BaseModel):
     snippet: str
     position: int | None = None
     locator: str | None = None
+    segment_id: int | None = None
+    segment_local_start: int | None = None
+    segment_local_end: int | None = None
     chapter_index: int | None = None
     chapter_title: str | None = None
     chapter_match_index: int | None = None
@@ -107,6 +110,9 @@ class Annotation(BaseModel):
     page: int | None = None
     chapter_index: int | None = None
     chapter_title: str | None = None
+    segment_id: int | None = None
+    segment_local_start: int | None = None
+    segment_local_end: int | None = None
     start_offset: int | None = None
     end_offset: int | None = None
     selected_text: str
@@ -123,6 +129,9 @@ class AnnotationCreate(BaseModel):
     page: int | None = None
     chapter_index: int | None = None
     chapter_title: str | None = None
+    segment_id: int | None = None
+    segment_local_start: int | None = None
+    segment_local_end: int | None = None
     start_offset: int | None = None
     end_offset: int | None = None
     selected_text: str
@@ -146,6 +155,26 @@ class FontMeta(BaseModel):
 class TxtContent(BaseModel):
     text: str
     encoding: str
+
+
+class TxtSegment(BaseModel):
+    segment_id: int
+    text: str
+    start_offset: int
+    end_offset: int
+
+
+class TxtManifest(BaseModel):
+    encoding: str
+    total_chars: int
+    segment_count: int
+
+
+class TxtSegmentWindow(BaseModel):
+    start: int
+    limit: int
+    total: int
+    segments: List[TxtSegment] = Field(default_factory=list)
 
 
 class EpubTocItem(BaseModel):

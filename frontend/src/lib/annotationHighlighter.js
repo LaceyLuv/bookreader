@@ -64,6 +64,13 @@ function wrapTextSlice(textNode, startOffset, endOffset, annotation) {
     return span
 }
 
+function wrapSegmentSlice(segmentEl, startOffset, endOffset, annotation) {
+    if (!segmentEl) return null
+    const textNode = Array.from(segmentEl.childNodes).find((node) => node.nodeType === Node.TEXT_NODE)
+    if (!textNode) return null
+    return wrapTextSlice(textNode, startOffset, endOffset, annotation)
+}
+
 function prepareAnnotations(annotations) {
     const ordered = []
     let lastEnd = -1
@@ -86,6 +93,16 @@ export function clearAnnotationHighlights(root) {
 export function highlightAnnotationsInElement(root, annotations) {
     clearAnnotationHighlights(root)
     if (!root || !Array.isArray(annotations) || annotations.length === 0) return []
+
+    const segmentAnnotations = annotations.filter((item) => Number.isFinite(item?.segment_id) && Number.isFinite(item?.segment_local_start) && Number.isFinite(item?.segment_local_end))
+    if (segmentAnnotations.length > 0) {
+        for (const annotation of segmentAnnotations) {
+            const segmentEl = root.querySelector(`[data-segment-id="${annotation.segment_id}"]`)
+            if (!segmentEl) continue
+            wrapSegmentSlice(segmentEl, annotation.segment_local_start, annotation.segment_local_end, annotation)
+        }
+        return getAnnotationNodes(root)
+    }
 
     for (const annotation of prepareAnnotations(annotations)) {
         const textNodes = getTextNodes(root)
