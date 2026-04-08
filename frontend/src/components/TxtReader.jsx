@@ -7,18 +7,37 @@ import ReaderSelectionMenu from './ReaderSelectionMenu'
 import ReaderToolbar from './ReaderToolbar'
 import ResumeToast from './ResumeToast'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
+import { useReaderViewportAnchor } from '../hooks/useReaderViewportAnchor'
 import { useReadingProgress } from '../hooks/useReadingProgress'
 import { useReaderSettings } from '../hooks/useReaderSettings'
 import { useTxtSegmentWindow } from '../hooks/useTxtSegmentWindow'
 import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annotationColors'
 import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
+import { API_BOOKS_BASE } from '../lib/apiBase'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
 import { clearSearchHighlights } from '../lib/searchHighlighter'
 import { clearSegmentMarks, findSegmentElement, highlightSegmentMatch } from '../lib/txtSegmentDom'
-import { API_BOOKS_BASE } from '../lib/apiBase'
 
 const API = API_BOOKS_BASE
 const API_ROOT = API.replace(/\/books$/, '')
+
+function scheduleAfterPaint(callback) {
+    if (typeof window === 'undefined') return () => {}
+
+    let frameA = null
+    let frameB = null
+
+    frameA = window.requestAnimationFrame(() => {
+        frameB = window.requestAnimationFrame(() => {
+            callback()
+        })
+    })
+
+    return () => {
+        if (frameA != null) window.cancelAnimationFrame(frameA)
+        if (frameB != null) window.cancelAnimationFrame(frameB)
+    }
+}
 
 function removeExtraWhitespaceAndEmptyLines(text) {
     if (typeof text !== 'string' || !text) return ''
@@ -111,6 +130,8 @@ function TxtReader() {
 
     const readerRootRef = useRef(null)
     const contentRef = useRef(null)
+    const pendingAnchorRestoreCleanupRef = useRef(null)
+    const { captureAnchor, restoreAnchor, clearAnchor } = useReaderViewportAnchor()
 
     const {
         manifest,
@@ -252,6 +273,13 @@ function TxtReader() {
         const target = activateAnnotationHighlight(root, activeAnnotationId)
         if (target) scrollAnnotationIntoView(target)
     }, [activeAnnotationId, loading, pendingSearchTarget])
+
+    useEffect(() => {
+        return () => {
+            pendingAnchorRestoreCleanupRef.current?.()
+            clearAnchor()
+        }
+    }, [clearAnchor])
 
     const handleSearchQueryChange = useCallback((value) => {
         const trimmedValue = value.trim()
@@ -439,6 +467,17 @@ function TxtReader() {
         }
     }, [goToPage])
 
+    const handleProgressBarVisibilityChange = useCallback(() => {
+        const root = contentRef.current
+        if (!root) return
+        pendingAnchorRestoreCleanupRef.current?.()
+        captureAnchor(root)
+        pendingAnchorRestoreCleanupRef.current = scheduleAfterPaint(() => {
+            pendingAnchorRestoreCleanupRef.current = null
+            restoreAnchor(root)
+        })
+    }, [captureAnchor, restoreAnchor])
+
     useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true, readerRootRef })
 
     const loadingLabel = error ? tt('loadContentFailed') : (manifest?.encoding || tt('loading'))
@@ -618,6 +657,7 @@ function TxtReader() {
                 onSeekProgress={seekToProgress}
                 extraInfo={manifest ? `TXT ${currentPage + 1}/${totalPages}` : `TXT | ${loadingLabel}`}
                 readerFocusRef={readerRootRef}
+                onVisibilityChange={handleProgressBarVisibilityChange}
             />
             <ResumeToast resumePrompt={resumePrompt} onResume={resumeReading} onDismiss={dismissResume} tt={tt} />
         </div>

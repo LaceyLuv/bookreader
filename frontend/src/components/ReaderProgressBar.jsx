@@ -4,6 +4,22 @@ function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value))
 }
 
+function restoreReaderFocus(readerFocusRef) {
+    const target = readerFocusRef?.current
+    if (!(target instanceof HTMLElement)) return
+    window.queueMicrotask(() => {
+        target.focus({ preventScroll: true })
+    })
+}
+
+function releaseControlFocus(event, readerFocusRef) {
+    const control = event?.currentTarget
+    if (control instanceof HTMLElement) {
+        control.blur()
+    }
+    restoreReaderFocus(readerFocusRef)
+}
+
 function ReaderProgressBar({
     currentPage = 1,
     totalPages = null,
@@ -11,6 +27,8 @@ function ReaderProgressBar({
     progress = 0,
     onSeekProgress,
     extraInfo = '',
+    readerFocusRef = null,
+    onVisibilityChange,
 }) {
     const hasTotalPages = Number.isFinite(totalPages) && totalPages > 0
     const canSeekPage = hasTotalPages && typeof onSeekPage === 'function'
@@ -20,6 +38,8 @@ function ReaderProgressBar({
     const [draftProgress, setDraftProgress] = useState(normalizedProgress)
     const [isDragging, setIsDragging] = useState(false)
     const lastCommittedProgressRef = useRef(null)
+    const pointerFocusGuardRef = useRef(false)
+    const lastPointerInteractionAtRef = useRef(0)
 
     const [pageInput, setPageInput] = useState(String(currentPage))
     const [isEditingPage, setIsEditingPage] = useState(false)
@@ -34,21 +54,52 @@ function ReaderProgressBar({
         if (!isEditingPage) setPageInput(String(currentPage))
     }, [currentPage, isEditingPage])
 
+    const markPointerInteraction = () => {
+        pointerFocusGuardRef.current = true
+        lastPointerInteractionAtRef.current = Date.now()
+    }
+
+    const releasePointerGuard = () => {
+        window.queueMicrotask(() => {
+            pointerFocusGuardRef.current = false
+        })
+    }
+
+    const handleControlFocus = () => {
+        if (!pointerFocusGuardRef.current) return
+        restoreReaderFocus(readerFocusRef)
+        releasePointerGuard()
+    }
+
+    const handleControlKeyDown = (event) => {
+        const key = event.key === ' ' ? 'Space' : event.key
+        if (key !== 'Space' && key !== 'Enter') return
+        if (Date.now() - lastPointerInteractionAtRef.current > 1500) return
+        event.preventDefault()
+        event.stopPropagation()
+        releaseControlFocus(event, readerFocusRef)
+    }
+
     const commitProgressSeek = () => {
         if (!canSeekProgress) return
         const value = clamp(draftProgress, 0, 1)
         if (lastCommittedProgressRef.current === value) return
         lastCommittedProgressRef.current = value
         onSeekProgress(value)
+        restoreReaderFocus(readerFocusRef)
     }
 
     const commitPageSeek = () => {
         if (!canSeekPage) return
         const parsed = Number.parseInt(pageInput, 10)
-        if (!Number.isFinite(parsed)) { setPageInput(String(currentPage)); return }
+        if (!Number.isFinite(parsed)) {
+            setPageInput(String(currentPage))
+            return
+        }
         const clamped = clamp(parsed, 1, totalPages)
         setPageInput(String(clamped))
         if (clamped !== currentPage) onSeekPage(clamped)
+        restoreReaderFocus(readerFocusRef)
     }
 
     const handleRangeInput = (e) => {
@@ -68,7 +119,15 @@ function ReaderProgressBar({
                     type="button"
                     title="Show progress bar"
                     aria-label="Show progress bar"
-                    onClick={() => setIsCollapsed(false)}
+                    data-reader-progress-control="true"
+                    onPointerDown={markPointerInteraction}
+                    onFocus={handleControlFocus}
+                    onKeyDown={handleControlKeyDown}
+                    onClick={(event) => {
+                        setIsCollapsed(false)
+                        onVisibilityChange?.(true)
+                        releaseControlFocus(event, readerFocusRef)
+                    }}
                     className="absolute left-1/2 bottom-0 z-10 h-5 w-10 -translate-x-1/2 rounded-t-md border border-b-0 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
                     style={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--panel-border)', color: 'var(--reader-page-fg)' }}
                 >
@@ -86,7 +145,15 @@ function ReaderProgressBar({
                 type="button"
                 title="Hide progress bar"
                 aria-label="Hide progress bar"
-                onClick={() => setIsCollapsed(true)}
+                data-reader-progress-control="true"
+                onPointerDown={markPointerInteraction}
+                onFocus={handleControlFocus}
+                onKeyDown={handleControlKeyDown}
+                onClick={(event) => {
+                    setIsCollapsed(true)
+                    onVisibilityChange?.(false)
+                    releaseControlFocus(event, readerFocusRef)
+                }}
                 className="absolute left-1/2 top-0 z-10 h-5 w-10 -translate-x-1/2 -translate-y-[55%] rounded-t-md border border-b-0"
                 style={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--panel-border)', color: 'var(--reader-page-fg)' }}
             >
@@ -104,13 +171,34 @@ function ReaderProgressBar({
 
                 <input
                     type="range" min={0} max={100}
+                    data-reader-progress-control="true"
                     value={Math.round(draftProgress * 100)}
                     onInput={handleRangeInput}
                     onChange={commitProgressSeek}
-                    onPointerDown={() => { setIsDragging(true); lastCommittedProgressRef.current = null }}
-                    onPointerUp={() => { setIsDragging(false); commitProgressSeek() }}
-                    onMouseUp={() => { if (!isDragging) return; setIsDragging(false); commitProgressSeek() }}
-                    onTouchEnd={() => { if (!isDragging) return; setIsDragging(false); commitProgressSeek() }}
+                    onFocus={handleControlFocus}
+                    onKeyDown={handleControlKeyDown}
+                    onPointerDown={() => {
+                        markPointerInteraction()
+                        setIsDragging(true)
+                        lastCommittedProgressRef.current = null
+                    }}
+                    onPointerUp={(event) => {
+                        setIsDragging(false)
+                        commitProgressSeek()
+                        releaseControlFocus(event, readerFocusRef)
+                    }}
+                    onMouseUp={(event) => {
+                        if (!isDragging) return
+                        setIsDragging(false)
+                        commitProgressSeek()
+                        releaseControlFocus(event, readerFocusRef)
+                    }}
+                    onTouchEnd={(event) => {
+                        if (!isDragging) return
+                        setIsDragging(false)
+                        commitProgressSeek()
+                        releaseControlFocus(event, readerFocusRef)
+                    }}
                     className="h-2 w-full cursor-pointer"
                     style={{ accentColor: 'var(--accent)' }}
                 />
@@ -120,21 +208,33 @@ function ReaderProgressBar({
                     <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
                         <input
                             type="number" min={1} max={hasTotalPages ? totalPages : undefined}
+                            data-reader-progress-control="true"
                             value={hasTotalPages ? pageInput : ''} disabled={!canSeekPage} placeholder="?"
+                            onPointerDown={markPointerInteraction}
                             onFocus={() => setIsEditingPage(true)}
+                            onKeyDown={(e) => {
+                                handleControlKeyDown(e)
+                                if (e.defaultPrevented) return
+                                if (e.key === 'Enter') e.currentTarget.blur()
+                                else if (e.key === 'Escape') {
+                                    e.preventDefault(); skipPageCommitRef.current = true
+                                    setPageInput(String(currentPage)); setIsEditingPage(false); e.currentTarget.blur()
+                                    restoreReaderFocus(readerFocusRef)
+                                }
+                            }}
+                            onClick={() => {
+                                if (pointerFocusGuardRef.current) {
+                                    setIsEditingPage(false)
+                                    restoreReaderFocus(readerFocusRef)
+                                    releasePointerGuard()
+                                }
+                            }}
                             onBlur={() => {
                                 setIsEditingPage(false)
                                 if (skipPageCommitRef.current) { skipPageCommitRef.current = false; return }
                                 commitPageSeek()
                             }}
                             onChange={(e) => setPageInput(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter') e.currentTarget.blur()
-                                else if (e.key === 'Escape') {
-                                    e.preventDefault(); skipPageCommitRef.current = true
-                                    setPageInput(String(currentPage)); setIsEditingPage(false); e.currentTarget.blur()
-                                }
-                            }}
                             className="w-14 rounded-md border px-2 py-0.5 text-right leading-none outline-none disabled:opacity-40"
                             style={{ borderColor: 'var(--panel-border)', backgroundColor: 'color-mix(in srgb, var(--panel-bg) 85%, transparent)', color: 'var(--reader-page-fg)' }}
                         />

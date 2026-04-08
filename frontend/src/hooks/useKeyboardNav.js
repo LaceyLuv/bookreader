@@ -1,9 +1,20 @@
-﻿import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 
-const INTERACTIVE_SELECTOR = 'input, textarea, select, button, a, [contenteditable="true"], [role="button"]'
+function isTextEntryTarget(target) {
+    if (!(target instanceof Element)) return false
+    const editable = target.closest('input, textarea, [contenteditable="true"]')
+    if (!editable) return false
+    if (editable instanceof HTMLInputElement) {
+        return !['range', 'button', 'checkbox', 'radio'].includes(editable.type)
+    }
+    return true
+}
 
-function isInteractiveTarget(target) {
-    return target instanceof Element && !!target.closest(INTERACTIVE_SELECTOR)
+function restoreReaderFocus(readerRootRef) {
+    const target = readerRootRef?.current
+    if (target instanceof HTMLElement && document.activeElement !== target) {
+        target.focus({ preventScroll: true })
+    }
 }
 
 function isNextKey(e) {
@@ -24,10 +35,12 @@ function isHandledKey(e) {
  * - ArrowRight / ArrowDown / PageDown / Space: next page
  * - Shift+Space: previous page
  */
-export function useKeyboardNav({ onNext, onPrev, onEscape, enabled = true }) {
+export function useKeyboardNav({ onNext, onPrev, onEscape, enabled = true, readerRootRef = null }) {
     const handler = useCallback((e) => {
         if (!enabled) return
-        if (isInteractiveTarget(e.target)) return
+        if (isTextEntryTarget(e.target)) return
+
+        restoreReaderFocus(readerRootRef)
 
         if (isPrevKey(e)) {
             e.preventDefault()
@@ -42,22 +55,22 @@ export function useKeyboardNav({ onNext, onPrev, onEscape, enabled = true }) {
             e.stopPropagation()
             onEscape?.()
         }
-    }, [onNext, onPrev, onEscape, enabled])
+    }, [onNext, onPrev, onEscape, enabled, readerRootRef])
 
     const preventHandledKeyup = useCallback((e) => {
         if (!enabled) return
-        if (isInteractiveTarget(e.target)) return
+        if (isTextEntryTarget(e.target)) return
         if (!isHandledKey(e)) return
         e.preventDefault()
         e.stopPropagation()
     }, [enabled])
 
     useEffect(() => {
-        window.addEventListener('keydown', handler)
-        window.addEventListener('keyup', preventHandledKeyup)
+        window.addEventListener('keydown', handler, true)
+        window.addEventListener('keyup', preventHandledKeyup, true)
         return () => {
-            window.removeEventListener('keydown', handler)
-            window.removeEventListener('keyup', preventHandledKeyup)
+            window.removeEventListener('keydown', handler, true)
+            window.removeEventListener('keyup', preventHandledKeyup, true)
         }
     }, [handler, preventHandledKeyup])
 }

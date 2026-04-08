@@ -55,6 +55,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\qa-validate.ps1 -I
   - `npm run desktop:build` is only considered valid when explicitly run with `-IncludeDesktopBuild`
   - Sidecar and installer presence should be checked in `frontend/src-tauri/target/` after a successful desktop build
 
+## Reader interaction regression checklist
+
+- TXT: open a large `.txt` file, toggle the bottom bar twice, and confirm the visible paragraph does not jump.
+- TXT: click the bottom-bar slider, then press `Space`; expected result is next page, not button or slider highlight.
+- TXT: open a `.txt` file and toggle the bottom bar while watching for severe lag during open and first interaction.
+- EPUB: click the bottom bar, then press `Space`; expected result is normal page or chapter advance behavior.
+- ZIP: click the bottom bar, then press `Space`; expected result is normal image navigation behavior.
+
 ## Current known blockers
 
 - If `npm install` has not been run in `frontend`, both web and desktop validation fail before meaningful build verification starts.

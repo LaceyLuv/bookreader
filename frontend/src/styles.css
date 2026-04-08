@@ -100,3 +100,19 @@ body {
 .reader-ui * {
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif !important;
 }
+
+.reader-progress-control,
+.reader-progress-control:focus,
+.reader-progress-control:focus-visible {
+  outline: none;
+  box-shadow: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+[data-reader-progress-control="true"],
+[data-reader-progress-control="true"]:focus,
+[data-reader-progress-control="true"]:focus-visible {
+  outline: none;
+  box-shadow: none;
+  -webkit-tap-highlight-color: transparent;
+}
