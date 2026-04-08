@@ -66,3 +66,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\qa-validate.ps1 -I
 - Search for a word with many hits and click a result near the end of the list; expected result is a direct jump without a whole-page freeze.
 - Add a highlight on a searched segment, reload the page, and confirm the annotation still lands on the same text.
 - Toggle `trimSpaces` and `splitParagraphs` after several search jumps; expected result is no full-document stutter and the visible segment remains stable.
+
+## TXT paged-reader regression checklist
+
+- Open a long TXT file and confirm the first screen fits inside one paged viewport with no normal document scrolling needed to keep reading.
+- Toggle TXT layout from `single` to `dual` and confirm the visible view changes into a true two-page spread instead of staying visually identical.
+- On the first TXT page, press `Space` and confirm both the visible text and the bottom progress bar move to the next viewport page together.
+- Drag the bottom progress slider or type a target page number and confirm the visible TXT text changes immediately to that target viewport page.
+- Open TXT search results and annotation items and confirm each jump lands on the expected visible viewport page.
