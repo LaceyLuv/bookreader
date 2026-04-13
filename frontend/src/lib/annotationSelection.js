@@ -42,7 +42,8 @@ export function getSelectionSnapshot(root) {
         segmentRange.selectNodeContents(segmentElement)
         segmentRange.setEnd(range.startContainer, range.startOffset)
         segmentId = Number(segmentElement.dataset.segmentId)
-        segmentLocalStart = segmentRange.toString().length
+        const sliceStart = Number(segmentElement.dataset.sliceStart || 0)
+        segmentLocalStart = sliceStart + segmentRange.toString().length
         segmentLocalEnd = segmentLocalStart + range.toString().length
     }
 

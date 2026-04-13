@@ -3,8 +3,15 @@ from pathlib import Path
 
 import chardet
 
+from services.txt_transform_service import transform_txt_segments
+
 
 _SAMPLE_SIZE = 64 * 1024  # 64KB is sufficient for encoding detection
+_DEFAULT_TRANSFORM_OPTIONS = {
+    "trim_spaces": False,
+    "remove_empty_lines": False,
+    "split_paragraphs": False,
+}
 
 
 def _decode_txt_bytes(raw_data: bytes, detected_encoding: str | None) -> dict:
@@ -82,6 +89,23 @@ def _read_txt_manifest_cached(file_path: str, size: int, mtime_ns: int) -> dict:
     }
 
 
+def _segments_to_display_fragments(segments: list[dict]) -> list[dict]:
+    fragments = []
+    for segment in segments:
+        start_offset = segment["start_offset"]
+        end_offset = segment["end_offset"]
+        fragments.append(
+            {
+                "segment_id": segment["segment_id"],
+                "display_text": segment["text"],
+                "source_start_offset": start_offset,
+                "source_end_offset": end_offset,
+                "display_to_source": list(range(start_offset, end_offset)),
+            }
+        )
+    return fragments
+
+
 def clear_txt_caches() -> None:
     _read_txt_file_cached.cache_clear()
     _read_txt_manifest_cached.cache_clear()
@@ -95,7 +119,24 @@ def read_txt_file(file_path: str) -> dict:
     return {"text": text, "encoding": encoding}
 
 
-def read_txt_manifest(file_path: str) -> dict:
+def read_txt_manifest(file_path: str, transform_options: dict | None = None) -> dict:
     stat = Path(file_path).stat()
     normalized_path = str(Path(file_path).resolve())
-    return _read_txt_manifest_cached(normalized_path, stat.st_size, stat.st_mtime_ns)
+    manifest = _read_txt_manifest_cached(normalized_path, stat.st_size, stat.st_mtime_ns)
+    options = {**_DEFAULT_TRANSFORM_OPTIONS, **(transform_options or {})}
+    if any(options.values()):
+        transformed = transform_txt_segments(
+            manifest["segments"],
+            trim_spaces=options["trim_spaces"],
+            remove_empty_lines=options["remove_empty_lines"],
+            split_paragraphs=options["split_paragraphs"],
+        )
+        display_fragments = transformed["fragments"]
+    else:
+        display_fragments = _segments_to_display_fragments(manifest["segments"])
+    return {
+        **manifest,
+        "segment_count": len(display_fragments),
+        "transform_options": options,
+        "display_fragments": display_fragments,
+    }

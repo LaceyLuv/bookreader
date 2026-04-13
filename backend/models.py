@@ -164,17 +164,34 @@ class TxtSegment(BaseModel):
     end_offset: int
 
 
+class TxtTransformOptions(BaseModel):
+    trim_spaces: bool = False
+    remove_empty_lines: bool = False
+    split_paragraphs: bool = False
+
+
+class TxtDisplayFragment(BaseModel):
+    segment_id: int
+    display_text: str
+    source_start_offset: int
+    source_end_offset: int
+    display_to_source: List[int] = Field(default_factory=list)
+
+
 class TxtManifest(BaseModel):
     encoding: str
     total_chars: int
     segment_count: int
+    transform_options: TxtTransformOptions = Field(default_factory=TxtTransformOptions)
+    display_fragments: List[TxtDisplayFragment] = Field(default_factory=list)
 
 
 class TxtSegmentWindow(BaseModel):
     start: int
     limit: int
     total: int
-    segments: List[TxtSegment] = Field(default_factory=list)
+    transform_options: TxtTransformOptions = Field(default_factory=TxtTransformOptions)
+    display_fragments: List[TxtDisplayFragment] = Field(default_factory=list)
 
 
 class EpubTocItem(BaseModel):

@@ -1,3 +1,5 @@
+import { resolveSegmentTarget } from './txtSegmentDom'
+
 const DEFAULT_COLORS = {
     highlight: 'rgba(255, 212, 59, 0.42)',
     note: 'rgba(76, 201, 240, 0.24)',
@@ -97,9 +99,15 @@ export function highlightAnnotationsInElement(root, annotations) {
     const segmentAnnotations = annotations.filter((item) => Number.isFinite(item?.segment_id) && Number.isFinite(item?.segment_local_start) && Number.isFinite(item?.segment_local_end))
     if (segmentAnnotations.length > 0) {
         for (const annotation of segmentAnnotations) {
-            const segmentEl = root.querySelector(`[data-segment-id="${annotation.segment_id}"]`)
-            if (!segmentEl) continue
-            wrapSegmentSlice(segmentEl, annotation.segment_local_start, annotation.segment_local_end, annotation)
+            const target = resolveSegmentTarget(root, {
+                segmentId: annotation.segment_id,
+                sourceStart: annotation.start_offset,
+                sourceEnd: annotation.end_offset,
+                segmentLocalStart: annotation.segment_local_start,
+                segmentLocalEnd: annotation.segment_local_end,
+            })
+            if (!target?.element) continue
+            wrapSegmentSlice(target.element, target.localStart, target.localEnd, annotation)
         }
         return getAnnotationNodes(root)
     }

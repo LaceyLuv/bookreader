@@ -54,6 +54,63 @@ def _iter_match_spans(lower_text: str, lower_query: str):
         start = end
 
 
+def _get_fragment_text(fragment: dict) -> str:
+    return fragment.get('display_text') or fragment.get('text') or ''
+
+
+def _get_fragment_source_start(fragment: dict) -> int | None:
+    start = fragment.get('source_start_offset')
+    if isinstance(start, int):
+        return start
+    start = fragment.get('start_offset')
+    return start if isinstance(start, int) else None
+
+
+def _get_fragment_source_end(fragment: dict) -> int | None:
+    end = fragment.get('source_end_offset')
+    if isinstance(end, int):
+        return end
+    end = fragment.get('end_offset')
+    return end if isinstance(end, int) else None
+
+
+def _get_source_offset_for_display_index(fragment: dict, display_index: int) -> int | None:
+    if not isinstance(display_index, int) or display_index < 0:
+        return None
+
+    mapping = fragment.get('display_to_source')
+    if isinstance(mapping, list) and display_index < len(mapping):
+        value = mapping[display_index]
+        return value if isinstance(value, int) else None
+
+    source_start = _get_fragment_source_start(fragment)
+    source_end = _get_fragment_source_end(fragment)
+    if source_start is None or source_end is None or source_end <= source_start:
+        return None
+
+    return min(source_end - 1, source_start + display_index)
+
+
+def _get_segment_start_offsets(manifest: dict, search_fragments: list[dict]) -> dict[int, int]:
+    segment_starts = {}
+
+    for segment in manifest.get('segments') or []:
+        segment_id = segment.get('segment_id')
+        start_offset = segment.get('start_offset')
+        if isinstance(segment_id, int) and isinstance(start_offset, int):
+            segment_starts[segment_id] = start_offset
+
+    for fragment in search_fragments:
+        segment_id = fragment.get('segment_id')
+        source_start = _get_fragment_source_start(fragment)
+        if not isinstance(segment_id, int) or source_start is None:
+            continue
+        current = segment_starts.get(segment_id)
+        segment_starts[segment_id] = source_start if current is None else min(current, source_start)
+
+    return segment_starts
+
+
 @lru_cache(maxsize=24)
 def _get_txt_search_source(file_path: str, size: int, mtime_ns: int) -> tuple[str, str]:
     payload = read_txt_file(file_path)
@@ -102,30 +159,54 @@ def prewarm_search_cache(file_path: str, file_type: str) -> None:
             _INFLIGHT_PREWARMS.discard(inflight_key)
 
 
-def search_txt_file(file_path: str, query: str, limit: int = RESULT_LIMIT) -> dict:
+def search_txt_file(file_path: str, query: str, limit: int = RESULT_LIMIT, transform_options: dict | None = None) -> dict:
     trimmed_query = (query or '').strip()
     if not trimmed_query:
         return {'query': '', 'total': 0, 'results': []}
 
-    manifest = read_txt_manifest(file_path)
+    manifest = read_txt_manifest(file_path, transform_options=transform_options)
     lower_query = trimmed_query.lower()
+    search_fragments = manifest.get('display_fragments') or manifest.get('segments') or []
+    segment_start_offsets = _get_segment_start_offsets(manifest, search_fragments)
 
     results = []
     total = 0
-    for segment in manifest['segments']:
-        lower_text = segment['text'].lower()
+    for fragment in search_fragments:
+        text = _get_fragment_text(fragment)
+        if not text:
+            continue
+
+        lower_text = text.lower()
+        segment_id = fragment.get('segment_id')
+        absolute_segment_start = segment_start_offsets.get(segment_id) if isinstance(segment_id, int) else None
+
         for start, end in _iter_match_spans(lower_text, lower_query):
+            absolute_start = _get_source_offset_for_display_index(fragment, start)
+            absolute_end_char = _get_source_offset_for_display_index(fragment, end - 1)
+
             total += 1
             if len(results) >= limit:
                 continue
+
+            segment_local_start = (
+                absolute_start - absolute_segment_start
+                if absolute_start is not None and absolute_segment_start is not None
+                else None
+            )
+            segment_local_end = (
+                absolute_end_char + 1 - absolute_segment_start
+                if absolute_end_char is not None and absolute_segment_start is not None
+                else None
+            )
+
             results.append({
                 'index': total - 1,
-                'snippet': _build_snippet(segment['text'], start, end),
-                'position': segment['start_offset'] + start,
-                'locator': f"segment:{segment['segment_id']}:offset:{start}",
-                'segment_id': segment['segment_id'],
-                'segment_local_start': start,
-                'segment_local_end': end,
+                'snippet': _build_snippet(text, start, end),
+                'position': absolute_start,
+                'locator': f"segment:{segment_id}:offset:{segment_local_start}" if isinstance(segment_id, int) and isinstance(segment_local_start, int) else None,
+                'segment_id': segment_id,
+                'segment_local_start': segment_local_start,
+                'segment_local_end': segment_local_end,
                 'chapter_match_index': total - 1,
             })
 

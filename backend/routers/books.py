@@ -204,35 +204,64 @@ async def get_txt_content(book_id: str, background_tasks: BackgroundTasks):
 
 
 @router.get('/{book_id}/txt-manifest', response_model=TxtManifest)
-async def get_txt_manifest(book_id: str, background_tasks: BackgroundTasks):
+async def get_txt_manifest(
+    book_id: str,
+    background_tasks: BackgroundTasks,
+    trim_spaces: bool = False,
+    remove_empty_lines: bool = False,
+    split_paragraphs: bool = False,
+):
     record, path = _resolve_book_file(book_id)
     if record['file_type'] != 'txt':
         raise HTTPException(status_code=400, detail='Not a TXT file')
     _touch_book_open(record)
     _schedule_search_prewarm(background_tasks, path, record['file_type'])
-    manifest = read_txt_manifest(str(path))
-    return TxtManifest(
-        encoding=manifest['encoding'],
-        total_chars=manifest['total_chars'],
-        segment_count=manifest['segment_count'],
+    manifest = read_txt_manifest(
+        str(path),
+        transform_options={
+            'trim_spaces': trim_spaces,
+            'remove_empty_lines': remove_empty_lines,
+            'split_paragraphs': split_paragraphs,
+        },
     )
+    if 'display_fragments' in manifest:
+        manifest = {
+            **manifest,
+            'segment_count': len(manifest['display_fragments']),
+        }
+    return TxtManifest(**manifest)
 
 
 @router.get('/{book_id}/txt-segments', response_model=TxtSegmentWindow)
-async def get_txt_segments(book_id: str, start: int = 0, limit: int = 40):
+async def get_txt_segments(
+    book_id: str,
+    start: int = 0,
+    limit: int = 40,
+    trim_spaces: bool = False,
+    remove_empty_lines: bool = False,
+    split_paragraphs: bool = False,
+):
     record, path = _resolve_book_file(book_id)
     if record['file_type'] != 'txt':
         raise HTTPException(status_code=400, detail='Not a TXT file')
 
-    manifest = read_txt_manifest(str(path))
+    manifest = read_txt_manifest(
+        str(path),
+        transform_options={
+            'trim_spaces': trim_spaces,
+            'remove_empty_lines': remove_empty_lines,
+            'split_paragraphs': split_paragraphs,
+        },
+    )
     safe_start = max(0, start)
     safe_limit = max(1, min(limit, 120))
-    window = manifest['segments'][safe_start:safe_start + safe_limit]
+    window = manifest['display_fragments'][safe_start:safe_start + safe_limit]
     return TxtSegmentWindow(
         start=safe_start,
         limit=safe_limit,
-        total=manifest['segment_count'],
-        segments=window,
+        total=len(manifest['display_fragments']),
+        transform_options=manifest.get('transform_options', {}),
+        display_fragments=window,
     )
 
 
@@ -317,7 +346,13 @@ async def get_epub_asset_file(book_id: str, asset_path: str, request: Request):
 
 
 @router.get('/{book_id}/search', response_model=BookSearchResponse)
-async def search_book(book_id: str, q: str = Query('', min_length=0, max_length=120)):
+async def search_book(
+    book_id: str,
+    q: str = Query('', min_length=0, max_length=120),
+    trim_spaces: bool = False,
+    remove_empty_lines: bool = False,
+    split_paragraphs: bool = False,
+):
     record, path = _resolve_book_file(book_id)
     query = q.strip()
     if not query:
@@ -325,7 +360,15 @@ async def search_book(book_id: str, q: str = Query('', min_length=0, max_length=
 
     _touch_book_open(record)
     if record['file_type'] == 'txt':
-        result = search_txt_file(str(path), query)
+        result = search_txt_file(
+            str(path),
+            query,
+            transform_options={
+                'trim_spaces': trim_spaces,
+                'remove_empty_lines': remove_empty_lines,
+                'split_paragraphs': split_paragraphs,
+            },
+        )
     elif record['file_type'] == 'epub':
         result = search_epub_file(str(path), query)
     else:

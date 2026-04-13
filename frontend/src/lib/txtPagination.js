@@ -1,6 +1,10 @@
 export function clampViewportPage(page, totalPages) {
-  const max = Math.max(1, totalPages) - 1
+  const max = Math.max(1, Number(totalPages) || 0) - 1
   return Math.max(0, Math.min(page, max))
+}
+
+export function getPagesPerView(layout) {
+  return layout === 'dual' ? 2 : 1
 }
 
 export function buildViewportPageMap(items) {
@@ -26,6 +30,7 @@ export function buildViewportPageMap(items) {
 }
 
 export function findViewportPageForSegment(map, segmentId) {
-  const hit = map.pages.find((item) => item.segmentId === segmentId)
+  const pages = Array.isArray(map?.pages) ? map.pages : []
+  const hit = pages.find((item) => item.segmentId === segmentId)
   return hit ? hit.page : 0
 }

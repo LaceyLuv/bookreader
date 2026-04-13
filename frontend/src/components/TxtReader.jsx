@@ -16,11 +16,56 @@ import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnota
 import { API_BOOKS_BASE } from '../lib/apiBase'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
 import { clearSearchHighlights } from '../lib/searchHighlighter'
-import { clearSegmentMarks, findSegmentElement, highlightSegmentMatch } from '../lib/txtSegmentDom'
-import { clampViewportPage } from '../lib/txtPagination'
+import {
+    findDisplayRangeForSourceLocator,
+    findNearestDisplayFragmentForSourceOffset,
+    recoverSourceRangeFromDisplaySelection,
+} from '../lib/txtDisplayMapper'
+import { buildMeasuredPages } from '../lib/txtMeasuredPagination'
+import { createTxtTransformOptions, toTxtTransformQuery } from '../lib/txtTransformOptions'
+import { clearSegmentMarks, highlightSegmentMatch, resolveSegmentTarget } from '../lib/txtSegmentDom'
+import { clampViewportPage, getPagesPerView } from '../lib/txtPagination'
+import {
+    findRenderPageForLocator,
+    getPageIndexForLocator,
+    getRenderPageStartSegment,
+    getRenderPageStartSegments,
+    getSegmentIdForLocator,
+    getVisibleRenderPages,
+} from '../lib/txtRenderPages'
 
 const API = API_BOOKS_BASE
 const API_ROOT = API.replace(/\/books$/, '')
+const DEFAULT_TXT_RENDER_PAGE_SIZE = 24
+
+function getMeasuredSliceLength(slice) {
+    if (typeof slice?.displayText === 'string') return slice.displayText.length
+    if (typeof slice?.display_text === 'string') return slice.display_text.length
+    if (typeof slice?.text === 'string') return slice.text.length
+    return 0
+}
+
+function getMeasuredPageStartFragmentIndex(page) {
+    if (Number.isFinite(page?.startFragmentIndex)) return page.startFragmentIndex
+    const firstSlice = Array.isArray(page?.slices) ? page.slices[0] : page?.segments?.[0]
+    return Number.isFinite(firstSlice?.fragmentIndex) ? firstSlice.fragmentIndex : null
+}
+
+function buildMeasuredRenderPages(fragments) {
+    try {
+        return buildMeasuredPages(Array.isArray(fragments) ? fragments : [], {
+            pageHeight: DEFAULT_TXT_RENDER_PAGE_SIZE,
+            measureSliceHeight: getMeasuredSliceLength,
+            measurePageHeight: (pageSlices) => pageSlices.reduce((total, slice) => total + getMeasuredSliceLength(slice), 0),
+        }).map((page) => ({
+            ...page,
+            startFragmentIndex: getMeasuredPageStartFragmentIndex(page),
+        }))
+    } catch (err) {
+        console.error('Failed to build measured TXT pages, falling back to render pages', err)
+        return []
+    }
+}
 
 function scheduleAfterPaint(callback) {
     if (typeof window === 'undefined') return () => {}
@@ -40,59 +85,36 @@ function scheduleAfterPaint(callback) {
     }
 }
 
-function removeExtraWhitespaceAndEmptyLines(text) {
-    if (typeof text !== 'string' || !text) return ''
-    return text
-        .replace(/\r\n/g, '\n')
-        .replace(/[ \t]{2,}/g, ' ')
-        .replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, '\n\n')
-        .split('\n')
-        .map((line) => line.trimEnd())
-        .join('\n')
-}
+function getLocatorSegmentOffset(locator) {
+    if (Number.isFinite(locator?.offset)) return locator.offset
+    if (Number.isFinite(locator?.segment_local_start)) return locator.segment_local_start
 
-function splitDenseBlock(block) {
-    const lines = block
-        .split('\n')
-        .map((line) => line.replace(/[ \t]{2,}/g, ' ').trim())
-        .filter(Boolean)
-
-    if (lines.length === 0) return ''
-    if (lines.length > 1) return lines.join('\n')
-
-    const source = lines[0]
-    if (source.length < 280) return source
-
-    const sentenceParts = source.match(/[^.!?\n]+(?:[.!?]+|$)/g) || []
-    if (sentenceParts.length < 2) return source
-
-    const paragraphs = []
-    let current = ''
-    for (const raw of sentenceParts) {
-        const sentence = raw.trim()
-        if (!sentence) continue
-        const next = current ? `${current} ${sentence}` : sentence
-        if (current && next.length > 240 && current.length >= 80) {
-            paragraphs.push(current)
-            current = sentence
-        } else {
-            current = next
-        }
+    if (typeof locator === 'string') {
+        const segmentMatch = locator.match(/^segment:\d+:offset:(\d+)$/)
+        if (segmentMatch) return Number(segmentMatch[1])
     }
-    if (current) paragraphs.push(current)
-    return paragraphs.join('\n\n')
+
+    if (locator && typeof locator === 'object' && typeof locator.locator === 'string') {
+        return getLocatorSegmentOffset(locator.locator)
+    }
+
+    return null
 }
 
-function splitDenseParagraphs(text) {
-    if (typeof text !== 'string' || !text) return ''
-    const normalized = text.replace(/\r\n/g, '\n').trim()
-    if (!normalized) return ''
+function getFragmentSourceStart(fragment) {
+    return fragment?.source_start_offset ?? fragment?.start_offset ?? fragment?.startOffset ?? null
+}
 
-    return normalized
-        .split(/\n\s*\n+/)
-        .map((block) => splitDenseBlock(block))
-        .filter(Boolean)
-        .join('\n\n')
+function getFragmentDisplayLength(fragment) {
+    if (typeof fragment?.display_text === 'string') return fragment.display_text.length
+    if (typeof fragment?.displayText === 'string') return fragment.displayText.length
+    if (typeof fragment?.text === 'string') return fragment.text.length
+    return 0
+}
+
+function findClosestFragmentElement(node) {
+    if (node instanceof Element) return node.closest('[data-fragment-index]')
+    return node?.parentElement?.closest?.('[data-fragment-index]') ?? null
 }
 
 function TxtReader() {
@@ -130,21 +152,129 @@ function TxtReader() {
     const [annotations, setAnnotations] = useState([])
     const [activeAnnotationId, setActiveAnnotationId] = useState(null)
     const [selectionSnapshot, setSelectionSnapshot] = useState(null)
+    const [globalRenderPages, setGlobalRenderPages] = useState(null)
+    const [currentViewportStartSegment, setCurrentViewportStartSegment] = useState(null)
+    const [currentViewportStartFragmentIndex, setCurrentViewportStartFragmentIndex] = useState(null)
 
     const readerRootRef = useRef(null)
     const contentRef = useRef(null)
     const pendingAnchorRestoreCleanupRef = useRef(null)
+    const globalRenderPageMapPromiseRef = useRef(null)
+    const globalRenderPageMapVersionRef = useRef(0)
+    const isPointerSelectingRef = useRef(false)
     const { captureAnchor, restoreAnchor, clearAnchor } = useReaderViewportAnchor()
-
+    const transformOptions = useMemo(() => createTxtTransformOptions({
+        trimSpaces: compactWhitespace,
+        removeEmptyLines: compactWhitespace,
+        splitParagraphs,
+    }), [compactWhitespace, splitParagraphs])
+    const transformQuery = useMemo(() => toTxtTransformQuery(transformOptions), [transformOptions])
     const {
         manifest,
+        visibleStart,
         visibleSegments,
+        visibleDisplayFragments,
+        setVisibleStart,
+        loadWindow,
         showWindowForSegment,
+        windowSize,
         loading,
         error,
-    } = useTxtSegmentWindow(id)
+    } = useTxtSegmentWindow(id, transformOptions)
+    const visibleWindowStartsAtZero = visibleStart === 0
+    const hasActiveTransforms = transformOptions.trimSpaces || transformOptions.removeEmptyLines || transformOptions.splitParagraphs
+    const hasGlobalRenderPageMap = Array.isArray(globalRenderPages) && globalRenderPages.length > 0
 
-    const totalViewportPages = manifest?.segment_count || 1
+    const indexedDisplayFragments = useMemo(
+        () => visibleDisplayFragments.map((fragment, fragmentIndex) => ({
+            ...fragment,
+            fragmentIndex: visibleStart + fragmentIndex,
+        })),
+        [visibleDisplayFragments, visibleStart],
+    )
+
+    const renderPages = useMemo(
+        () => buildMeasuredRenderPages(indexedDisplayFragments),
+        [indexedDisplayFragments],
+    )
+
+    const localRenderPageStartSegments = useMemo(
+        () => getRenderPageStartSegments(renderPages),
+        [renderPages],
+    )
+
+    const globalRenderPageStartSegments = useMemo(
+        () => getRenderPageStartSegments(globalRenderPages),
+        [globalRenderPages],
+    )
+
+    const loadGlobalRenderPages = useCallback(async () => {
+        if (Array.isArray(globalRenderPages)) return globalRenderPages
+        if (!manifest?.segment_count) return []
+        if (globalRenderPageMapPromiseRef.current) return globalRenderPageMapPromiseRef.current
+
+        const mapVersion = globalRenderPageMapVersionRef.current
+        const isStaleLoad = () => globalRenderPageMapVersionRef.current !== mapVersion
+        const resolveRenderPages = (pages) => {
+            if (isStaleLoad()) return null
+            setGlobalRenderPages(pages)
+            return pages
+        }
+
+        let promise = null
+        promise = (async () => {
+            if (visibleSegments.length >= manifest.segment_count) {
+                return resolveRenderPages(renderPages)
+            }
+
+            const segments = []
+            for (let start = 0; start < manifest.segment_count; start += windowSize) {
+                if (isStaleLoad()) return null
+                let windowDisplayFragments = null
+                if (start === 0 && visibleDisplayFragments.length > 0 && visibleWindowStartsAtZero) {
+                    windowDisplayFragments = visibleDisplayFragments.map((fragment, fragmentIndex) => ({
+                        ...fragment,
+                        fragmentIndex: start + fragmentIndex,
+                    }))
+                } else {
+                    const windowData = await loadWindow(start)
+                    if (!windowData) return null
+                    windowDisplayFragments = windowData.displayFragments.map((fragment, fragmentIndex) => ({
+                        ...fragment,
+                        fragmentIndex: start + fragmentIndex,
+                    }))
+                }
+                if (isStaleLoad()) return null
+                segments.push(...windowDisplayFragments)
+            }
+
+            return resolveRenderPages(buildMeasuredRenderPages(segments))
+        })().catch((err) => {
+            if (globalRenderPageMapPromiseRef.current === promise) {
+                globalRenderPageMapPromiseRef.current = null
+            }
+            throw err
+        })
+
+        globalRenderPageMapPromiseRef.current = promise
+        return promise
+    }, [
+        globalRenderPages,
+        manifest?.segment_count,
+        loadWindow,
+        renderPages,
+        visibleDisplayFragments,
+        visibleSegments,
+        visibleWindowStartsAtZero,
+        windowSize,
+    ])
+
+    const totalViewportPages = Math.max(
+        1,
+        hasGlobalRenderPageMap
+            ? globalRenderPageStartSegments.length
+            : localRenderPageStartSegments.length,
+    )
     const progress = useReadingProgress(id, { totalPages: totalViewportPages, type: 'txt', legacyId })
     const {
         currentPosition: currentViewportPage,
@@ -152,36 +282,195 @@ function TxtReader() {
         bookmarks,
         addBookmark,
         removeBookmark,
-        goToBookmark,
         resumePrompt,
-        resumeReading,
         dismissResume,
     } = progress
-    const pagesPerView = layout === 'dual' ? 2 : 1
+    const pagesPerView = getPagesPerView(layout)
 
-    const displayedSegments = useMemo(() => visibleSegments.map((segment) => {
-        let text = segment.text
-        if (compactWhitespace) text = removeExtraWhitespaceAndEmptyLines(text)
-        if (splitParagraphs) text = splitDenseParagraphs(text)
-        return { ...segment, displayText: text }
-    }), [compactWhitespace, splitParagraphs, visibleSegments])
+    const currentRenderPageIndex = useMemo(() => {
+        if (currentViewportStartSegment == null) {
+            return clampViewportPage(currentViewportPage, renderPages.length || 1)
+        }
+
+        const resolvedStartSegment = getRenderPageStartSegment(renderPages, { page: currentViewportPage }, currentViewportStartSegment)
+        if (resolvedStartSegment === currentViewportStartSegment) {
+            return currentViewportPage
+        }
+
+        return findRenderPageForLocator(renderPages, currentViewportStartSegment)
+    }, [currentViewportPage, currentViewportStartSegment, renderPages])
+
+    const effectiveViewportPage = Number.isFinite(currentViewportPage)
+        ? currentViewportPage
+        : currentRenderPageIndex
+
+    const visibleRenderPages = useMemo(
+        () => getVisibleRenderPages(renderPages, layout, currentRenderPageIndex),
+        [currentRenderPageIndex, layout, renderPages],
+    )
+
+    const visibleSegmentIds = useMemo(() => {
+        const ids = new Set()
+        visibleRenderPages.forEach((page) => {
+            page.segmentIds.forEach((segmentId) => ids.add(segmentId))
+        })
+        return ids
+    }, [visibleRenderPages])
+
+    const getSegmentStartOffset = useCallback((segments, segmentId) => {
+        if (!Array.isArray(segments) || !Number.isFinite(segmentId)) return null
+        const segment = segments.find((item) => (
+            (item?.segment_id ?? item?.segmentId) === segmentId
+        ))
+        const startOffset = segment?.start_offset ?? segment?.startOffset
+        return Number.isFinite(startOffset) ? startOffset : null
+    }, [])
 
     const currentPageAnnotations = useMemo(
         () => annotations.filter((annotation) => {
-            if (annotation.page == null && annotation.segment_id == null) return true
-            const segmentId = Number.isFinite(annotation.segment_id) ? annotation.segment_id : annotation.page
-            if (!Number.isFinite(segmentId)) return false
-            return segmentId >= currentViewportPage && segmentId < currentViewportPage + pagesPerView
+            if (annotation.page == null && annotation.segment_id == null && !annotation.locator) return true
+
+            const segmentId = Number.isFinite(annotation.segment_id) ? annotation.segment_id : getSegmentIdForLocator(annotation)
+            if (Number.isFinite(segmentId)) return visibleSegmentIds.has(segmentId)
+
+            const pageIndex = getPageIndexForLocator(annotation)
+            if (!Number.isFinite(pageIndex)) return false
+            return pageIndex >= effectiveViewportPage && pageIndex < effectiveViewportPage + pagesPerView
         }),
-        [annotations, currentViewportPage, pagesPerView],
+        [annotations, effectiveViewportPage, pagesPerView, visibleSegmentIds],
     )
 
-    const visibleViewportSegments = useMemo(() => {
-        const visibleIds = new Set(
-            Array.from({ length: pagesPerView }, (_, index) => currentViewportPage + index),
+    const buildMappedDisplayTargets = useCallback((fragments, segmentId, sourceStart, sourceEndInclusive, fallbackSourceOffset = sourceStart) => {
+        if (!Array.isArray(fragments) || !Number.isFinite(segmentId)) return []
+
+        const mappedRange = Number.isFinite(sourceStart)
+            ? findDisplayRangeForSourceLocator(fragments, segmentId, sourceStart, sourceEndInclusive)
+            : null
+        const startFragmentIndex = mappedRange?.startFragmentIndex
+        const endFragmentIndex = mappedRange?.endFragmentIndex
+        const singleFragmentIndex = mappedRange?.fragmentIndex
+        const fragmentIndex = mappedRange?.fragmentIndex
+            ?? startFragmentIndex
+            ?? findNearestDisplayFragmentForSourceOffset(
+            fragments,
+            segmentId,
+            Number.isFinite(fallbackSourceOffset) ? fallbackSourceOffset : sourceStart,
         )
-        return displayedSegments.filter((segment) => visibleIds.has(segment.segment_id))
-    }, [currentViewportPage, displayedSegments, pagesPerView])
+
+        if (!Number.isFinite(fragmentIndex)) return []
+
+        const targetFragmentIndexes = Number.isFinite(startFragmentIndex) && Number.isFinite(endFragmentIndex)
+            ? Array.from({ length: endFragmentIndex - startFragmentIndex + 1 }, (_, offset) => startFragmentIndex + offset)
+            : [fragmentIndex]
+
+        const targets = targetFragmentIndexes
+            .map((candidateIndex) => {
+                const fragment = fragments[candidateIndex]
+                const fragmentSourceStart = getFragmentSourceStart(fragment)
+                if (!Number.isFinite(fragmentSourceStart)) return null
+
+                const fragmentLength = getFragmentDisplayLength(fragment)
+                if (fragmentLength <= 0) return null
+
+                const displayStart = candidateIndex === singleFragmentIndex
+                    ? (mappedRange?.displayStart ?? 0)
+                    : (candidateIndex === startFragmentIndex ? (mappedRange?.displayStart ?? 0) : 0)
+                const displayEnd = candidateIndex === singleFragmentIndex
+                    ? (mappedRange?.displayEnd ?? Math.max(displayStart, fragmentLength - 1))
+                    : (candidateIndex === endFragmentIndex
+                        ? (mappedRange?.displayEnd ?? Math.max(displayStart, fragmentLength - 1))
+                    : Math.max(displayStart, fragmentLength - 1)
+                    )
+
+                if (displayEnd < displayStart) return null
+
+                return {
+                    fragmentIndex: candidateIndex,
+                    segmentId,
+                    sourceStart: fragmentSourceStart + displayStart,
+                    sourceEnd: fragmentSourceStart + displayEnd + 1,
+                    segmentLocalStart: displayStart,
+                    segmentLocalEnd: displayEnd + 1,
+                }
+            })
+            .filter(Boolean)
+
+        if (targets.length > 0) return targets
+
+        return [{
+            fragmentIndex,
+            segmentId,
+            sourceStart,
+            sourceEnd: Number.isFinite(sourceEndInclusive) ? sourceEndInclusive + 1 : sourceStart,
+            segmentLocalStart: 0,
+            segmentLocalEnd: 0,
+        }]
+    }, [])
+
+    const buildMappedDisplayTarget = useCallback((fragments, segmentId, sourceStart, sourceEndInclusive, fallbackSourceOffset = sourceStart) => {
+        const targets = buildMappedDisplayTargets(
+            fragments,
+            segmentId,
+            sourceStart,
+            sourceEndInclusive,
+            fallbackSourceOffset,
+        )
+        return targets[0] ?? null
+    }, [buildMappedDisplayTargets])
+
+    const getDisplaySelectionBoundary = useCallback((range, boundary) => {
+        if (!range) return null
+
+        const container = boundary === 'start' ? range.startContainer : range.endContainer
+        const offset = boundary === 'start' ? range.startOffset : range.endOffset
+        const fragmentElement = findClosestFragmentElement(container)
+        const fragmentIndex = Number(fragmentElement?.dataset.fragmentIndex)
+        if (!Number.isFinite(fragmentIndex) || !fragmentElement) return null
+
+        const measurementRange = range.cloneRange()
+        measurementRange.selectNodeContents(fragmentElement)
+        measurementRange.setEnd(container, offset)
+
+        return {
+            fragmentIndex,
+            displayOffset: measurementRange.toString().length,
+            segmentId: Number(fragmentElement.dataset.segmentId),
+        }
+    }, [])
+
+    const mappedCurrentPageAnnotations = useMemo(() => currentPageAnnotations.flatMap((annotation) => {
+        if (!Number.isFinite(annotation?.segment_id)) return annotation
+
+        const segmentStartOffset = getSegmentStartOffset(visibleSegments, annotation.segment_id)
+        const sourceStart = Number.isFinite(annotation.start_offset)
+            ? annotation.start_offset
+            : (Number.isFinite(segmentStartOffset) && Number.isFinite(annotation.segment_local_start)
+                ? segmentStartOffset + annotation.segment_local_start
+                : null)
+        const sourceEndExclusive = Number.isFinite(annotation.end_offset)
+            ? annotation.end_offset
+            : (Number.isFinite(segmentStartOffset) && Number.isFinite(annotation.segment_local_end)
+                ? segmentStartOffset + annotation.segment_local_end
+                : null)
+
+        const mappedTargets = buildMappedDisplayTargets(
+            indexedDisplayFragments,
+            annotation.segment_id,
+            sourceStart,
+            Number.isFinite(sourceEndExclusive) ? sourceEndExclusive - 1 : null,
+            Number.isFinite(sourceStart) ? sourceStart : sourceEndExclusive,
+        )
+
+        if (!Array.isArray(mappedTargets) || mappedTargets.length === 0) return annotation
+
+        return mappedTargets.map((mappedTarget) => ({
+            ...annotation,
+            start_offset: mappedTarget.sourceStart,
+            end_offset: mappedTarget.sourceEnd,
+            segment_local_start: mappedTarget.segmentLocalStart,
+            segment_local_end: mappedTarget.segmentLocalEnd,
+        }))
+    }), [buildMappedDisplayTargets, currentPageAnnotations, getSegmentStartOffset, indexedDisplayFragments, visibleSegments])
 
     const loadAnnotations = useCallback(async () => {
         setAnnotationsLoading(true)
@@ -202,11 +491,54 @@ function TxtReader() {
     }, [loadAnnotations])
 
     useEffect(() => {
+        globalRenderPageMapVersionRef.current += 1
+        setGlobalRenderPages(null)
+        setCurrentViewportStartSegment(null)
+        setCurrentViewportStartFragmentIndex(null)
+        globalRenderPageMapPromiseRef.current = null
+    }, [id, transformOptions])
+
+    useEffect(() => {
+        setPendingSearchTarget(null)
+        setActiveSearchIndex(null)
+        setGlobalRenderPages(null)
+        setCurrentViewportStartSegment(null)
+        setCurrentViewportStartFragmentIndex(null)
+    }, [transformOptions])
+
+    useEffect(() => {
         if (loading || error || !Number.isFinite(currentViewportPage)) return
-        showWindowForSegment(currentViewportPage).catch((err) => {
+        if (hasActiveTransforms && Number.isFinite(currentViewportStartFragmentIndex)) {
+            const visibleEnd = visibleStart + visibleDisplayFragments.length
+            if (currentViewportStartFragmentIndex >= visibleStart && currentViewportStartFragmentIndex < visibleEnd) return
+            loadWindow(currentViewportStartFragmentIndex).then((windowData) => {
+                if (!windowData) return
+                setVisibleStart(currentViewportStartFragmentIndex)
+            }).catch((err) => {
+                console.error('Failed to show TXT fragment window', err)
+            })
+            return
+        }
+        const currentViewportSegmentId = getSegmentIdForLocator(currentViewportStartSegment)
+        if (!Number.isFinite(currentViewportSegmentId)) return
+        if (visibleSegments.some((segment) => segment.segment_id === currentViewportSegmentId)) return
+        showWindowForSegment(currentViewportSegmentId).catch((err) => {
             console.error('Failed to show TXT segment window', err)
         })
-    }, [currentViewportPage, error, loading, showWindowForSegment])
+    }, [
+        currentViewportPage,
+        currentViewportStartFragmentIndex,
+        currentViewportStartSegment,
+        error,
+        hasActiveTransforms,
+        loadWindow,
+        loading,
+        setVisibleStart,
+        showWindowForSegment,
+        visibleDisplayFragments.length,
+        visibleSegments,
+        visibleStart,
+    ])
 
     useEffect(() => {
         if (!searchOpen) return
@@ -223,7 +555,7 @@ function TxtReader() {
         ; (async () => {
             setSearchLoading(true)
             try {
-                const res = await fetch(`${API}/${id}/search?q=${encodeURIComponent(trimmedQuery)}`)
+                const res = await fetch(`${API}/${id}/search?q=${encodeURIComponent(trimmedQuery)}&${transformQuery}`)
                 if (!res.ok) throw new Error(`HTTP ${res.status}`)
                 const data = await res.json()
                 if (!cancelled) {
@@ -243,25 +575,42 @@ function TxtReader() {
         return () => {
             cancelled = true
         }
-    }, [id, searchOpen, searchQuery, searchRequestId])
+    }, [id, searchOpen, searchQuery, searchRequestId, transformQuery])
 
     useEffect(() => {
         const root = contentRef.current
         if (!root || loading) return
 
+        const handlePointerDown = () => {
+            isPointerSelectingRef.current = true
+        }
+
+        const handlePointerUp = () => {
+            if (!isPointerSelectingRef.current) return
+            isPointerSelectingRef.current = false
+            setSelectionSnapshot(getSelectionSnapshot(root))
+        }
+
         const handleSelectionChange = () => {
+            if (isPointerSelectingRef.current) return
             const nextSelection = getSelectionSnapshot(root)
             setSelectionSnapshot(nextSelection)
         }
 
+        root.addEventListener('pointerdown', handlePointerDown)
+        window.addEventListener('pointerup', handlePointerUp)
         document.addEventListener('selectionchange', handleSelectionChange)
-        return () => document.removeEventListener('selectionchange', handleSelectionChange)
-    }, [displayedSegments, loading])
+        return () => {
+            root.removeEventListener('pointerdown', handlePointerDown)
+            window.removeEventListener('pointerup', handlePointerUp)
+            document.removeEventListener('selectionchange', handleSelectionChange)
+        }
+    }, [loading, visibleSegments])
 
     useEffect(() => {
         setSelectionSnapshot(null)
         clearCurrentSelection()
-    }, [currentViewportPage, displayedSegments, searchOpen, annotationsOpen])
+    }, [currentViewportPage, searchOpen, annotationsOpen, visibleSegments])
 
     useEffect(() => {
         const root = contentRef.current
@@ -272,16 +621,16 @@ function TxtReader() {
         clearAnnotationHighlights(root)
 
         if (pendingSearchTarget) {
-            const segmentEl = findSegmentElement(root, pendingSearchTarget.segmentId)
-            if (segmentEl) {
-                const mark = highlightSegmentMatch(segmentEl, pendingSearchTarget.start, pendingSearchTarget.end)
+            const target = resolveSegmentTarget(root, pendingSearchTarget)
+            if (target?.element) {
+                const mark = highlightSegmentMatch(target.element, target.localStart, target.localEnd)
                 mark?.scrollIntoView({ behavior: 'smooth', block: 'center' })
             }
             return
         }
 
-        highlightAnnotationsInElement(root, currentPageAnnotations)
-    }, [currentPageAnnotations, displayedSegments, loading, pendingSearchTarget])
+        highlightAnnotationsInElement(root, mappedCurrentPageAnnotations)
+    }, [loading, mappedCurrentPageAnnotations, pendingSearchTarget, visibleSegments])
 
     useEffect(() => {
         const root = contentRef.current
@@ -331,51 +680,234 @@ function TxtReader() {
         setSearchRequestId((value) => value + 1)
     }, [searchDraft])
 
-    const goToViewportPage = useCallback(async (page) => {
-        const target = clampViewportPage(page, totalViewportPages)
-        setCurrentViewportPage(target)
+    const goToViewportPage = useCallback(async (targetLocator) => {
+        const explicitPageIndex = getPageIndexForLocator(targetLocator)
+
+        if (Number.isFinite(explicitPageIndex)) {
+            try {
+                const targetPages = await loadGlobalRenderPages()
+                const startSegments = getRenderPageStartSegments(targetPages)
+                if (!Array.isArray(startSegments) || startSegments.length === 0) return
+                const targetPageIndex = clampViewportPage(
+                    explicitPageIndex,
+                    Math.max(1, startSegments.length || localRenderPageStartSegments.length),
+                )
+                const startMarker = startSegments[targetPageIndex]
+                const rawTarget = getSegmentIdForLocator(startMarker)
+                const startFragmentIndex = getMeasuredPageStartFragmentIndex(targetPages?.[targetPageIndex])
+                if (!Number.isFinite(rawTarget) && !Number.isFinite(startFragmentIndex)) return
+
+                let windowStart = null
+
+                if (hasActiveTransforms && Number.isFinite(startFragmentIndex)) {
+                    const visibleEnd = visibleStart + visibleDisplayFragments.length
+                    if (startFragmentIndex >= visibleStart && startFragmentIndex < visibleEnd) {
+                        windowStart = visibleStart
+                    } else {
+                        const targetWindow = await loadWindow(startFragmentIndex)
+                        if (!targetWindow) return
+                        setVisibleStart(startFragmentIndex)
+                        windowStart = startFragmentIndex
+                    }
+                    setCurrentViewportStartFragmentIndex(startFragmentIndex)
+                } else if (Number.isFinite(rawTarget)) {
+                    windowStart = await showWindowForSegment(rawTarget)
+                }
+                if (!Number.isFinite(windowStart)) return
+                setCurrentViewportStartSegment(startMarker)
+                setCurrentViewportPage(targetPageIndex)
+                return { windowStart }
+            } catch (err) {
+                console.error('Failed to navigate TXT render page', err)
+            }
+            return
+        }
+
+        const rawTarget = getSegmentIdForLocator(
+            targetLocator,
+            getSegmentIdForLocator(currentViewportStartSegment),
+        )
+        if (!Number.isFinite(rawTarget)) return
+
         try {
-            await showWindowForSegment(target)
+            const targetPages = hasActiveTransforms || hasGlobalRenderPageMap
+                ? await loadGlobalRenderPages()
+                : null
+            const globalViewportPage = Array.isArray(targetPages) && targetPages.length > 0
+                ? findRenderPageForLocator(targetPages, Number.isFinite(targetLocator) ? { segmentId: rawTarget } : targetLocator)
+                : null
+            const globalStartSegment = Number.isFinite(globalViewportPage)
+                ? getRenderPageStartSegment(
+                    targetPages,
+                    { page: globalViewportPage },
+                    rawTarget,
+                )
+                : null
+            const targetWindowSegmentId = getSegmentIdForLocator(globalStartSegment, rawTarget)
+            let targetWindowStart = hasActiveTransforms && Number.isFinite(globalViewportPage)
+                ? (getMeasuredPageStartFragmentIndex(targetPages?.[globalViewportPage]) ?? 0)
+                : Math.max(0, targetWindowSegmentId - Math.floor(windowSize / 2))
+            let targetWindow = null
+            if (hasActiveTransforms && Number.isFinite(globalViewportPage)) {
+                const visibleEnd = visibleStart + visibleDisplayFragments.length
+                if (targetWindowStart >= visibleStart && targetWindowStart < visibleEnd) {
+                    targetWindowStart = visibleStart
+                    targetWindow = {
+                        segments: visibleSegments,
+                        displayFragments: visibleDisplayFragments,
+                    }
+                }
+            }
+            if (!targetWindow) {
+                if (hasActiveTransforms) {
+                    targetWindow = await loadWindow(targetWindowStart)
+                    if (!targetWindow) return
+                    setVisibleStart(targetWindowStart)
+                } else {
+                    const windowStart = await showWindowForSegment(targetWindowSegmentId)
+                    if (!Number.isFinite(windowStart)) return
+                    targetWindowStart = windowStart
+                    targetWindow = await loadWindow(windowStart)
+                    if (!targetWindow) return
+                }
+            }
+            const indexedTargetDisplayFragments = targetWindow.displayFragments.map((fragment, fragmentIndex) => ({
+                ...fragment,
+                fragmentIndex: targetWindowStart + fragmentIndex,
+            }))
+            const targetRenderPages = buildMeasuredRenderPages(indexedTargetDisplayFragments)
+            const resolvedStartSegment = getRenderPageStartSegment(
+                targetRenderPages,
+                globalStartSegment ?? (Number.isFinite(targetLocator) ? rawTarget : targetLocator),
+                targetWindowSegmentId,
+            )
+            const resolvedViewportPage = Number.isFinite(globalViewportPage)
+                ? globalViewportPage
+                : findRenderPageForLocator(
+                    targetRenderPages,
+                    Number.isFinite(targetLocator) ? { segmentId: rawTarget } : targetLocator,
+                )
+            const resolvedStartFragmentIndex = getMeasuredPageStartFragmentIndex(
+                targetRenderPages.find((page) => page?.startLocator === resolvedStartSegment),
+            )
+                ?? getMeasuredPageStartFragmentIndex(targetPages?.[resolvedViewportPage])
+                ?? targetWindowStart
+            setCurrentViewportStartSegment(resolvedStartSegment)
+            setCurrentViewportStartFragmentIndex(resolvedStartFragmentIndex)
+            setCurrentViewportPage(resolvedViewportPage)
+            return {
+                displayFragments: indexedTargetDisplayFragments,
+                windowStart: targetWindowStart,
+                segmentStartOffset: getSegmentStartOffset(targetWindow.segments, rawTarget),
+            }
         } catch (err) {
             console.error('Failed to navigate TXT segment window', err)
         }
-    }, [setCurrentViewportPage, showWindowForSegment, totalViewportPages])
+    }, [
+        getSegmentStartOffset,
+        currentViewportStartSegment,
+        hasActiveTransforms,
+        hasGlobalRenderPageMap,
+        loadGlobalRenderPages,
+        loadWindow,
+        localRenderPageStartSegments,
+        setCurrentViewportPage,
+        setVisibleStart,
+        showWindowForSegment,
+        visibleDisplayFragments,
+        visibleSegments,
+        visibleStart,
+        windowSize,
+    ])
+
+    useEffect(() => {
+        if (loading || error || renderPages.length === 0 || currentViewportStartSegment != null) return
+
+        if (Number.isFinite(currentViewportPage) && currentViewportPage > 0) {
+            void goToViewportPage({ page: currentViewportPage })
+            return
+        }
+
+        const initialStartSegment = getRenderPageStartSegment(renderPages, { page: 0 }, 0)
+        setCurrentViewportStartSegment(initialStartSegment)
+        setCurrentViewportStartFragmentIndex(getMeasuredPageStartFragmentIndex(renderPages[0]))
+    }, [currentViewportPage, currentViewportStartSegment, error, goToViewportPage, loading, renderPages])
 
     const goNext = useCallback(() => {
-        if (currentViewportPage < totalViewportPages - 1) {
-            void goToViewportPage(currentViewportPage + pagesPerView)
+        if (effectiveViewportPage < totalViewportPages - 1) {
+            void goToViewportPage({ page: effectiveViewportPage + pagesPerView })
         }
-    }, [currentViewportPage, goToViewportPage, pagesPerView, totalViewportPages])
+    }, [effectiveViewportPage, goToViewportPage, pagesPerView, totalViewportPages])
 
     const goPrev = useCallback(() => {
-        if (currentViewportPage > 0) {
-            void goToViewportPage(currentViewportPage - pagesPerView)
+        if (effectiveViewportPage > 0) {
+            void goToViewportPage({ page: effectiveViewportPage - pagesPerView })
         }
-    }, [currentViewportPage, goToViewportPage, pagesPerView])
+    }, [effectiveViewportPage, goToViewportPage, pagesPerView])
 
     const seekToProgress = useCallback((progressValue) => {
-        if (totalViewportPages <= 1) return
-        void goToViewportPage(Math.round(progressValue * (totalViewportPages - 1)))
-    }, [goToViewportPage, totalViewportPages])
+        void (async () => {
+            const startSegments = hasGlobalRenderPageMap
+                ? globalRenderPageStartSegments
+                : getRenderPageStartSegments(await loadGlobalRenderPages())
+            if (!Array.isArray(startSegments) || startSegments.length === 0) return
+            const targetTotalPages = Math.max(1, startSegments.length || localRenderPageStartSegments.length)
+            if (targetTotalPages <= 1) return
+            await goToViewportPage({ page: Math.round(progressValue * (targetTotalPages - 1)) })
+        })().catch((err) => {
+            console.error('Failed to seek TXT progress', err)
+        })
+    }, [
+        globalRenderPageStartSegments,
+        goToViewportPage,
+        hasGlobalRenderPageMap,
+        loadGlobalRenderPages,
+        localRenderPageStartSegments.length,
+    ])
 
     const handleSearchResultClick = useCallback(async (result) => {
         setAnnotationsOpen(false)
         setActiveAnnotationId(null)
         setActiveSearchIndex(result.index)
 
-        if (!Number.isFinite(result.segment_id)) {
-            if (Number.isFinite(result.position)) setCurrentViewportPage(result.position)
+        const targetLocator = result.locator ?? result
+        if (Number.isFinite(getPageIndexForLocator(targetLocator))) {
+            await goToViewportPage(targetLocator)
+            return
+        }
+        if (!Number.isFinite(getSegmentIdForLocator(targetLocator))) {
+            if (Number.isFinite(result.position)) await goToViewportPage({ page: result.position })
             return
         }
 
-        await showWindowForSegment(result.segment_id)
-        setCurrentViewportPage(result.segment_id)
-        setPendingSearchTarget({
-            segmentId: result.segment_id,
-            start: result.segment_local_start ?? 0,
-            end: result.segment_local_end ?? ((result.segment_local_start ?? 0) + searchQuery.length),
+        const navigationResult = await goToViewportPage(targetLocator)
+        const targetSegmentId = getSegmentIdForLocator(targetLocator)
+        const segmentStartOffset = navigationResult?.segmentStartOffset
+        const targetDisplayFragments = navigationResult?.displayFragments ?? indexedDisplayFragments
+        const segmentLocalStart = result.segment_local_start ?? getLocatorSegmentOffset(targetLocator) ?? 0
+        const segmentLocalEnd = result.segment_local_end ?? (segmentLocalStart + searchQuery.length)
+        const sourceStart = Number.isFinite(result.start_offset)
+            ? result.start_offset
+            : (Number.isFinite(segmentStartOffset) ? segmentStartOffset + segmentLocalStart : null)
+        const sourceEndExclusive = Number.isFinite(result.end_offset)
+            ? result.end_offset
+            : (Number.isFinite(segmentStartOffset) ? segmentStartOffset + segmentLocalEnd : null)
+        const mappedTarget = buildMappedDisplayTarget(
+            targetDisplayFragments,
+            targetSegmentId,
+            sourceStart,
+            Number.isFinite(sourceEndExclusive) ? sourceEndExclusive - 1 : null,
+            Number.isFinite(sourceStart) ? sourceStart : sourceEndExclusive,
+        )
+
+        setPendingSearchTarget(mappedTarget ?? {
+            segmentId: targetSegmentId,
+            sourceStart,
+            sourceEnd: sourceEndExclusive,
+            segmentLocalStart,
+            segmentLocalEnd,
         })
-    }, [searchQuery.length, setCurrentViewportPage, showWindowForSegment])
+    }, [buildMappedDisplayTarget, goToViewportPage, indexedDisplayFragments, searchQuery.length])
 
     const updateAnnotationItem = useCallback(async (annotationId, patch) => {
         const res = await fetch(`${API_ROOT}/annotations/${annotationId}`, {
@@ -402,20 +934,49 @@ function TxtReader() {
         }
 
         try {
+            const selection = typeof window === 'undefined' ? null : window.getSelection()
+            const range = selection?.rangeCount > 0 ? selection.getRangeAt(0) : null
+            const startBoundary = getDisplaySelectionBoundary(range, 'start')
+            const endBoundary = getDisplaySelectionBoundary(range, 'end')
+            const recoveredSegmentId = Number.isFinite(startBoundary?.segmentId) && startBoundary.segmentId === endBoundary?.segmentId
+                ? startBoundary.segmentId
+                : selectionSnapshot.segmentId
+            const recoveredRange = Number.isFinite(recoveredSegmentId)
+                && Number.isFinite(startBoundary?.fragmentIndex)
+                && Number.isFinite(endBoundary?.fragmentIndex)
+                ? recoverSourceRangeFromDisplaySelection(
+                    indexedDisplayFragments,
+                    recoveredSegmentId,
+                    startBoundary.fragmentIndex,
+                    startBoundary.displayOffset,
+                    endBoundary.fragmentIndex,
+                    endBoundary.displayOffset,
+                )
+                : null
+            const segmentStartOffset = getSegmentStartOffset(visibleSegments, recoveredSegmentId)
+            const sourceStart = recoveredRange?.sourceStart ?? selectionSnapshot.startOffset
+            const sourceEnd = recoveredRange?.sourceEnd ?? selectionSnapshot.endOffset
+            const segmentLocalStart = Number.isFinite(sourceStart) && Number.isFinite(segmentStartOffset)
+                ? sourceStart - segmentStartOffset
+                : selectionSnapshot.segmentLocalStart
+            const segmentLocalEnd = Number.isFinite(sourceEnd) && Number.isFinite(segmentStartOffset)
+                ? sourceEnd - segmentStartOffset
+                : selectionSnapshot.segmentLocalEnd
+
             const res = await fetch(`${API}/${id}/annotations`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     kind,
-                    locator: selectionSnapshot.segmentId != null
-                        ? `segment:${selectionSnapshot.segmentId}:offset:${selectionSnapshot.segmentLocalStart}`
-                        : `page:${currentViewportPage}`,
-                    page: currentViewportPage,
-                    segment_id: selectionSnapshot.segmentId,
-                    segment_local_start: selectionSnapshot.segmentLocalStart,
-                    segment_local_end: selectionSnapshot.segmentLocalEnd,
-                    start_offset: selectionSnapshot.startOffset,
-                    end_offset: selectionSnapshot.endOffset,
+                    locator: Number.isFinite(recoveredSegmentId)
+                        ? `segment:${recoveredSegmentId}:offset:${segmentLocalStart}`
+                        : `page:${effectiveViewportPage}`,
+                    page: effectiveViewportPage,
+                    segment_id: Number.isFinite(recoveredSegmentId) ? recoveredSegmentId : selectionSnapshot.segmentId,
+                    segment_local_start: segmentLocalStart,
+                    segment_local_end: segmentLocalEnd,
+                    start_offset: sourceStart,
+                    end_offset: sourceEnd,
                     selected_text: selectionSnapshot.selectedText,
                     note_text: noteText,
                     color: getDefaultAnnotationColor(kind),
@@ -436,7 +997,7 @@ function TxtReader() {
             console.error('Failed to create annotation', err)
             window.alert(tt('annotationSaveFailed'))
         }
-    }, [currentViewportPage, id, selectionSnapshot, tt])
+    }, [effectiveViewportPage, getDisplaySelectionBoundary, getSegmentStartOffset, id, indexedDisplayFragments, selectionSnapshot, tt, visibleSegments])
 
     const handleEditAnnotation = useCallback(async (annotation) => {
         if (annotation.kind !== 'note') return
@@ -480,12 +1041,23 @@ function TxtReader() {
         setPendingSearchTarget(null)
         setActiveSearchIndex(null)
         setActiveAnnotationId(annotation.id)
-        if (Number.isFinite(annotation.segment_id)) {
-            void goToViewportPage(annotation.segment_id)
+        if (annotation.locator) {
+            void goToViewportPage(annotation.locator)
+        } else if (Number.isFinite(annotation.segment_id)) {
+            void goToViewportPage({
+                segmentId: annotation.segment_id,
+                offset: annotation.segment_local_start,
+            })
         } else if (Number.isFinite(annotation.page)) {
-            void goToViewportPage(annotation.page)
+            void goToViewportPage({ page: annotation.page })
         }
     }, [goToViewportPage])
+
+    const handleResume = useCallback(() => {
+        if (!Number.isFinite(resumePrompt?.position)) return
+        void goToViewportPage({ page: resumePrompt.position })
+        dismissResume()
+    }, [dismissResume, goToViewportPage, resumePrompt])
 
     const handleProgressBarVisibilityChange = useCallback(() => {
         const root = contentRef.current
@@ -574,7 +1146,7 @@ function TxtReader() {
                 <div className="shrink-0 px-6 py-1.5 flex items-center gap-2 overflow-x-auto" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
                     <span className="text-[10px] uppercase tracking-widest opacity-30 shrink-0" style={{ color: themeStyle.text }}>{tt('bookmarks')}</span>
                     {bookmarks.map((bookmark) => (
-                        <button key={bookmark.position} onClick={() => goToBookmark(bookmark.position)} className="px-2 py-0.5 rounded text-[11px] border transition-all hover:opacity-70 shrink-0" style={{ borderColor: themeStyle.border, color: themeStyle.text }}>
+                        <button key={bookmark.position} onClick={() => { void goToViewportPage({ page: bookmark.position }) }} className="px-2 py-0.5 rounded text-[11px] border transition-all hover:opacity-70 shrink-0" style={{ borderColor: themeStyle.border, color: themeStyle.text }}>
                             {bookmark.label}
                             <span onClick={(event) => { event.stopPropagation(); removeBookmark(bookmark.position) }} className="ml-1.5 opacity-30 hover:opacity-100 cursor-pointer">x</span>
                         </button>
@@ -622,8 +1194,8 @@ function TxtReader() {
                     }}
                     tt={tt}
                 />
-                <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{currentViewportPage > 0 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
-                <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{currentViewportPage < totalViewportPages - 1 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
+                <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{effectiveViewportPage > 0 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
+                <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{effectiveViewportPage < totalViewportPages - 1 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
 
                 <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
                     {loading ? (
@@ -657,32 +1229,55 @@ function TxtReader() {
                                     whiteSpace: 'pre-wrap',
                                     wordBreak: 'break-word',
                                     overflowWrap: 'break-word',
-                                    display: 'grid',
-                                    gridTemplateColumns: `repeat(${pagesPerView}, minmax(0, 1fr))`,
-                                    gap: `${columnGap}px`,
-                                    alignItems: 'stretch',
                                 }}
                             >
-                                {visibleViewportSegments.length > 0 ? visibleViewportSegments.map((segment) => (
+                                {visibleRenderPages.length > 0 ? (
                                     <div
-                                        key={segment.segment_id}
-                                        data-segment-id={segment.segment_id}
-                                        data-segment-start={segment.start_offset}
-                                        data-segment-end={segment.end_offset}
+                                        data-testid="txt-spread"
                                         style={{
-                                            minHeight: '100%',
-                                            margin: 0,
-                                            padding: '1.25rem',
-                                            border: `1px solid ${themeStyle.border}`,
-                                            borderRadius: '0.75rem',
-                                            backgroundColor: `${themeStyle.card}66`,
-                                            boxSizing: 'border-box',
-                                            overflow: 'hidden',
+                                            height: '100%',
+                                            display: 'grid',
+                                            gridTemplateColumns: `repeat(${pagesPerView}, minmax(0, 1fr))`,
+                                            gap: `${columnGap}px`,
+                                            alignItems: 'stretch',
                                         }}
                                     >
-                                        {segment.displayText}
+                                        {visibleRenderPages.map((page, pageIndex) => (
+                                            <div
+                                                key={`render-page-${pageIndex}-${page.segmentIds.join('-')}`}
+                                                data-testid="txt-page-surface"
+                                                style={{
+                                                    minHeight: '100%',
+                                                    margin: 0,
+                                                    padding: '1.25rem',
+                                                    border: 'none',
+                                                    borderRight: layout === 'dual' && pageIndex === 0 ? `1px solid ${themeStyle.border}` : 'none',
+                                                    borderRadius: 0,
+                                                    backgroundColor: `${themeStyle.card}66`,
+                                                    boxSizing: 'border-box',
+                                                    overflow: 'hidden',
+                                                }}
+                                            >
+                                                {page.segments.map((segment) => (
+                                                    <div
+                                                        key={segment.fragmentKey
+                                                            ?? `${segment.segmentId}-${segment.startOffset}-${segment.endOffset}-${segment.sliceStart ?? 0}-${segment.sliceEnd ?? 0}`}
+                                                        data-fragment-index={segment.fragmentIndex ?? undefined}
+                                                        data-segment-id={segment.segmentId}
+                                                        data-segment-start={segment.startOffset}
+                                                        data-segment-end={segment.endOffset}
+                                                        style={{
+                                                            margin: 0,
+                                                            padding: 0,
+                                                        }}
+                                                    >
+                                                        {segment.displayText}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ))}
                                     </div>
-                                )) : (
+                                ) : (
                                     <div>{tt('loadContentFailed')}</div>
                                 )}
                             </div>
@@ -692,16 +1287,16 @@ function TxtReader() {
             </div>
 
             <ReaderProgressBar
-                currentPage={currentViewportPage + 1}
+                currentPage={effectiveViewportPage + 1}
                 totalPages={totalViewportPages}
-                onSeekPage={(page) => { void goToViewportPage(page - 1) }}
-                progress={totalViewportPages > 1 ? currentViewportPage / (totalViewportPages - 1) : 0}
+                onSeekPage={(page) => { void goToViewportPage({ page: page - 1 }) }}
+                progress={totalViewportPages > 1 ? effectiveViewportPage / (totalViewportPages - 1) : 0}
                 onSeekProgress={seekToProgress}
-                extraInfo={manifest ? `TXT ${currentViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
+                extraInfo={manifest ? `TXT ${effectiveViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
                 readerFocusRef={readerRootRef}
                 onVisibilityChange={handleProgressBarVisibilityChange}
             />
-            <ResumeToast resumePrompt={resumePrompt} onResume={resumeReading} onDismiss={dismissResume} tt={tt} />
+            <ResumeToast resumePrompt={resumePrompt} onResume={handleResume} onDismiss={dismissResume} tt={tt} />
         </div>
     )
 }
