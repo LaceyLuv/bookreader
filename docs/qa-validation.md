@@ -1,84 +1,38 @@
-# QA Validation Guide
+# TXT Compatibility QA Validation
 
-This guide captures the minimum reproducible QA flow for the current web and desktop build paths.
+This note covers TXT compatibility QA and final verification for the reader, including the TXT recovery work from Task 5.
 
-## Scope
+## Verification context
 
-- Web: verify frontend production build and record generated artifact sizes.
-- Desktop: verify Tauri CLI availability, inspect config via `desktop:info`, and optionally run the full desktop build.
-- Output: write logs and summary files under `output/qa/<timestamp>/`.
-
-## Prerequisites
+Run the TXT compatibility validation with the backend command from the repository root, then run the frontend checks and production build from `frontend/`:
 
 ```powershell
-cd C:\dev\bookreader\frontend
-npm install
+python -m pytest backend/tests/test_txt_transform_service.py backend/tests/test_books_txt_manifest_api.py backend/tests/test_search_service.py -v
+cmd /c npx vitest run src/lib/txtDisplayMapper.test.js src/components/TxtReader.segmented.test.jsx src/components/TxtReader.anchor.test.jsx
+cmd /c npm run build
 ```
 
-Expected local binaries after install:
-- `frontend/node_modules/.bin/vite.cmd`
-- `frontend/node_modules/.bin/tauri.cmd`
+## TXT recovery manual QA
 
-If either binary is missing, the QA script fails early with an actionable message instead of proceeding to a less clear build error.
+Use a large `.txt` file so the recovered paged-reader behavior is easy to see.
 
-## Run
+1. Open the TXT book and confirm the first screen lands inside a single paged viewport instead of a scrollable document.
+1. Open the TXT book and confirm the initial page total does not briefly inflate to an obviously wrong count before settling.
+1. Hide the bottom bar and show it again, then confirm the visible paragraph stays anchored and the reader returns to the same page.
+1. Click the bottom progress slider once so it is the most recently used control, then press `Space`, and confirm the reader advances to the next TXT page instead of leaving the slider or button highlighted.
+1. Press `Space` repeatedly from the first TXT page and confirm each key press advances exactly one page with no delayed multi-page jump.
+1. Open the TXT file again and confirm the first page appears quickly and the first page-turn or search interaction responds normally without an obvious multi-second stall while the reader recovers the initial render page.
+1. Switch TXT layout from `single` to `dual` and confirm the view becomes a true two-page spread.
+1. Use the bottom progress slider or a typed page number to jump and confirm the visible TXT text and progress bar move together to the same target viewport page.
+1. Open TXT search results and annotation items and confirm each jump lands on the expected visible viewport page.
+1. For a far search result, confirm the reader stays on the target page even if the full-book page map is still loading in the background.
+1. Drag-select text near the top and bottom of a TXT page and confirm the selection menu appears only after the drag settles, without earlier text being pulled into the selection or the highlight UI flickering.
+1. Open a TXT page where the last paragraph sits close to the bottom edge and confirm the final visible line moves onto the next page instead of being clipped.
 
-Web build plus desktop info:
+## TXT compatibility mode
 
-```powershell
-cd C:\dev\bookreader\frontend
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\qa-validate.ps1
-```
-
-Full run including desktop build:
-
-```powershell
-cd C:\dev\bookreader\frontend
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\qa-validate.ps1 -IncludeDesktopBuild
-```
-
-## Output files
-
-- `output/qa/<timestamp>/summary.txt`
-- `output/qa/<timestamp>/web-build.log`
-- `output/qa/<timestamp>/desktop-info.log`
-- `output/qa/<timestamp>/desktop-build.log` when `-IncludeDesktopBuild` is used
-
-## Review checklist
-
-- Web
-  - `npm run build` exits `0`
-  - `frontend/dist/` exists
-  - `summary.txt` lists the largest generated files for quick size review
-- Desktop
-  - `npm run desktop:info` exits `0`
-  - `npm run desktop:build` is only considered valid when explicitly run with `-IncludeDesktopBuild`
-  - Sidecar and installer presence should be checked in `frontend/src-tauri/target/` after a successful desktop build
-
-## Reader interaction regression checklist
-
-- TXT: open a large `.txt` file, toggle the bottom bar twice, and confirm the visible paragraph does not jump.
-- TXT: click the bottom-bar slider, then press `Space`; expected result is next page, not button or slider highlight.
-- TXT: open a `.txt` file and toggle the bottom bar while watching for severe lag during open and first interaction.
-- EPUB: click the bottom bar, then press `Space`; expected result is normal page or chapter advance behavior.
-- ZIP: click the bottom bar, then press `Space`; expected result is normal image navigation behavior.
-
-## Current known blockers
-
-- If `npm install` has not been run in `frontend`, both web and desktop validation fail before meaningful build verification starts.
-- In this environment, `CI=1` causes `tauri build` to fail with `invalid value '1' for '--ci'`; the current Tauri CLI expects `true` or `false`.
-- Desktop validation also depends on the local Rust/Tauri toolchain and Python sidecar prerequisites documented in [build-desktop.md](/C:/dev/bookreader/.climpire-worktrees/54ee3095/docs/build-desktop.md).
-## Large TXT segmented-reader checklist
-
-- Open a TXT file larger than 5 MB and confirm the first visible text appears without locking the UI.
-- Search for a word with many hits and click a result near the end of the list; expected result is a direct jump without a whole-page freeze.
-- Add a highlight on a searched segment, reload the page, and confirm the annotation still lands on the same text.
-- Toggle `trimSpaces` and `splitParagraphs` after several search jumps; expected result is no full-document stutter and the visible segment remains stable.
-
-## TXT paged-reader regression checklist
-
-- Open a long TXT file and confirm the first screen fits inside one paged viewport with no normal document scrolling needed to keep reading.
-- Toggle TXT layout from `single` to `dual` and confirm the visible view changes into a true two-page spread instead of staying visually identical.
-- On the first TXT page, press `Space` and confirm both the visible text and the bottom progress bar move to the next viewport page together.
-- Drag the bottom progress slider or type a target page number and confirm the visible TXT text changes immediately to that target viewport page.
-- Open TXT search results and annotation items and confirm each jump lands on the expected visible viewport page.
+1. Open a dense TXT file with repeated inline spaces and confirm `공백 정리` visibly collapses space runs without changing the logical reading position.
+1. Open a TXT file with three or more consecutive blank lines and confirm the behavior is validated with `공백 정리` / trim-spaces enabled, since `remove-empty-lines` is coupled to that toggle and reduces them to a single paragraph break without creating duplicate empty pages.
+1. Open a dense single-block paragraph with minimal manual line breaks and confirm `문단 나누기` inserts readable breaks while the same search result, annotation jump, and bookmark still land in the correct visible place.
+1. Toggle compatibility options on and off while staying in the same reading area and confirm the reader remains near the same logical position instead of jumping to an unrelated section.
+1. Run TXT search after toggling each compatibility option and confirm highlight placement matches the transformed text currently shown in the reader.
