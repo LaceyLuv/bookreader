@@ -33,3 +33,9 @@ test('clampViewportPage keeps viewport navigation inside the measured page range
   expect(clampViewportPage(3, 9)).toBe(3)
   expect(clampViewportPage(99, 9)).toBe(8)
 })
+
+test('findViewportPageForSegment returns 0 for empty or missing maps', () => {
+  expect(findViewportPageForSegment(undefined, 7)).toBe(0)
+  expect(findViewportPageForSegment(null, 7)).toBe(0)
+  expect(findViewportPageForSegment({}, 7)).toBe(0)
+})

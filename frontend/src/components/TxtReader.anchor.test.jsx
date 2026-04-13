@@ -1,10 +1,12 @@
+// @vitest-environment jsdom
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useRef } from 'react'
+import { expect, test, vi } from 'vitest'
 import { useReaderViewportAnchor } from '../hooks/useReaderViewportAnchor'
 
 function AnchorHarness({ text, onRestore }) {
-    const rootRef = useRef(null)
+    const pageSurfaceRef = useRef(null)
     const { captureAnchor, restoreAnchor } = useReaderViewportAnchor({
         resolveRangeAtPoint: (root) => {
             const node = root.firstChild
@@ -17,23 +19,23 @@ function AnchorHarness({ text, onRestore }) {
 
     return (
         <div>
-            <div data-testid="scroller">
-                <div ref={rootRef}>{text}</div>
+            <div data-testid="txt-spread">
+                <div data-testid="txt-page-surface" ref={pageSurfaceRef}>{text}</div>
             </div>
             <button
                 type="button"
-                onClick={() => captureAnchor(rootRef.current)}
+                onClick={() => captureAnchor(pageSurfaceRef.current)}
             >
                 hide
             </button>
             <button
                 type="button"
                 onClick={() => {
-                    const marker = rootRef.current?.querySelector('[data-reader-anchor="true"]')
+                    const marker = pageSurfaceRef.current?.querySelector('[data-reader-anchor="true"]')
                     if (marker) {
-                        marker.scrollIntoView = onRestore
+                        marker.scrollIntoView = () => onRestore(marker, pageSurfaceRef.current)
                     }
-                    restoreAnchor(rootRef.current)
+                    restoreAnchor(pageSurfaceRef.current)
                 }}
             >
                 show
@@ -42,9 +44,11 @@ function AnchorHarness({ text, onRestore }) {
     )
 }
 
-test('bottom bar toggle preserves the visible top text block in TXT reader', async () => {
+test('bottom bar toggle preserves the visible TXT page surface anchor', async () => {
     const user = userEvent.setup()
-    const onRestore = vi.fn()
+    const onRestore = vi.fn((marker, pageSurface) => {
+        expect(marker.closest('[data-testid="txt-page-surface"]')).toBe(pageSurface)
+    })
 
     render(<AnchorHarness text={'alpha\n'.repeat(800)} onRestore={onRestore} />)
 
@@ -52,4 +56,5 @@ test('bottom bar toggle preserves the visible top text block in TXT reader', asy
     await user.click(screen.getByRole('button', { name: 'show' }))
 
     expect(onRestore).toHaveBeenCalledTimes(1)
+    expect(onRestore.mock.calls[0][1]).toBe(screen.getByTestId('txt-page-surface'))
 })
