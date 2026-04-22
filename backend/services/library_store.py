@@ -422,7 +422,14 @@ def add_book_record(*, book_id: str, filename: str, stored_filename: str) -> dic
             raise FileNotFoundError(str(file_path))
         record = _new_record(filename, stored_filename, file_path, book_id=book_id)
         books = data.get('books', [])
-        books.append(record)
+        existing_index = next(
+            (index for index, item in enumerate(books) if item.get('stored_filename') == record['stored_filename']),
+            None,
+        )
+        if existing_index is None:
+            books.append(record)
+        else:
+            books[existing_index] = record
         data['books'] = books
         _write_store_unlocked(data)
         return dict(record)

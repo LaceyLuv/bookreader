@@ -1377,10 +1377,6 @@ function Dashboard() {
                                     <div className="mt-6 grid gap-3 text-sm md:grid-cols-[140px_minmax(0,1fr)]">
                                         <div style={{ color: mutedTextColor }}>{tt('displayName')}</div>
                                         <div className="break-all">{selectedInfo.filename}</div>
-                                        <div style={{ color: mutedTextColor }}>{tt('storedName')}</div>
-                                        <div className="break-all">{selectedInfo.stored_filename || selectedInfo.filename}</div>
-                                        <div style={{ color: mutedTextColor }}>{tt('path')}</div>
-                                        <div className="break-all">{selectedInfo.path || tt('unavailable')}</div>
                                         <div style={{ color: mutedTextColor }}>{tt('format')}</div>
                                         <div>{String(selectedInfo.file_type || '').toUpperCase()}</div>
                                         <div style={{ color: mutedTextColor }}>{tt('libraryFolder')}</div>
