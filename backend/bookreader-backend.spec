@@ -19,7 +19,6 @@ hiddenimports = [
     "uvicorn.protocols.http.httptools_impl",
     "uvicorn.protocols.websockets.auto",
     "uvicorn.protocols.websockets.websockets_impl",
-    "uvicorn.protocols.websockets.wsproto_impl",
     "uvicorn.lifespan.on",
     "uvicorn.lifespan.off",
 ]
@@ -27,7 +26,6 @@ hiddenimports = [
 datas = []
 datas += collect_data_files("ebooklib")
 datas += collect_data_files("bs4")
-datas += [("books", "books"), ("fonts", "fonts")]
 
 a = Analysis(
     ['run_server.py'],

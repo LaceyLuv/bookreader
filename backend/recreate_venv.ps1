@@ -9,6 +9,8 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $ScriptDir ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\\python.exe"
 $ReqFile = Join-Path $ScriptDir "requirements.txt"
+$BuildReqFile = Join-Path $ScriptDir "requirements-build.txt"
+$DevReqFile = Join-Path $ScriptDir "requirements-dev.txt"
 
 function Invoke-Checked {
     param(
@@ -25,6 +27,12 @@ function Invoke-Checked {
 
 if (-not (Test-Path $ReqFile)) {
     throw "requirements.txt not found: $ReqFile"
+}
+if (-not (Test-Path $BuildReqFile)) {
+    throw "requirements-build.txt not found: $BuildReqFile"
+}
+if (-not (Test-Path $DevReqFile)) {
+    throw "requirements-dev.txt not found: $DevReqFile"
 }
 
 if ($Force -and (Test-Path $VenvDir)) {
@@ -45,6 +53,6 @@ if (-not (Test-Path $VenvPython)) {
 }
 
 Invoke-Checked -Command $VenvPython -Arguments @("-m", "pip", "install", "--upgrade", "pip")
-Invoke-Checked -Command $VenvPython -Arguments @("-m", "pip", "install", "-r", $ReqFile, "pyinstaller")
+Invoke-Checked -Command $VenvPython -Arguments @("-m", "pip", "install", "-r", $DevReqFile)
 
 Write-Host "[venv] ready: $VenvDir"

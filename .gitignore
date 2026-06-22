@@ -35,6 +35,7 @@ Thumbs.db
 # ===== TestSprite =====
 .testsprite/
 testsprite_tests/
+.playwright-cli/
 
 # ===== Uploaded books & fonts (user data) =====
 backend/books/*

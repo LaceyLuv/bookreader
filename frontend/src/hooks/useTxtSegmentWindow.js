@@ -11,7 +11,7 @@ const DEFAULT_WINDOW_SIZE = 40
 
 function normalizeTxtDisplayFragments(data, transformOptions = {}) {
     const displayFragments = Array.isArray(data?.display_fragments) ? data.display_fragments : []
-    if (hasActiveTxtTransformOptions(transformOptions) && displayFragments.length > 0) return displayFragments
+    if (displayFragments.length > 0) return displayFragments
     return normalizeTxtCompatibilitySegments(data, transformOptions)
 }
 

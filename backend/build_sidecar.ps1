@@ -14,6 +14,25 @@ $DistDir = Join-Path $ScriptDir "dist-sidecar"
 $VenvPython = Join-Path $ScriptDir ".venv\\Scripts\\python.exe"
 $buildStartedAt = Get-Date
 
+function Get-RustTargetTriple {
+    $targetTriple = (& rustc --print host-tuple 2>$null)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($targetTriple)) {
+        return $targetTriple.Trim()
+    }
+
+    $rustcVerbose = (& rustc -Vv 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($rustcVerbose)) {
+        throw "Failed to detect Rust target triple from 'rustc --print host-tuple' or 'rustc -Vv'."
+    }
+
+    $hostLine = $rustcVerbose | Where-Object { $_ -match '^host:\s*(.+)$' } | Select-Object -First 1
+    if ($hostLine -match '^host:\s*(.+)$') {
+        return $Matches[1].Trim()
+    }
+
+    throw "Failed to detect Rust target triple from 'rustc --print host-tuple' or 'rustc -Vv' host: output."
+}
+
 if (-not (Test-Path $SpecFile)) {
     throw "spec file not found: $SpecFile"
 }
@@ -33,10 +52,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE."
 }
 
-$targetTriple = (& rustc --print host-tuple).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($targetTriple)) {
-    throw "Failed to detect Rust target triple from 'rustc --print host-tuple'."
-}
+$targetTriple = Get-RustTargetTriple
 
 $builtExe = Join-Path $DistDir "bookreader-backend.exe"
 if (-not (Test-Path $builtExe)) {

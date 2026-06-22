@@ -133,3 +133,77 @@ test('buildMeasuredPages throws when even a one-character slice cannot fit a pag
     },
   )).toThrow(/impossible fit/i)
 })
+
+test('buildMeasuredPages fills remaining page space by shrinking a slice before flushing', () => {
+  const pages = buildMeasuredPages(
+    [
+      {
+        segmentId: 1,
+        text: 'abcd',
+        startOffset: 0,
+        endOffset: 4,
+      },
+      {
+        segmentId: 2,
+        text: 'efghij',
+        startOffset: 4,
+        endOffset: 10,
+      },
+    ],
+    {
+      pageHeight: 6,
+      measureSliceHeight: (slice) => slice.text.length,
+      measurePageHeight: (pageSlices) => (
+        pageSlices.reduce((total, slice) => total + slice.text.length, 0)
+        + Math.max(0, pageSlices.length - 1)
+      ),
+    },
+  )
+
+  expect(pages[0].slices.map(({ segmentId, sliceStart, sliceEnd }) => ({ segmentId, sliceStart, sliceEnd }))).toEqual([
+    { segmentId: 1, sliceStart: 0, sliceEnd: 4 },
+    { segmentId: 2, sliceStart: 0, sliceEnd: 1 },
+  ])
+  expect(pages[1].slices[0]).toMatchObject({
+    segmentId: 2,
+    sliceStart: 1,
+    sliceEnd: 6,
+  })
+})
+
+test('buildMeasuredPages avoids leaving a tiny trailing sentence fragment on the next page', () => {
+  const pages = buildMeasuredPages(
+    [
+      {
+        segmentId: 1,
+        text: 'abcdefghijklmnopqrst',
+        startOffset: 0,
+        endOffset: 20,
+      },
+      {
+        segmentId: 2,
+        text: 'uvwxyzabcd',
+        startOffset: 20,
+        endOffset: 30,
+      },
+    ],
+    {
+      pageHeight: 6,
+      minTrailingSliceHeight: 2,
+      measureSliceHeight: (slice) => Math.ceil(slice.text.length / 5),
+      measurePageHeight: (pageSlices) => (
+        pageSlices.reduce((total, slice) => total + Math.ceil(slice.text.length / 5), 0)
+        + Math.max(0, pageSlices.length - 1)
+      ),
+    },
+  )
+
+  expect(pages[0].slices.map(({ segmentId, sliceStart, sliceEnd }) => ({ segmentId, sliceStart, sliceEnd }))).toEqual([
+    { segmentId: 1, sliceStart: 0, sliceEnd: 20 },
+  ])
+  expect(pages[1].slices[0]).toMatchObject({
+    segmentId: 2,
+    sliceStart: 0,
+    sliceEnd: 10,
+  })
+})

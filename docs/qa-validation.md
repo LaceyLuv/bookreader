@@ -1,38 +1,117 @@
-# TXT Compatibility QA Validation
+# QA Validation
 
-This note covers TXT compatibility QA and final verification for the reader, including the TXT recovery work from Task 5.
+Last updated: 2026-06-22
 
-## Verification context
+This document lists the validation steps for build-readiness and reader regression checks.
 
-Run the TXT compatibility validation with the backend command from the repository root, then run the frontend checks and production build from `frontend/`:
+## Automated Baseline
+
+Run from the repository root unless noted.
 
 ```powershell
-python -m pytest backend/tests/test_txt_transform_service.py backend/tests/test_books_txt_manifest_api.py backend/tests/test_search_service.py -v
-cmd /c npx vitest run src/lib/txtDisplayMapper.test.js src/components/TxtReader.segmented.test.jsx src/components/TxtReader.anchor.test.jsx
+cd C:\dev\bookreader\backend
+pip install -r requirements-dev.txt
+
+cd C:\dev\bookreader
+python -m pytest backend/tests -q
+
+cd C:\dev\bookreader\frontend
+cmd /c npm run test
 cmd /c npm run build
+cmd /c npm run desktop:info
+cmd /c npm run desktop:sidecar
 ```
 
-## TXT recovery manual QA
+For a release candidate, also run:
 
-Use a large `.txt` file so the recovered paged-reader behavior is easy to see.
+```powershell
+cd C:\dev\bookreader\frontend
+cmd /c npm run desktop:build
+```
 
-1. Open the TXT book and confirm the first screen lands inside a single paged viewport instead of a scrollable document.
-1. Open the TXT book and confirm the initial page total does not briefly inflate to an obviously wrong count before settling.
-1. Hide the bottom bar and show it again, then confirm the visible paragraph stays anchored and the reader returns to the same page.
-1. Click the bottom progress slider once so it is the most recently used control, then press `Space`, and confirm the reader advances to the next TXT page instead of leaving the slider or button highlighted.
-1. Press `Space` repeatedly from the first TXT page and confirm each key press advances exactly one page with no delayed multi-page jump.
-1. Open the TXT file again and confirm the first page appears quickly and the first page-turn or search interaction responds normally without an obvious multi-second stall while the reader recovers the initial render page.
-1. Switch TXT layout from `single` to `dual` and confirm the view becomes a true two-page spread.
-1. Use the bottom progress slider or a typed page number to jump and confirm the visible TXT text and progress bar move together to the same target viewport page.
-1. Open TXT search results and annotation items and confirm each jump lands on the expected visible viewport page.
-1. For a far search result, confirm the reader stays on the target page even if the full-book page map is still loading in the background.
-1. Drag-select text near the top and bottom of a TXT page and confirm the selection menu appears only after the drag settles, without earlier text being pulled into the selection or the highlight UI flickering.
-1. Open a TXT page where the last paragraph sits close to the bottom edge and confirm the final visible line moves onto the next page instead of being clipped.
+## Packaged Sidecar Smoke
 
-## TXT compatibility mode
+After `desktop:sidecar`, run the copied binary on a temporary port and verify `/api/health`.
 
-1. Open a dense TXT file with repeated inline spaces and confirm `공백 정리` visibly collapses space runs without changing the logical reading position.
-1. Open a TXT file with three or more consecutive blank lines and confirm the behavior is validated with `공백 정리` / trim-spaces enabled, since `remove-empty-lines` is coupled to that toggle and reduces them to a single paragraph break without creating duplicate empty pages.
-1. Open a dense single-block paragraph with minimal manual line breaks and confirm `문단 나누기` inserts readable breaks while the same search result, annotation jump, and bookmark still land in the correct visible place.
-1. Toggle compatibility options on and off while staying in the same reading area and confirm the reader remains near the same logical position instead of jumping to an unrelated section.
-1. Run TXT search after toggling each compatibility option and confirm highlight placement matches the transformed text currently shown in the reader.
+```powershell
+cd C:\dev\bookreader
+$exe = Resolve-Path "frontend/src-tauri/binaries/bookreader-backend-x86_64-pc-windows-msvc.exe"
+$proc = Start-Process -FilePath $exe -ArgumentList @("--host","127.0.0.1","--port","8765") -WorkingDirectory (Resolve-Path "backend") -WindowStyle Hidden -PassThru
+Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/health"
+Stop-Process -Id $proc.Id -Force
+```
+
+## TXT Manual QA
+
+Use a large `.txt` file.
+
+1. Confirm the first screen is paged, not a scroll document.
+2. Confirm page count does not briefly show an obviously wrong total.
+3. Hide and restore the bottom bar; the visible text should stay anchored.
+4. Press `Space` after interacting with the progress bar; the reader should advance.
+5. Press `Space` rapidly; each press should move forward without stale jumps.
+6. Switch between single and dual layout; visible text and progress should stay aligned.
+7. Use progress seek, typed page seek, search result click, bookmark, and annotation jump.
+8. Toggle TXT compatibility options and confirm search highlights match transformed text.
+9. Check a page with a paragraph near the bottom edge; no final line should be clipped.
+
+## EPUB Manual QA
+
+Use an EPUB containing images, styles, and multiple chapters.
+
+1. Open TOC and navigate between chapters.
+2. Confirm image and font assets load through `/api/books/{book_id}/asset/...`.
+3. Confirm custom reader font mode and embedded font mode both work.
+4. Search within the EPUB and verify result jumps/highlights.
+5. Create, edit, recolor, and delete an annotation.
+6. Confirm unsafe chapter HTML does not execute scripts or event handlers.
+7. Confirm pagination and progress remain coherent after changing font size, margins, line height, and layout.
+
+## ZIP Manual QA
+
+Use a ZIP comic/image archive.
+
+1. Confirm images are sorted naturally.
+2. Navigate next/previous in single layout.
+3. Switch to dual layout and confirm image pairing is stable.
+4. Confirm progress and typed page seek match the visible image.
+
+## Desktop Install Smoke
+
+After `desktop:build`:
+
+1. Install with the NSIS installer.
+2. Launch the app and confirm the main window loads.
+3. Confirm backend health at `http://127.0.0.1:8000/api/health`.
+4. Open TXT, EPUB, and ZIP books.
+5. Close the app and confirm no sidecar process remains.
+
+## Installed App API Smoke
+
+Use an isolated `BOOKREADER_DATA_DIR` so the installed app and sidecar run normally without mutating the user's real app data. Verify:
+
+1. `/api/health` returns `ok: true`.
+2. TXT, EPUB, ZIP, and a custom font upload successfully.
+3. TXT content, transformed manifest/segments, and search return expected data.
+4. EPUB TOC, chapter HTML, search, and at least one rewritten asset URL return expected data.
+5. ZIP image listing and first image bytes return expected data.
+6. Annotation create, patch, list, delete, and empty-after-delete all persist.
+7. Font list and font download return expected data.
+8. Normal window close leaves no `bookreader-backend` process.
+
+Latest installed API smoke result, 2026-06-20:
+- Books listed: 3 (`txt,epub,zip`).
+- TXT: 688,013 chars, 15,302 transformed segments, search query `서장` returned 2 results.
+- EPUB: 219 TOC items/chapters, search query `주의사항` returned 1 result, asset response returned 5,679,660 bytes.
+- ZIP: 608 images, first image response returned 49,655 bytes.
+- Font upload/download returned 58,920 bytes.
+- Annotation delete left 0 annotations.
+- Normal close left 0 backend processes.
+
+Latest installed visual WebView smoke result, 2026-06-22:
+- Dashboard loaded in the installed Tauri WebView and listed 4 books.
+- TXT reader opened a large UTF-16 sample, rendered paged dual-column text, and showed coherent progress controls.
+- TXT search panel opened with the expected in-book search input and empty-query state.
+- Reader settings opened with language, font family, font upload count, embedded-font mode, weight, colors, theme preset, and spacing controls.
+- EPUB reader opened an EPUB sample and rendered the cover image through the app WebView with toolbar controls present.
+- ZIP reader opened a 608-image archive and rendered a dual-page comic spread with progress controls.

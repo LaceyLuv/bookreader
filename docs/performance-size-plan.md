@@ -1,334 +1,143 @@
-# BookReader 속도 개선 및 용량 축소 기획안
+# Performance And Package Size Plan
 
-## 1. 목적
+Last updated: 2026-05-19
 
-`C:\dev\bookreader`의 현 구조를 기준으로, `C:\Users\Lenovo\Downloads\texview190` 대비 체감 속도와 배포 산출물 크기를 동시에 개선하기 위한 실행계획을 확정한다.
+This plan tracks performance and package-size work for the current BookReader architecture: React/Vite frontend, FastAPI backend, Tauri v2 desktop shell, and PyInstaller Python sidecar.
 
-본 문서는 구현 코드가 아니라 병렬 착수 가능한 실행 단위, 기준값·목표값, 선행의존성, 적용 순서, 리스크, 제외 범위를 한 번에 고정하는 승인용 계획 문서다.
+## Current Baseline
 
-## 2. 비교 기준과 승인 원칙
+Recent local validation:
 
-비교 기준은 아래 두 축으로 통일한다.
+- Web build passed with Vite.
+- Frontend tests passed: 16 files, 92 tests.
+- Backend tests passed: 21 tests.
+- Sidecar build passed.
+- Packaged sidecar health smoke passed on a temporary local port.
+- Sidecar binary: 19,615,633 bytes on Windows x64.
+- NSIS installer: 21,926,267 bytes on Windows x64.
 
-- 속도: `texview190` 대비 체감 속도 열세를 줄이는 것
-- 용량: `texview190` 절대 크기를 직접 맞추지 못하더라도 현재 BookReader 배포 산출물을 단계적으로 줄이는 것
+The largest package-size contributor remains the PyInstaller sidecar, not the Vite frontend.
 
-승인 원칙은 아래와 같다.
+## Current Architecture Constraints
 
-- 필수 수정항목은 이번 라운드에서 바로 병렬 착수 가능한 수준으로 확정한다.
-- 선택 개선항목은 필수 항목 완료 후 효과가 검증될 때만 착수한다.
-- 데스크톱은 `Tauri + Python sidecar`, 웹은 `Vite + FastAPI` 공용 구조를 전제로 하되, 구조 전환은 별도 의사결정 게이트를 둔다.
+- The backend still needs Python dependencies for FastAPI, Uvicorn, EPUB parsing, charset detection, BeautifulSoup, and related parsing libraries.
+- Tauri desktop launches the Python sidecar and talks to it through localhost.
+- EPUB assets and user fonts are served by the backend.
+- TXT reader performance depends on segmented loading and measured pagination rather than loading one giant DOM.
+- EPUB first-render performance depends on not blocking the first chapter on full-book page counting.
 
-## 3. 기준선 요약
+## Completed Improvements
 
-### 3.1 크기 기준선
+- TXT uses segmented loading and measured pagination.
+- TXT page-map hydration preserves reading anchors.
+- EPUB page count work is deferred so first chapter rendering is prioritized.
+- Uploads stream to disk and duplicate filename handling exists in backend/library flow.
+- Reader settings/progress writes are debounced.
+- EPUB caches are cleared after library mutations.
+- PyInstaller output was reduced by removing local `books/` and `fonts/` data from bundled datas and removing an unused `wsproto_impl` import.
+- Packaged runs now resolve mutable data to app data or `BOOKREADER_DATA_DIR`.
+- Tauri CSP is explicit instead of disabled.
+- Sidecar preflight now includes an executable health smoke.
 
-로컬 확인 기준:
+## Open Performance Work
 
-- `texview190` 전체 크기: 약 `2.64 MB`
-- BookReader 프런트 정적 산출물 `frontend/dist`: 약 `0.41 MB`
-- BookReader Python sidecar EXE: 약 `36.24 MB`
-- BookReader NSIS 설치 파일: 약 `38.59 MB`
+### P1. Build Metrics
 
-해석:
+Record metrics for every release-candidate build:
 
-- 용량 문제의 본체는 프런트엔드가 아니라 `PyInstaller + Python 런타임 + FastAPI/Uvicorn + EPUB 파서`가 묶인 sidecar다.
-- 설치 파일 크기는 사실상 sidecar EXE가 결정한다.
-- 현재 구조에서 `texview190`의 절대 크기 수준으로 즉시 내려가는 것은 비현실적이므로, 1차는 `20 MB대`, 2차는 `15 MB대 진입 가능성 검토`를 목표로 잡는다.
+- `frontend/dist` size.
+- Sidecar exe size.
+- NSIS installer size.
+- `npm run build` duration.
+- `npm run desktop:sidecar` duration.
+- `npm run desktop:build` duration.
 
-### 3.2 속도 기준선과 목표값
+Suggested command:
 
-아래 수치는 이번 라운드 승인용 통제값이다. `texview190`은 경량 네이티브 뷰어라 절대 우위를 인정하되, BookReader가 이번 라운드에서 반드시 달성해야 할 목표를 별도로 고정한다.
+```powershell
+cd C:\dev\bookreader\frontend
+npm run perf:report
+```
 
-| 항목 | texview190 기준값 | BookReader 현재 기준값 | 1차 목표값 | 2차 목표값 |
-|------|-------------------|------------------------|------------|------------|
-| 첫 표시 시간(TXT 첫 페이지) | `0.6초 이내` | `1.8초` | `1.2초 이내` | `0.9초 이내` |
-| 첫 표시 시간(EPUB 첫 챕터) | `0.8초 이내` | `2.4초` | `1.6초 이내` | `1.2초 이내` |
-| 전환 지연(TXT/EPUB/ZIP 단건 페이지 전환) | `0.05초 이내` | `0.20초` | `0.12초 이내` | `0.08초 이내` |
-| 데스크톱 실행 후 읽기 가능 시점 | `0.9초 이내` | `2.8초` | `1.9초 이내` | `1.4초 이내` |
-| 설치/배포 산출물 크기 | `2.64 MB` | `38.59 MB` | `24~28 MB` | `15~20 MB 검토` |
-| sidecar EXE 크기 | 해당 없음 | `36.24 MB` | `20~24 MB` | `12~18 MB` |
+If that script is out of date, update it before relying on historical comparisons.
 
-전제:
+### P1. Sidecar Contents Review
 
-- `texview190` 속도값은 체감 비교를 위한 기준선이다.
-- BookReader 현재 기준값은 이번 계획 승인용 기준치이며, 개발팀이 동일 샘플 파일·동일 장비에서 Phase 0 계측으로 검증한다.
-- 승인 후 실제 계측값이 위 기준에서 `±10%`를 넘게 벗어나면 목표값과 일정은 재조정한다.
+Review whether the sidecar should package `books` and `fonts` as data. For releases, user data should usually be initialized in an app data directory rather than bundled into the installer.
 
-## 4. 현재 구조 병목
+Decision needed:
 
-### 4.1 용량 병목
+- Keep bundled folders as empty placeholders.
+- Or remove them from PyInstaller `datas` and ensure runtime startup creates user-data folders.
 
-- `backend/bookreader-backend.spec`가 `uvicorn` HTTP/WebSocket/lifespan 경로를 넓게 포함한다.
-- Python sidecar가 `ebooklib`, `bs4`, `lxml`과 런타임 전체를 포함한다.
-- `books`, `fonts` 폴더를 sidecar 데이터로 묶어 배포 산출물이 비대해질 수 있다.
-- 데스크톱 앱은 `Tauri shell + 외부 Python sidecar` 2중 런타임 구조다.
+Required validation:
 
-### 4.2 초기 속도 병목
+- Fresh install can upload books and fonts.
+- Existing local development data is not accidentally bundled.
+- Desktop app still opens after install.
 
-- 데스크톱 실행 시 Tauri가 sidecar를 띄우고, sidecar가 다시 FastAPI/Uvicorn 서버를 부팅한다.
-- 앱 UI 준비와 API 준비가 분리되어 초기 체감 지연이 발생한다.
-- `main.py` lifecycle에서 저장소 초기화가 시작 시점에 수행될 가능성이 높다.
+### P2. PyInstaller Trim
 
-### 4.3 포맷별 병목
+The spec should remain an allowlist. Any hidden import removal must be followed by:
 
-- TXT: 전체 파일 로드와 전체 DOM 기반 pagination 비용이 크다.
-- EPUB: 챕터 HTML 가공, 이미지/폰트 대기, 전체 페이지 수 측정 비용이 크다.
-- ZIP: 이미지 요청마다 ZIP을 다시 열고, 프리패치·캐시 전략이 부족하다.
+```powershell
+cd C:\dev\bookreader\frontend
+cmd /c npm run desktop:sidecar
+```
 
-## 5. 필수 수정항목과 선택 개선항목
+Then smoke:
 
-### 5.1 필수 수정항목
+```powershell
+<sidecar exe> --host 127.0.0.1 --port <temp>
+Invoke-RestMethod http://127.0.0.1:<temp>/api/health
+```
 
-아래 항목은 이번 라운드 승인 조건이며, 병렬 착수 기준의 본 작업 범위다.
+Do not chase every PyInstaller warning. Many are optional, platform-specific, or from dependency plugin hooks. Treat warnings as actionable only when they correspond to an imported runtime path used by this app.
 
-| 구분 | 과제 | 목적 | 선행의존성 | 적용 순서 | 핵심 리스크 |
-|------|------|------|------------|-----------|-------------|
-| 속도 | Phase 0 계측 기준선 확정 | 기준값 검증 | 없음 | 1 | 샘플 파일/장비 불일치 시 수치 신뢰도 저하 |
-| 속도 | 시작 시 동기 초기화 축소 | 첫 실행 체감 개선 | Phase 0 | 2 | lazy load 전환 시 초기 API 경쟁 상태 가능 |
-| 속도 | 첫 화면 점진 로딩 | 읽기 가능 시점 단축 | Phase 0 | 2 | 대시보드 정보 누락 체감 가능 |
-| 속도 | TXT 렌더 범위 축소 | 대용량 TXT 첫 표시 개선 | Phase 0 | 3 | 검색/하이라이트 정확도 저하 가능 |
-| 속도 | EPUB 점진 페이지 계산 | 첫 챕터 지연 감소 | Phase 0 | 3 | 총 페이지 수 일시 불일치 가능 |
-| 속도 | ZIP 프리패치/캐시 | 페이지 전환 지연 감소 | Phase 0 | 3 | 메모리 피크 증가 가능 |
-| 용량 | PyInstaller hiddenimports 축소 | sidecar 크기 직접 감소 | Phase 0 | 2 | 누락 모듈로 런타임 에러 발생 가능 |
-| 용량 | sidecar 번들 방식 비교(`onefile`/`onedir`) | 설치 파일 감소 | Phase 0 | 2 | 빌드 산출물 구조 변경으로 운영 복잡도 증가 |
-| 용량 | sidecar 데이터 분리(`books`, `fonts`) | 설치본 비대화 억제 | Phase 0 | 2 | 기본 사용자 경험 저하 가능 |
+### P2. Desktop Startup Time
 
-### 5.2 선택 개선항목
+Measure:
 
-아래 항목은 필수 항목 성과를 본 뒤 결정한다.
+- Time to Tauri window visible.
+- Time to sidecar `/api/health`.
+- Time to library list rendered.
+- Time to first TXT/EPUB/ZIP content rendered.
 
-| 구분 | 과제 | 착수 조건 | 리스크 |
-|------|------|-----------|--------|
-| 구조 | 데스크톱 전용 Rust/Tauri command 경로 일부 대체 | Phase 1 종료 후 설치본이 `30 MB 이하`로 내려가지 않을 때 | 웹/데스크톱 경로 이원화 |
-| 구조 | Python sidecar 제거 검토 | 2차 목표 달성이 불가능하다고 판단될 때 | 재구축 비용 과다 |
-| UX | 고급 ZIP 썸네일/축소 캐시 | 필수 속도 항목 완료 후 메모리 여유 확보 시 | 캐시 정책 복잡화 |
-| UX | embedded font 정책 세분화 | EPUB 첫 표시 목표 달성 후 | 폰트 호환성 이슈 |
+Target direction:
 
-## 6. 속도개선 과제와 용량절감 과제 분리
+- Keep first readable content fast even if background pagination or asset preparation continues.
+- Avoid blocking startup on full-library scans, full-book EPUB measurement, or expensive cache warming.
 
-### 6.1 속도개선 과제 묶음
+### P3. Alternative Packaging Experiments
 
-| ID | 과제 | 산출물 | 측정지표 | 목표 |
-|----|------|--------|----------|------|
-| S-0 | 계측 시나리오 3종 확정 | 기준 시나리오, 측정 템플릿 | 첫 표시 시간, 전환 지연, 읽기 가능 시점 | 기준선 확정 |
-| S-1 | 시작 시 동기 초기화 제거 | 초기화 분해 설계서 | 데스크톱 읽기 가능 시점 | `2.8초 -> 1.9초` |
-| S-2 | 첫 화면 점진 로딩 | 대시보드 로딩 순서 정의 | 첫 콘텐츠 표시 시간 | `30% 이상 단축` |
-| S-3 | TXT 가시 범위 중심 렌더 | TXT 렌더링 전략 변경안 | TXT 첫 표시 시간 | `1.8초 -> 1.2초` |
-| S-4 | EPUB 점진 페이지 계산 | 2단계 페이지 수 모델 | EPUB 첫 챕터 시간 | `2.4초 -> 1.6초` |
-| S-5 | ZIP 프리패치/캐시 | 이미지 캐시 정책 | 단건 페이지 전환 지연 | `0.20초 -> 0.12초` |
+Only consider these after the baseline release path is stable:
 
-적용 순서:
+- Compare PyInstaller `onefile` vs `onedir`.
+- Move more desktop-only logic into Tauri/Rust commands.
+- Replace the Python sidecar for select hot paths.
 
-1. `S-0`
-2. `S-1`, `S-2`
-3. `S-3`, `S-4`, `S-5`
+These are architecture decisions, not quick cleanup tasks.
 
-### 6.2 용량절감 과제 묶음
+## Risk Register
 
-| ID | 과제 | 산출물 | 측정지표 | 목표 |
-|----|------|--------|----------|------|
-| Z-0 | 산출물 크기 계측 고정 | 빌드별 크기 기록표 | 설치 파일, sidecar EXE | 기준선 확정 |
-| Z-1 | PyInstaller 모듈 축소 | spec 정리안 | sidecar EXE 크기 | `36.24 MB -> 24 MB 이하` |
-| Z-2 | 번들 방식 비교 | `onefile`/`onedir` 비교표 | 설치 파일 크기, 실행 준비 시간 | 설치 파일 `28 MB 이하` |
-| Z-3 | sidecar 데이터 분리 | 데이터 포함 정책 | 설치 파일 크기 | 기본 설치본 `2~4 MB` 절감 |
+| Risk | Impact | Mitigation |
+| --- | --- | --- |
+| Over-trimming PyInstaller imports | Desktop starts but fails on reader-specific paths | Rebuild sidecar and smoke TXT/EPUB/ZIP flows |
+| Bundling local `books`/`fonts` data | Private/dev files can leak into installer | Inspect `datas`, release artifacts, and app-data initialization |
+| Full-book pagination blocks first render | EPUB/TXT feels slow | Keep background page-map work cancellable/deferred |
+| CSP too strict | EPUB assets or custom fonts fail to load | Test EPUB images/fonts and local API calls after CSP changes |
+| CSP too loose | EPUB HTML can execute unsafe content | Keep sanitizer and CSP checks together |
 
-적용 순서:
+## Release Gate
 
-1. `Z-0`
-2. `Z-1`, `Z-3`
-3. `Z-2`
+Before calling a desktop build ready:
 
-## 7. 병렬 착수용 의존성 정리
-
-### 7.1 즉시 병렬 가능한 작업
-
-- `S-0`와 `Z-0`: 같은 샘플 파일과 장비 정의만 맞추면 동시에 착수 가능
-- `S-1`와 `Z-1`: 초기화 분해와 spec 경량화는 충돌이 적어 병렬 가능
-- `S-3`, `S-4`, `S-5`: TXT/EPUB/ZIP별로 담당 분리 가능
-- `Z-3`: packaging 정책 결정만 선행되면 별도 트랙으로 병렬 가능
-
-### 7.2 선행 확인이 필요한 작업
-
-- `Z-2`는 `Z-1`, `Z-3` 결과가 있어야 비교가 의미 있다.
-- 데스크톱 전용 경로 재구성은 필수 항목 성과 확인 후 의사결정 게이트를 통과해야 한다.
-
-## 8. 측정 지표
-
-모든 팀이 아래 지표만 사용한다.
-
-- 첫 표시 시간: 파일 열기 요청부터 첫 페이지 또는 첫 챕터가 화면에 보일 때까지
-- 전환 지연: 다음/이전 페이지 입력부터 새 페이지가 안정적으로 보일 때까지
-- 데스크톱 읽기 가능 시점: 앱 실행부터 `/api/health` 응답 가능, 첫 책 열기 가능 상태에 도달할 때까지
-- 설치/배포 산출물 크기: NSIS 설치 파일, sidecar EXE, `frontend/dist`
-- 메모리 피크: TXT/EPUB/ZIP 각 1회 읽기 중 최대 사용량
-
-허용 오차:
-
-- 속도 지표: 3회 측정 평균, 최대 편차 `10%` 이내
-- 크기 지표: 동일 빌드 산출물 기준 단일값 기록
-
-## 9. 일정과 책임
-
-| 주차 | 필수 산출물 | 주 담당 | 비고 |
-|------|-------------|---------|------|
-| 1주차 | `S-0`, `Z-0`, 샘플 파일/측정 템플릿 확정 | 기획 + 개발 | 승인 재료 확보 |
-| 2주차 | `S-1`, `S-2`, `Z-1`, `Z-3` 실행안 | 개발 | 속도/용량 1차 개선 |
-| 3주차 | `S-3`, `S-4`, `S-5`, `Z-2` 비교 결과 | 개발 | 포맷별 병목 해소 |
-| 4주차 | 목표 달성 여부 평가, 구조 전환 게이트 판단 | 기획 + 개발 | 2차 투자 여부 결정 |
-
-기획팀 책임:
-
-- 기준값·목표값·범위·우선순위 고정
-- 즉시 제외 범위와 선택 항목 경계 관리
-
-개발팀 책임:
-
-- 동일 샘플 기준 실측 검증
-- 기술 리스크 수치화
-- 목표 미달 시 대안 제시
-
-인프라보안팀 책임:
-
-- sidecar 경량화 과정의 공급망 리스크와 재현 가능한 빌드 조건 고정
-- desktop 산출물 무결성, 해시, 서명, 배포 게이트 정의
-- PyInstaller trim, `onefile`/`onedir` 비교, 로컬 바인딩 정책의 보안 검증
-
-## 10. 기술 리스크와 대응
-
-| 리스크 | 영향 | 대응 |
-|--------|------|------|
-| PyInstaller 모듈 축소 시 런타임 누락 | 데스크톱 실행 실패 | hiddenimports 축소는 단계별로 적용하고 smoke test 고정 |
-| lazy load 전환 시 초기 API 순서 꼬임 | 첫 화면 오류 | 첫 화면 필수 API 목록을 별도 고정 |
-| TXT/EPUB 점진 렌더 시 총 페이지 수 불일치 | UX 혼선 | 임시 값과 확정 값 표기 정책 분리 |
-| ZIP 프리패치로 메모리 피크 증가 | 저사양 장비 부담 | 앞뒤 1~2장 제한, 메모리 상한 정책 필요 |
-| `onedir` 전환 시 설치/실행 체감 악화 | 목표 상충 | 크기와 첫 실행 속도를 함께 비교해 의사결정 |
-
-## 11. 즉시 제외 범위
-
-이번 라운드에서 즉시 제외한다.
-
-- 새 리더 기능 추가
-- UI 리디자인 전반
-- 클라우드 동기화, 계정 기능
-- 모바일 앱, macOS/Linux 패키징 확대
-- Python sidecar 완전 제거 구현
-- 신규 런타임 의존성 대량 도입
-
-## 12. 구조 개선 옵션과 의사결정 게이트
-
-### Option A. 현 구조 유지 + 최소 최적화
-
-- 내용: Python sidecar 유지, packaging과 초기화와 포맷별 병목만 개선
-- 권고: 이번 라운드 기본안
-
-### Option B. 데스크톱 경량화 전용 경로 추가
-
-- 내용: 웹은 FastAPI 유지, 데스크톱은 Tauri command 또는 Rust 브리지로 일부 API 대체
-- 착수 조건: 4주차 평가 시 설치 파일이 `30 MB 이하`로 내려가지 않거나 데스크톱 읽기 가능 시점이 `1.9초` 이하로 내려가지 않을 때
-
-### Option C. Python sidecar 제거
-
-- 내용: TXT/ZIP/EPUB 처리를 Rust 또는 JS 중심으로 재구성
-- 착수 조건: 2차 목표 달성이 불가능하다고 판단될 때만 장기 과제로 격상
-
-## 13. 수동 검증 계획
-
-### 웹 경로
-
-1. `backend/run_server.py` 실행
-2. `frontend`에서 `npm run dev` 실행
-3. 대용량 TXT 업로드 후 첫 페이지 표시 시간과 전환 지연 기록
-4. 이미지 많은 EPUB 업로드 후 TOC 표시, 첫 챕터 표시, 챕터 전환 지연 기록
-5. ZIP 만화 업로드 후 첫 이미지 표시와 다음 장 전환 지연 기록
-6. 브라우저 Performance 패널에서 long task와 메모리 피크 기록
-
-### 데스크톱 경로
-
-1. `frontend`에서 `npm run desktop:build` 실행
-2. NSIS 설치 파일 크기와 sidecar EXE 크기 기록
-3. 설치본 실행 후 메인 창 표시 시점 기록
-4. `/api/health` 응답 가능 시점 기록
-5. TXT/EPUB/ZIP 각각 첫 표시 시간과 전환 지연 기록
-6. 앱 종료 후 sidecar 프로세스 종료 여부 확인
-
-## 14. 인프라보안팀 보완 계획
-
-Planned 회의 보완점을 인프라보안 범위로 환산하면, 이번 라운드에서 먼저 고정해야 할 항목은 아래 다섯 가지다.
-
-| ID | 항목 | 목적 | 산출물 |
-|----|------|------|--------|
-| SEC-0 | 빌드 입력값 고정 | 성능/용량 비교 수치의 재현성 확보 | Python/Node/Rust 버전, lock 기준, 빌드 명령 표 |
-| SEC-1 | sidecar 축소 allowlist 정의 | hidden import 축소가 런타임 누락이나 과도한 포함으로 번지지 않도록 통제 | spec trim 후보표, 유지/제외 근거 |
-| SEC-2 | 산출물 무결성 게이트 | sidecar/설치본이 같은 빌드 산출물인지 검증 | SHA256 기록 규칙, release 후보 체크리스트 |
-| SEC-3 | desktop 런타임 보안 점검 | 로컬 sidecar 기동 경로가 불필요한 노출을 만들지 않도록 확인 | 바인딩 정책, 종료 정리, 잔존 프로세스 점검표 |
-| SEC-4 | 취약점/라이선스 검토 기준 | 경량화 과정에서 신규 리스크 유입 방지 | pip/npm 감사 기준, 차단 임계값 |
-
-### 14.1 인프라보안 우선순위
-
-1. `SEC-0`, `SEC-1`
-2. `SEC-2`, `SEC-3`
-3. `SEC-4`
-
-이 순서를 택하는 이유는, 이번 라운드의 실패 비용이 "몇 MB 줄였는가"보다 "재현 불가능한 빌드나 desktop 전용 런타임 장애를 만들었는가"에서 더 크게 발생하기 때문이다.
-
-## 15. 인프라보안팀 협업 산출물
-
-### 15.1 재현 가능한 빌드 기준
-
-- `backend/.venv`, `frontend/package-lock` 또는 동등 lock 파일, Rust target triple을 같은 기록 묶음으로 남긴다.
-- 성능/용량 비교는 동일한 Python, Node, Rust 버전 조합에서 생성된 산출물에 대해서만 유효하다.
-- `desktop:sidecar`, `build:desktop`, `desktop:build` 실행 순서와 사용한 옵션을 빌드 메모에 고정한다.
-- sidecar EXE, NSIS 설치 파일, `frontend/dist`는 같은 build id로 묶어 저장한다.
-
-### 15.2 sidecar 경량화 보안 가드레일
-
-- `backend/bookreader-backend.spec`의 `hiddenimports`와 `datas`는 "왜 필요한지 설명 가능한 항목"만 남기는 allowlist 방식으로 정리한다.
-- `uvicorn.protocols.websockets.*`, `uvicorn.lifespan.*`, `books`, `fonts`처럼 용량 영향이 큰 항목은 제거 전후 smoke 결과를 같이 남긴다.
-- `onefile`과 `onedir` 비교는 설치 크기뿐 아니라 첫 실행 시간, Defender 오탐/지연, 임시 추출 경로 노출 여부를 함께 본다.
-- 신규 런타임 의존성 추가는 원칙적으로 금지하고, 불가피하면 용량 증가폭과 보안 검토 결과를 같이 승인받는다.
-
-### 15.3 산출물 무결성 및 배포 게이트
-
-1. release 후보마다 sidecar EXE와 NSIS 설치 파일의 `SHA256`을 기록한다.
-2. desktop 산출물은 동일 커밋, 동일 target triple, 동일 의존성 집합에서 생성됐는지 확인한다.
-3. 코드서명 인증서가 준비된 환경에서는 sidecar EXE와 설치 파일을 같은 파이프라인 단계에서 서명한다.
-4. 해시, 파일 크기, 생성 시각, 빌드 명령이 누락된 산출물은 성능 비교나 배포 후보에서 제외한다.
-
-### 15.4 desktop 런타임 보안 점검표
-
-| 점검 항목 | 통과 조건 |
-|-----------|-----------|
-| 바인딩 주소 | sidecar가 `127.0.0.1:8000`에만 바인딩되고 외부 인터페이스를 열지 않음 |
-| 업로드/데이터 경로 | `books`, `fonts`가 sidecar 번들 기본 포함 대상에서 분리 가능한지 검토 완료 |
-| 프로세스 종료 | 앱 종료 후 sidecar 프로세스 잔존 없음 |
-| 로그 노출 | 기본 실행에서 민감 경로/환경정보를 과도하게 출력하지 않음 |
-| 빌드 산출물 | 비교 대상 빌드마다 sidecar, installer, dist 해시와 크기가 함께 기록됨 |
-
-### 15.5 취약점 검토 규칙
-
-- `CRITICAL`, `HIGH`: sidecar 실행 실패, 외부 바인딩, 무결성 검증 누락, 알려진 고위험 취약점 포함 시 즉시 수정 대상
-- `MEDIUM`, `LOW`: 개발용 의존성 경고, 노이즈성 감사 결과, 향후 서명 자동화 필요 사항은 보고만 수행
-- Python 패키지는 sidecar 포함 대상 위주로 검토하고, 프런트엔드는 desktop 번들 포함 범위 기준으로 우선순위를 정한다.
-- 감사 결과는 "실행 경로 포함 여부", "desktop 영향 여부", "즉시 차단 필요 여부"를 같이 남긴다.
-
-## 16. 인프라보안 리스크와 대응
-
-| 리스크 | 영향 | 대응 |
-|--------|------|------|
-| hidden import 과다 축소 | desktop에서만 import 누락으로 실행 실패 | trim 전후 smoke, allowlist diff, 포맷별 기본 열기 테스트 고정 |
-| `onefile` 전환 시 임시 추출/백신 지연 | 첫 실행 속도와 배포 신뢰도 저하 | 크기 외에 cold start와 Defender 반응까지 같이 측정 |
-| unsigned 산출물 배포 | 변조 탐지와 배포 신뢰도 저하 | 최소 해시 기록 의무화, 가능 시 같은 파이프라인에서 코드서명 |
-| 로컬 빌드 환경 편차 | 수치 비교와 취약점 판단 왜곡 | Python/Node/Rust 버전과 target triple을 빌드 메모에 고정 |
-| 감사 도구 결과 과잉 해석 | 실제 영향이 낮은 경고로 작업 우선순위 왜곡 | runtime 포함 여부와 desktop 영향도를 기준으로 triage |
-
-## 17. 결론
-
-이번 라운드의 승인 기준은 방향성이 아니라 실행 통제다. 따라서 바로 착수해야 할 것은 `속도개선 과제`와 `용량절감 과제`를 분리한 필수 트랙이며, 각 트랙은 기준값·목표값·의존성·적용 순서·리스크·제외 범위까지 본 문서로 고정한다.
-
-이번 문서 기준의 필수 목표는 아래 두 가지다.
-
-- 속도: 첫 표시 시간과 전환 지연을 `texview190` 대비 열세가 명확히 줄어드는 수준으로 단축
-- 용량: 설치 파일 `38.59 MB -> 24~28 MB`, sidecar EXE `36.24 MB -> 20~24 MB`
-
-4주차 평가 시 이 목표가 미달이면, 그때 `데스크톱 전용 경량화 경로`를 다음 단계 기본안으로 승격한다.
+- Backend tests pass.
+- Frontend tests pass.
+- Web build passes.
+- `desktop:info` passes.
+- `desktop:sidecar` passes.
+- Packaged sidecar `/api/health` smoke passes.
+- `desktop:build` passes.
+- Installed app manually opens TXT, EPUB, and ZIP.
+- App close terminates sidecar.

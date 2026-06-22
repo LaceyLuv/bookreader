@@ -167,6 +167,7 @@ export function splitOversizedSegmentIntoSlices(segment, options = {}) {
 export function buildMeasuredPages(segments, options = {}) {
   const normalizedSegments = Array.isArray(segments) ? segments.map(normalizeSegment) : []
   const pageHeight = Math.max(1, Number(options.pageHeight) || 0)
+  const minTrailingSliceHeight = Math.max(0, Number(options.minTrailingSliceHeight) || 0)
   const measureSliceHeight = typeof options.measureSliceHeight === 'function'
     ? options.measureSliceHeight
     : (slice) => slice.text.length
@@ -207,6 +208,32 @@ export function buildMeasuredPages(segments, options = {}) {
       let nextPageHeight = getPageHeight(measurePageHeight, [...pageSlices, nextSlice])
 
       if (pageSlices.length > 0 && nextPageHeight > pageHeight) {
+        const fittedEnd = findSliceEndForPage(
+          segment,
+          sliceStart,
+          sliceEnd,
+          pageHeight,
+          (candidateSlices) => measurePageHeight([...pageSlices, ...candidateSlices]),
+        )
+        if (fittedEnd > sliceStart) {
+          const leavesTrailingSlice = fittedEnd < segment.text.length
+          if (leavesTrailingSlice && minTrailingSliceHeight > 0) {
+            const trailingSlice = createSlice(segment, fittedEnd, segment.text.length)
+            const trailingHeight = getSliceHeight(measureSliceHeight, trailingSlice)
+            if (trailingHeight <= minTrailingSliceHeight) {
+              flushPage()
+              continue
+            }
+          }
+          nextSlice = createSlice(segment, sliceStart, fittedEnd)
+          nextPageHeight = getPageHeight(measurePageHeight, [...pageSlices, nextSlice])
+          if (nextPageHeight <= pageHeight) {
+            pageSlices.push(nextSlice)
+            sliceStart = nextSlice.sliceEnd
+            flushPage()
+            continue
+          }
+        }
         flushPage()
         continue
       }

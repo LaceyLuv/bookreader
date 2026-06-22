@@ -22,6 +22,7 @@ import {
     recoverSourceRangeFromDisplaySelection,
 } from '../lib/txtDisplayMapper'
 import { buildMeasuredPages } from '../lib/txtMeasuredPagination'
+import { createTxtMeasuredPaginationOptions, getTxtViewportMetrics, measureAverageCharacterWidth } from '../lib/txtPageMetrics'
 import { createTxtTransformOptions, toTxtTransformQuery } from '../lib/txtTransformOptions'
 import { clearSegmentMarks, highlightSegmentMatch, resolveSegmentTarget } from '../lib/txtSegmentDom'
 import { clampViewportPage, getPagesPerView } from '../lib/txtPagination'
@@ -37,6 +38,13 @@ import {
 const API = API_BOOKS_BASE
 const API_ROOT = API.replace(/\/books$/, '')
 const DEFAULT_TXT_RENDER_PAGE_SIZE = 24
+const TXT_PAGE_PADDING_PX = 20
+const TXT_PAGE_VERTICAL_SAFETY_PX = 2
+const TXT_PARAGRAPH_GAP = '0.65em'
+const TXT_PARAGRAPH_GAP_LINES = 1
+const TXT_BOTTOM_WHITESPACE_RECLAIM_LINES = 0
+const TXT_MIN_LINES_PER_PAGE = 2
+const TXT_MIN_TRAILING_SLICE_LINES = 2
 
 function getMeasuredSliceLength(slice) {
     if (typeof slice?.displayText === 'string') return slice.displayText.length
@@ -51,13 +59,32 @@ function getMeasuredPageStartFragmentIndex(page) {
     return Number.isFinite(firstSlice?.fragmentIndex) ? firstSlice.fragmentIndex : null
 }
 
-function buildMeasuredRenderPages(fragments) {
+function measuredPageContainsSegment(page, segmentId) {
+    if (!Number.isFinite(segmentId)) return false
+    const entries = Array.isArray(page?.segments) ? page.segments : []
+    return entries.some((entry) => entry?.segmentId === segmentId)
+}
+
+function isContinuationRenderSegment(previous, next) {
+    return Boolean(
+        previous
+        && next
+        && previous.segmentId === next.segmentId
+        && Number.isFinite(previous.sliceEnd)
+        && Number.isFinite(next.sliceStart)
+        && previous.sliceEnd === next.sliceStart,
+    )
+}
+
+function buildMeasuredRenderPages(fragments, viewportMetrics = null) {
     try {
-        return buildMeasuredPages(Array.isArray(fragments) ? fragments : [], {
+        const measuredOptions = createTxtMeasuredPaginationOptions(viewportMetrics)
+        const paginationOptions = measuredOptions ?? {
             pageHeight: DEFAULT_TXT_RENDER_PAGE_SIZE,
             measureSliceHeight: getMeasuredSliceLength,
             measurePageHeight: (pageSlices) => pageSlices.reduce((total, slice) => total + getMeasuredSliceLength(slice), 0),
-        }).map((page) => ({
+        }
+        return buildMeasuredPages(Array.isArray(fragments) ? fragments : [], paginationOptions).map((page) => ({
             ...page,
             startFragmentIndex: getMeasuredPageStartFragmentIndex(page),
         }))
@@ -155,12 +182,16 @@ function TxtReader() {
     const [globalRenderPages, setGlobalRenderPages] = useState(null)
     const [currentViewportStartSegment, setCurrentViewportStartSegment] = useState(null)
     const [currentViewportStartFragmentIndex, setCurrentViewportStartFragmentIndex] = useState(null)
+    const [viewportMetrics, setViewportMetrics] = useState(null)
 
     const readerRootRef = useRef(null)
+    const scrollerRef = useRef(null)
     const contentRef = useRef(null)
     const pendingAnchorRestoreCleanupRef = useRef(null)
     const globalRenderPageMapPromiseRef = useRef(null)
     const globalRenderPageMapVersionRef = useRef(0)
+    const navigationRequestIdRef = useRef(0)
+    const requestedViewportPageRef = useRef(0)
     const isPointerSelectingRef = useRef(false)
     const { captureAnchor, restoreAnchor, clearAnchor } = useReaderViewportAnchor()
     const transformOptions = useMemo(() => createTxtTransformOptions({
@@ -184,6 +215,7 @@ function TxtReader() {
     const visibleWindowStartsAtZero = visibleStart === 0
     const hasActiveTransforms = transformOptions.trimSpaces || transformOptions.removeEmptyLines || transformOptions.splitParagraphs
     const hasGlobalRenderPageMap = Array.isArray(globalRenderPages) && globalRenderPages.length > 0
+    const pagesPerView = getPagesPerView(layout)
 
     const indexedDisplayFragments = useMemo(
         () => visibleDisplayFragments.map((fragment, fragmentIndex) => ({
@@ -194,8 +226,8 @@ function TxtReader() {
     )
 
     const renderPages = useMemo(
-        () => buildMeasuredRenderPages(indexedDisplayFragments),
-        [indexedDisplayFragments],
+        () => buildMeasuredRenderPages(indexedDisplayFragments, viewportMetrics),
+        [indexedDisplayFragments, viewportMetrics],
     )
 
     const localRenderPageStartSegments = useMemo(
@@ -248,7 +280,7 @@ function TxtReader() {
                 segments.push(...windowDisplayFragments)
             }
 
-            return resolveRenderPages(buildMeasuredRenderPages(segments))
+            return resolveRenderPages(buildMeasuredRenderPages(segments, viewportMetrics))
         })().catch((err) => {
             if (globalRenderPageMapPromiseRef.current === promise) {
                 globalRenderPageMapPromiseRef.current = null
@@ -266,6 +298,7 @@ function TxtReader() {
         visibleDisplayFragments,
         visibleSegments,
         visibleWindowStartsAtZero,
+        viewportMetrics,
         windowSize,
     ])
 
@@ -285,8 +318,6 @@ function TxtReader() {
         resumePrompt,
         dismissResume,
     } = progress
-    const pagesPerView = getPagesPerView(layout)
-
     const currentRenderPageIndex = useMemo(() => {
         if (currentViewportStartSegment == null) {
             return clampViewportPage(currentViewportPage, renderPages.length || 1)
@@ -303,6 +334,10 @@ function TxtReader() {
     const effectiveViewportPage = Number.isFinite(currentViewportPage)
         ? currentViewportPage
         : currentRenderPageIndex
+
+    useEffect(() => {
+        requestedViewportPageRef.current = effectiveViewportPage
+    }, [effectiveViewportPage])
 
     const visibleRenderPages = useMemo(
         () => getVisibleRenderPages(renderPages, layout, currentRenderPageIndex),
@@ -492,23 +527,91 @@ function TxtReader() {
 
     useEffect(() => {
         globalRenderPageMapVersionRef.current += 1
+        navigationRequestIdRef.current += 1
         setGlobalRenderPages(null)
         setCurrentViewportStartSegment(null)
         setCurrentViewportStartFragmentIndex(null)
         globalRenderPageMapPromiseRef.current = null
+        requestedViewportPageRef.current = 0
     }, [id, transformOptions])
 
     useEffect(() => {
         setPendingSearchTarget(null)
         setActiveSearchIndex(null)
-        setGlobalRenderPages(null)
-        setCurrentViewportStartSegment(null)
-        setCurrentViewportStartFragmentIndex(null)
     }, [transformOptions])
 
     useEffect(() => {
+        globalRenderPageMapVersionRef.current += 1
+        setGlobalRenderPages(null)
+        globalRenderPageMapPromiseRef.current = null
+    }, [viewportMetrics?.charsPerLine, viewportMetrics?.linesPerPage])
+
+    useEffect(() => {
+        if (loading) return undefined
+
+        const updateViewportMetrics = () => {
+            const scroller = scrollerRef.current
+            if (!scroller) return
+
+            const viewportWidth = scroller.clientWidth
+            const viewportHeight = scroller.clientHeight
+            if (!viewportWidth || !viewportHeight) return
+
+            const fontSizePx = parseFloat(contentStyle.fontSize) || 18
+            const averageCharWidthPx = measureAverageCharacterWidth({
+                fontFamily: contentStyle.fontFamily,
+                fontWeight: contentStyle.fontWeight,
+                fontSizePx,
+            })
+            const nextMetrics = getTxtViewportMetrics({
+                viewportWidth,
+                viewportHeight,
+                pagesPerView,
+                columnGap,
+                fontSizePx,
+                lineHeight,
+                pageHorizontalPaddingPx: TXT_PAGE_PADDING_PX,
+                pageVerticalPaddingPx: TXT_PAGE_PADDING_PX + TXT_PAGE_VERTICAL_SAFETY_PX,
+                paragraphGapLines: TXT_PARAGRAPH_GAP_LINES,
+                linesPerPageAdjustment: TXT_BOTTOM_WHITESPACE_RECLAIM_LINES,
+                minLinesPerPage: TXT_MIN_LINES_PER_PAGE,
+                minTrailingSliceLines: TXT_MIN_TRAILING_SLICE_LINES,
+                averageCharWidthPx,
+            })
+            setViewportMetrics((previous) => (
+                previous?.charsPerLine === nextMetrics.charsPerLine
+                && previous?.linesPerPage === nextMetrics.linesPerPage
+                    ? previous
+                    : nextMetrics
+            ))
+        }
+
+        updateViewportMetrics()
+
+        if (typeof ResizeObserver === 'undefined') {
+            window.addEventListener('resize', updateViewportMetrics)
+            return () => window.removeEventListener('resize', updateViewportMetrics)
+        }
+
+        const observer = new ResizeObserver(() => updateViewportMetrics())
+        if (scrollerRef.current) observer.observe(scrollerRef.current)
+        return () => observer.disconnect()
+    }, [
+        columnGap,
+        contentStyle.fontFamily,
+        contentStyle.fontSize,
+        contentStyle.fontWeight,
+        hMargin,
+        layout,
+        lineHeight,
+        loading,
+        pagesPerView,
+        vMargin,
+    ])
+
+    useEffect(() => {
         if (loading || error || !Number.isFinite(currentViewportPage)) return
-        if (hasActiveTransforms && Number.isFinite(currentViewportStartFragmentIndex)) {
+        if (Number.isFinite(currentViewportStartFragmentIndex)) {
             const visibleEnd = visibleStart + visibleDisplayFragments.length
             if (currentViewportStartFragmentIndex >= visibleStart && currentViewportStartFragmentIndex < visibleEnd) return
             loadWindow(currentViewportStartFragmentIndex).then((windowData) => {
@@ -530,7 +633,6 @@ function TxtReader() {
         currentViewportStartFragmentIndex,
         currentViewportStartSegment,
         error,
-        hasActiveTransforms,
         loadWindow,
         loading,
         setVisibleStart,
@@ -681,17 +783,27 @@ function TxtReader() {
     }, [searchDraft])
 
     const goToViewportPage = useCallback(async (targetLocator) => {
+        const requestId = navigationRequestIdRef.current + 1
+        navigationRequestIdRef.current = requestId
+        const isStaleRequest = () => navigationRequestIdRef.current !== requestId
         const explicitPageIndex = getPageIndexForLocator(targetLocator)
 
         if (Number.isFinite(explicitPageIndex)) {
             try {
-                const targetPages = await loadGlobalRenderPages()
+                const canResolveFromLocalPages = !hasGlobalRenderPageMap
+                    && explicitPageIndex >= 0
+                    && explicitPageIndex < localRenderPageStartSegments.length
+                    && renderPages.length > 0
+                const targetPages = canResolveFromLocalPages
+                    ? renderPages
+                    : await loadGlobalRenderPages()
                 const startSegments = getRenderPageStartSegments(targetPages)
                 if (!Array.isArray(startSegments) || startSegments.length === 0) return
                 const targetPageIndex = clampViewportPage(
                     explicitPageIndex,
                     Math.max(1, startSegments.length || localRenderPageStartSegments.length),
                 )
+                requestedViewportPageRef.current = targetPageIndex
                 const startMarker = startSegments[targetPageIndex]
                 const rawTarget = getSegmentIdForLocator(startMarker)
                 const startFragmentIndex = getMeasuredPageStartFragmentIndex(targetPages?.[targetPageIndex])
@@ -699,20 +811,24 @@ function TxtReader() {
 
                 let windowStart = null
 
-                if (hasActiveTransforms && Number.isFinite(startFragmentIndex)) {
+                if (Number.isFinite(startFragmentIndex)) {
                     const visibleEnd = visibleStart + visibleDisplayFragments.length
                     if (startFragmentIndex >= visibleStart && startFragmentIndex < visibleEnd) {
                         windowStart = visibleStart
                     } else {
                         const targetWindow = await loadWindow(startFragmentIndex)
                         if (!targetWindow) return
+                        if (isStaleRequest()) return
                         setVisibleStart(startFragmentIndex)
                         windowStart = startFragmentIndex
                     }
                     setCurrentViewportStartFragmentIndex(startFragmentIndex)
-                } else if (Number.isFinite(rawTarget)) {
+                }
+
+                if (!Number.isFinite(windowStart) && Number.isFinite(rawTarget)) {
                     windowStart = await showWindowForSegment(rawTarget)
                 }
+                if (isStaleRequest()) return
                 if (!Number.isFinite(windowStart)) return
                 setCurrentViewportStartSegment(startMarker)
                 setCurrentViewportPage(targetPageIndex)
@@ -730,11 +846,17 @@ function TxtReader() {
         if (!Number.isFinite(rawTarget)) return
 
         try {
+            if (Number.isFinite(targetLocator?.page)) requestedViewportPageRef.current = targetLocator.page
             const targetPages = hasActiveTransforms || hasGlobalRenderPageMap
                 ? await loadGlobalRenderPages()
                 : null
-            const globalViewportPage = Array.isArray(targetPages) && targetPages.length > 0
+            if (isStaleRequest()) return
+            const candidateGlobalViewportPage = Array.isArray(targetPages) && targetPages.length > 0
                 ? findRenderPageForLocator(targetPages, Number.isFinite(targetLocator) ? { segmentId: rawTarget } : targetLocator)
+                : null
+            const globalViewportPage = Number.isFinite(candidateGlobalViewportPage)
+                && measuredPageContainsSegment(targetPages?.[candidateGlobalViewportPage], rawTarget)
+                ? candidateGlobalViewportPage
                 : null
             const globalStartSegment = Number.isFinite(globalViewportPage)
                 ? getRenderPageStartSegment(
@@ -743,12 +865,11 @@ function TxtReader() {
                     rawTarget,
                 )
                 : null
-            const targetWindowSegmentId = getSegmentIdForLocator(globalStartSegment, rawTarget)
-            let targetWindowStart = hasActiveTransforms && Number.isFinite(globalViewportPage)
-                ? (getMeasuredPageStartFragmentIndex(targetPages?.[globalViewportPage]) ?? 0)
-                : Math.max(0, targetWindowSegmentId - Math.floor(windowSize / 2))
+            const targetWindowSegmentId = rawTarget
+            const targetPageStartFragmentIndex = null
+            let targetWindowStart = Math.max(0, targetWindowSegmentId - Math.floor(windowSize / 2))
             let targetWindow = null
-            if (hasActiveTransforms && Number.isFinite(globalViewportPage)) {
+            if (Number.isFinite(targetPageStartFragmentIndex)) {
                 const visibleEnd = visibleStart + visibleDisplayFragments.length
                 if (targetWindowStart >= visibleStart && targetWindowStart < visibleEnd) {
                     targetWindowStart = visibleStart
@@ -759,26 +880,29 @@ function TxtReader() {
                 }
             }
             if (!targetWindow) {
-                if (hasActiveTransforms) {
+                if (Number.isFinite(targetPageStartFragmentIndex)) {
                     targetWindow = await loadWindow(targetWindowStart)
                     if (!targetWindow) return
+                    if (isStaleRequest()) return
                     setVisibleStart(targetWindowStart)
                 } else {
                     const windowStart = await showWindowForSegment(targetWindowSegmentId)
                     if (!Number.isFinite(windowStart)) return
+                    if (isStaleRequest()) return
                     targetWindowStart = windowStart
                     targetWindow = await loadWindow(windowStart)
                     if (!targetWindow) return
+                    if (isStaleRequest()) return
                 }
             }
             const indexedTargetDisplayFragments = targetWindow.displayFragments.map((fragment, fragmentIndex) => ({
                 ...fragment,
                 fragmentIndex: targetWindowStart + fragmentIndex,
             }))
-            const targetRenderPages = buildMeasuredRenderPages(indexedTargetDisplayFragments)
+            const targetRenderPages = buildMeasuredRenderPages(indexedTargetDisplayFragments, viewportMetrics)
             const resolvedStartSegment = getRenderPageStartSegment(
                 targetRenderPages,
-                globalStartSegment ?? (Number.isFinite(targetLocator) ? rawTarget : targetLocator),
+                Number.isFinite(targetLocator) ? rawTarget : targetLocator,
                 targetWindowSegmentId,
             )
             const resolvedViewportPage = Number.isFinite(globalViewportPage)
@@ -792,6 +916,7 @@ function TxtReader() {
             )
                 ?? getMeasuredPageStartFragmentIndex(targetPages?.[resolvedViewportPage])
                 ?? targetWindowStart
+            if (isStaleRequest()) return
             setCurrentViewportStartSegment(resolvedStartSegment)
             setCurrentViewportStartFragmentIndex(resolvedStartFragmentIndex)
             setCurrentViewportPage(resolvedViewportPage)
@@ -808,9 +933,10 @@ function TxtReader() {
         currentViewportStartSegment,
         hasActiveTransforms,
         hasGlobalRenderPageMap,
+        localRenderPageStartSegments.length,
         loadGlobalRenderPages,
         loadWindow,
-        localRenderPageStartSegments,
+        renderPages,
         setCurrentViewportPage,
         setVisibleStart,
         showWindowForSegment,
@@ -833,16 +959,83 @@ function TxtReader() {
         setCurrentViewportStartFragmentIndex(getMeasuredPageStartFragmentIndex(renderPages[0]))
     }, [currentViewportPage, currentViewportStartSegment, error, goToViewportPage, loading, renderPages])
 
+    useEffect(() => {
+        if (loading || error || renderPages.length === 0) return
+        const readerRoot = readerRootRef.current
+        if (!(readerRoot instanceof HTMLElement)) return
+        if (document.activeElement === readerRoot) return
+        readerRoot.focus({ preventScroll: true })
+    }, [error, loading, renderPages.length])
+
+    useEffect(() => {
+        if (!hasGlobalRenderPageMap || currentViewportStartSegment == null) return
+        if (!Number.isFinite(currentViewportPage)) return
+
+        const anchoredViewportPage = findRenderPageForLocator(globalRenderPages, currentViewportStartSegment)
+        if (!Number.isFinite(anchoredViewportPage)) return
+        if (anchoredViewportPage === currentViewportPage) return
+
+        setCurrentViewportPage(anchoredViewportPage)
+    }, [
+        currentViewportPage,
+        currentViewportStartSegment,
+        globalRenderPages,
+        hasGlobalRenderPageMap,
+        setCurrentViewportPage,
+    ])
+
+    useEffect(() => {
+        if (loading || error || renderPages.length === 0 || hasGlobalRenderPageMap) return
+        void loadGlobalRenderPages().catch((err) => {
+            console.error('Failed to preload TXT render pages', err)
+        })
+    }, [error, hasGlobalRenderPageMap, loadGlobalRenderPages, loading, renderPages.length])
+
     const goNext = useCallback(() => {
-        if (effectiveViewportPage < totalViewportPages - 1) {
-            void goToViewportPage({ page: effectiveViewportPage + pagesPerView })
+        const basePage = Number.isFinite(requestedViewportPageRef.current)
+            ? requestedViewportPageRef.current
+            : effectiveViewportPage
+        const nextPage = basePage + pagesPerView
+
+        if (nextPage < totalViewportPages) {
+            requestedViewportPageRef.current = nextPage
+            void goToViewportPage({ page: nextPage })
+            return
         }
-    }, [effectiveViewportPage, goToViewportPage, pagesPerView, totalViewportPages])
+
+        if (hasGlobalRenderPageMap) return
+
+        void loadGlobalRenderPages()
+            .then((targetPages) => {
+                const targetTotalPages = Math.max(
+                    1,
+                    getRenderPageStartSegments(targetPages).length || localRenderPageStartSegments.length,
+                )
+                if (nextPage >= targetTotalPages) return
+                requestedViewportPageRef.current = nextPage
+                void goToViewportPage({ page: nextPage })
+            })
+            .catch((err) => {
+                console.error('Failed to expand TXT render pages for next navigation', err)
+            })
+    }, [
+        effectiveViewportPage,
+        goToViewportPage,
+        hasGlobalRenderPageMap,
+        loadGlobalRenderPages,
+        localRenderPageStartSegments.length,
+        pagesPerView,
+        totalViewportPages,
+    ])
 
     const goPrev = useCallback(() => {
-        if (effectiveViewportPage > 0) {
-            void goToViewportPage({ page: effectiveViewportPage - pagesPerView })
-        }
+        const basePage = Number.isFinite(requestedViewportPageRef.current)
+            ? requestedViewportPageRef.current
+            : effectiveViewportPage
+        if (basePage <= 0) return
+        const previousPage = Math.max(0, basePage - pagesPerView)
+        requestedViewportPageRef.current = previousPage
+        void goToViewportPage({ page: previousPage })
     }, [effectiveViewportPage, goToViewportPage, pagesPerView])
 
     const seekToProgress = useCallback((progressValue) => {
@@ -864,6 +1057,35 @@ function TxtReader() {
         loadGlobalRenderPages,
         localRenderPageStartSegments.length,
     ])
+
+    const formatPageLocation = useCallback((pageIndex) => (
+        tt('searchResultPage').replace('{page}', pageIndex + 1)
+    ), [tt])
+
+    const formatResultFallback = useCallback((result) => (
+        tt('searchResultMatch').replace('{index}', (Number.isFinite(result?.index) ? result.index : 0) + 1)
+    ), [tt])
+
+    const formatSearchResultLocation = useCallback((result) => {
+        const locator = result?.locator ?? result
+        const explicitPageIndex = getPageIndexForLocator(locator)
+        if (Number.isFinite(explicitPageIndex)) return formatPageLocation(explicitPageIndex)
+
+        const pages = hasGlobalRenderPageMap ? globalRenderPages : renderPages
+        if (Array.isArray(pages) && pages.length > 0) {
+            const pageIndex = findRenderPageForLocator(pages, locator)
+            const segmentId = getSegmentIdForLocator(locator, result?.segment_id)
+            const page = pages[pageIndex]
+            const pageContainsTarget = Number.isFinite(segmentId)
+                ? measuredPageContainsSegment(page, segmentId)
+                : Number.isFinite(pageIndex)
+            if (Number.isFinite(pageIndex) && pageContainsTarget) {
+                return formatPageLocation(pageIndex)
+            }
+        }
+
+        return formatResultFallback(result)
+    }, [formatPageLocation, formatResultFallback, globalRenderPages, hasGlobalRenderPageMap, renderPages])
 
     const handleSearchResultClick = useCallback(async (result) => {
         setAnnotationsOpen(false)
@@ -1167,6 +1389,7 @@ function TxtReader() {
                     onSubmit={handleSearchSubmit}
                     onClose={() => setSearchOpen(false)}
                     onResultClick={handleSearchResultClick}
+                    formatResultLocation={formatSearchResultLocation}
                     tt={tt}
                 />
                 <ReaderAnnotationsPanel
@@ -1203,13 +1426,15 @@ function TxtReader() {
                             <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
                         </div>
                     ) : (
-                        <div
-                            data-testid="txt-reader-scroller"
-                            style={{
-                                position: 'relative',
-                                width: '100%',
-                                height: '100%',
-                                overflow: 'hidden',
+                            <div
+                                ref={scrollerRef}
+                                data-testid="txt-reader-scroller"
+                                style={{
+                                    position: 'relative',
+                                    width: '100%',
+                                    height: '100%',
+                                    minHeight: 0,
+                                    overflow: 'visible',
                             }}
                         >
                             <div
@@ -1218,6 +1443,7 @@ function TxtReader() {
                                 className="select-text"
                                 style={{
                                     height: '100%',
+                                    minHeight: 0,
                                     backgroundColor: 'var(--reader-page-bg)',
                                     color: 'var(--reader-page-fg)',
                                     fontFamily: contentStyle.fontFamily,
@@ -1236,10 +1462,12 @@ function TxtReader() {
                                         data-testid="txt-spread"
                                         style={{
                                             height: '100%',
+                                            minHeight: 0,
                                             display: 'grid',
                                             gridTemplateColumns: `repeat(${pagesPerView}, minmax(0, 1fr))`,
                                             gap: `${columnGap}px`,
                                             alignItems: 'stretch',
+                                            overflow: 'visible',
                                         }}
                                     >
                                         {visibleRenderPages.map((page, pageIndex) => (
@@ -1247,18 +1475,20 @@ function TxtReader() {
                                                 key={`render-page-${pageIndex}-${page.segmentIds.join('-')}`}
                                                 data-testid="txt-page-surface"
                                                 style={{
-                                                    minHeight: '100%',
+                                                    height: '100%',
+                                                    minHeight: 0,
+                                                    maxHeight: '100%',
                                                     margin: 0,
-                                                    padding: '1.25rem',
+                                                    padding: `${TXT_PAGE_PADDING_PX + TXT_PAGE_VERTICAL_SAFETY_PX}px ${TXT_PAGE_PADDING_PX}px`,
                                                     border: 'none',
                                                     borderRight: layout === 'dual' && pageIndex === 0 ? `1px solid ${themeStyle.border}` : 'none',
                                                     borderRadius: 0,
                                                     backgroundColor: `${themeStyle.card}66`,
                                                     boxSizing: 'border-box',
-                                                    overflow: 'hidden',
+                                                    overflow: 'visible',
                                                 }}
                                             >
-                                                {page.segments.map((segment) => (
+                                                {page.segments.map((segment, segmentIndex) => (
                                                     <div
                                                         key={segment.fragmentKey
                                                             ?? `${segment.segmentId}-${segment.startOffset}-${segment.endOffset}-${segment.sliceStart ?? 0}-${segment.sliceEnd ?? 0}`}
@@ -1268,6 +1498,10 @@ function TxtReader() {
                                                         data-segment-end={segment.endOffset}
                                                         style={{
                                                             margin: 0,
+                                                            marginBottom: segmentIndex === page.segments.length - 1
+                                                            || isContinuationRenderSegment(segment, page.segments[segmentIndex + 1])
+                                                                ? 0
+                                                                : TXT_PARAGRAPH_GAP,
                                                             padding: 0,
                                                         }}
                                                     >

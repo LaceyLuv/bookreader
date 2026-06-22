@@ -27,6 +27,7 @@ function ReaderSearchPanel({
     onSubmit,
     onClose,
     onResultClick,
+    formatResultLocation,
     tt = (key) => key,
 }) {
     if (!open) return null
@@ -82,7 +83,13 @@ function ReaderSearchPanel({
                     <div className="px-2 py-8 text-sm opacity-50">{tt('noMatchesFound')}</div>
                 ) : (
                     <div className="space-y-2">
-                        {results.map((result) => (
+                        {results.map((result) => {
+                            const formattedLocation = typeof formatResultLocation === 'function'
+                                ? formatResultLocation(result)
+                                : null
+                            const locationLabel = formattedLocation || result.chapter_title || tt('result')
+
+                            return (
                             <button
                                 key={`${result.chapter_index ?? 'txt'}-${result.chapter_match_index ?? result.index}`}
                                 type="button"
@@ -91,11 +98,12 @@ function ReaderSearchPanel({
                                 style={{ backgroundColor: activeIndex === result.index ? `${themeStyle.border}` : 'transparent', border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}
                             >
                                 <div className="mb-1 text-[10px] uppercase tracking-widest opacity-40">
-                                    {result.chapter_title || result.locator || tt('result')}
+                                    {locationLabel}
                                 </div>
                                 <div className="text-sm leading-6" dangerouslySetInnerHTML={{ __html: renderHighlightedSnippet(result.snippet, trimmedSubmittedQuery) }} />
                             </button>
-                        ))}
+                            )
+                        })}
                     </div>
                 )}
             </div>

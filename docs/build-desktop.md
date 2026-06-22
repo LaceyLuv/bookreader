@@ -39,9 +39,14 @@ Build pipeline:
 - `backend\.venv\Scripts\python.exe` first, otherwise `python`
 2. Runs PyInstaller with `backend/bookreader-backend.spec`
 3. Produces `backend/dist-sidecar/bookreader-backend.exe`
-4. Reads host triple using `rustc --print host-tuple`
+4. Reads host triple using `rustc --print host-tuple`, with a `rustc -Vv` `host:` fallback for older Rust toolchains
 5. Copies to:
 - `frontend/src-tauri/binaries/bookreader-backend-<triple>.exe`
+
+Runtime data:
+- Source/dev runs use `backend/books`, `backend/fonts`, `backend/library.json`, and `backend/annotations.json`.
+- Packaged/frozen runs use the platform app data directory, or `BOOKREADER_DATA_DIR` when that environment variable is set.
+- Local `books/` and `fonts/` folders are not bundled into the sidecar.
 
 ## 4) Where to find build outputs
 
@@ -50,6 +55,14 @@ Check host triple:
 ```powershell
 rustc --print host-tuple
 ```
+
+If `host-tuple` is unavailable, use:
+
+```powershell
+rustc -Vv
+```
+
+and read the `host:` value.
 
 Outputs:
 - Frontend dist: `frontend/dist/`
@@ -73,6 +86,8 @@ Get-ChildItem C:\dev\bookreader\frontend\src-tauri\target\release\bundle\nsis
 6. While app is running, verify backend health:
 - `http://127.0.0.1:8000/api/health`
 7. Close app and verify sidecar process is terminated.
+
+The Windows sidecar is a PyInstaller onefile process tree. Desktop exit cleanup must terminate the launched sidecar and its worker process; checking only the direct child can miss a leftover backend.
 
 ## 6) Common failures and fixes
 

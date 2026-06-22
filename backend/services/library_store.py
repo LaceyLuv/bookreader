@@ -231,6 +231,51 @@ def _new_record(display_name: str, stored_filename: str, file_path: Path, *, boo
     }
 
 
+def _record_preference_score(record: dict[str, Any]) -> int:
+    filename = _safe_display_name(record.get('filename'))
+    stored_filename = _safe_display_name(record.get('stored_filename') or filename)
+    title = _normalize_optional_text(record.get('title'))
+
+    score = 0
+    if filename and filename != stored_filename:
+        score += 8
+    if title and title != Path(stored_filename).stem:
+        score += 4
+    if _normalize_optional_text(record.get('author')):
+        score += 2
+    if _normalize_optional_text(record.get('last_opened_at')):
+        score += 1
+    if _normalize_optional_text(record.get('last_read_at')):
+        score += 1
+    if record.get('favorite'):
+        score += 1
+    if record.get('pinned'):
+        score += 1
+    if _normalize_name_list(record.get('tags')):
+        score += 1
+    if _normalize_name_list(record.get('collections')):
+        score += 1
+    if _normalize_optional_text(record.get('library_folder_id')):
+        score += 1
+    if _normalize_optional_text(record.get('series_name')):
+        score += 1
+    if _normalize_optional_text(record.get('duplicate_group')):
+        score += 1
+    if _normalize_optional_text(record.get('version_label')):
+        score += 1
+    if record.get('duplicate_lead'):
+        score += 1
+    return score
+
+
+def _prefer_duplicate_record(current: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    current_score = _record_preference_score(current)
+    candidate_score = _record_preference_score(candidate)
+    if candidate_score > current_score:
+        return candidate
+    return current
+
+
 def _normalize_record(raw: dict[str, Any], file_path: Path, folder_name_by_id: dict[str, str]) -> dict[str, Any]:
     stat = file_path.stat()
     fingerprint, fingerprint_size, fingerprint_mtime_ns = _fingerprint_for_file(file_path, raw, stat_result=stat)
@@ -307,7 +352,7 @@ def _sync_store_unlocked() -> dict[str, Any]:
     }
 
     normalized_books: list[dict[str, Any]] = []
-    seen_stored_names: set[str] = set()
+    stored_name_to_index: dict[str, int] = {}
 
     for raw_book in data.get('books', []):
         if not isinstance(raw_book, dict):
@@ -325,16 +370,24 @@ def _sync_store_unlocked() -> dict[str, Any]:
         normalized = _normalize_record(raw_book, file_path, folder_name_by_id)
         if normalized != raw_book:
             changed = True
+        existing_index = stored_name_to_index.get(stored_name)
+        if existing_index is not None:
+            preferred = _prefer_duplicate_record(normalized_books[existing_index], normalized)
+            if preferred != normalized_books[existing_index]:
+                normalized_books[existing_index] = preferred
+            changed = True
+            continue
+        stored_name_to_index[stored_name] = len(normalized_books)
         normalized_books.append(normalized)
-        seen_stored_names.add(stored_name)
 
     orphan_files = [
         file_path
         for name, file_path in existing_files.items()
-        if name not in seen_stored_names
+        if name not in stored_name_to_index
     ]
     for file_path in sorted(orphan_files, key=lambda item: item.name.lower()):
         normalized_books.append(_new_record(file_path.name, file_path.name, file_path))
+        stored_name_to_index[file_path.name] = len(normalized_books) - 1
         changed = True
 
     data = {'version': LIBRARY_VERSION, 'books': normalized_books, 'folders': normalized_folders}

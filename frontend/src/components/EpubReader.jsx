@@ -14,6 +14,8 @@ import { clearSearchHighlights, highlightSearchMatchInElement, scrollSearchMarkI
 import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
 import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annotationColors'
+import { buildEpubTypographyCss } from '../lib/epubTypography'
+import { sanitizeEpubHtml } from '../lib/epubSanitizer'
 
 const API = API_BOOKS_BASE
 const API_ROOT = API.replace(/\/books$/, '')
@@ -132,6 +134,12 @@ function EpubReader() {
     const useEmbeddedFonts = fontMode === 'embedded'
     const isSearchActive = searchOpen && !!searchQuery.trim()
     const shouldRenderSearchHighlight = isSearchActive && activeChapterMatchIndex != null
+    const epubTypographyCss = useMemo(() => buildEpubTypographyCss({
+        useEmbeddedFonts,
+        fontFamily: contentStyle.fontFamily,
+        fontWeight: contentStyle.fontWeight,
+    }), [contentStyle.fontFamily, contentStyle.fontWeight, useEmbeddedFonts])
+    const sanitizedChapterHtml = useMemo(() => sanitizeEpubHtml(chapter?.html || ''), [chapter?.html])
 
     const handleSearchQueryChange = useCallback((value) => {
         const trimmedValue = value.trim()
@@ -440,7 +448,12 @@ function EpubReader() {
         contentEl.style.columnFill = 'auto'
         contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
         contentEl.style.breakInside = 'avoid-column'
-        contentEl.innerHTML = html
+        if (epubTypographyCss) {
+            const styleEl = document.createElement('style')
+            styleEl.textContent = epubTypographyCss
+            scroller.appendChild(styleEl)
+        }
+        contentEl.innerHTML = sanitizeEpubHtml(html)
 
         scroller.appendChild(contentEl)
         host.appendChild(scroller)
@@ -472,7 +485,7 @@ function EpubReader() {
 
         host.innerHTML = ''
         return pages
-    }, [columnGap, contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, isDualLayout, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
+    }, [columnGap, contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, epubTypographyCss, isDualLayout, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
 
     const measure = useCallback(() => {
         const scroller = scrollerRef.current; const contentEl = contentRef.current
@@ -801,6 +814,16 @@ function EpubReader() {
         loadChapter(result.chapter_index, { page: 0 })
     }, [chapterIndex])
 
+    const formatSearchResultLocation = useCallback((result) => {
+        const matchLabel = tt('searchResultMatch').replace('{index}', (Number.isFinite(result?.chapter_match_index) ? result.chapter_match_index : 0) + 1)
+        if (result?.chapter_title) return `${result.chapter_title} · ${matchLabel}`
+        if (Number.isFinite(result?.chapter_index)) {
+            const chapterLabel = tt('searchResultChapter').replace('{chapter}', result.chapter_index + 1)
+            return `${chapterLabel} · ${matchLabel}`
+        }
+        return matchLabel
+    }, [tt])
+
     const updateAnnotationItem = useCallback(async (annotationId, patch) => {
         const res = await fetch(`${API_ROOT}/annotations/${annotationId}`, {
             method: 'PATCH',
@@ -957,9 +980,10 @@ function EpubReader() {
                 )}
 
                 <div className="flex-1 relative min-h-0">
-                    <ReaderSearchPanel open={searchOpen} themeStyle={themeStyle} query={searchDraft} submittedQuery={searchQuery} loading={searchLoading} results={searchResults} activeIndex={activeSearchIndex} onQueryChange={handleSearchQueryChange} onSubmit={handleSearchSubmit} onClose={() => setSearchOpen(false)} onResultClick={handleSearchResultClick} tt={tt} />
+                    <ReaderSearchPanel open={searchOpen} themeStyle={themeStyle} query={searchDraft} submittedQuery={searchQuery} loading={searchLoading} results={searchResults} activeIndex={activeSearchIndex} onQueryChange={handleSearchQueryChange} onSubmit={handleSearchSubmit} onClose={() => setSearchOpen(false)} onResultClick={handleSearchResultClick} formatResultLocation={formatSearchResultLocation} tt={tt} />
                     <ReaderAnnotationsPanel open={annotationsOpen} themeStyle={themeStyle} loading={annotationsLoading} annotations={annotations} activeAnnotationId={activeAnnotationId} onClose={() => setAnnotationsOpen(false)} onItemClick={handleAnnotationClick} onDeleteItem={handleDeleteAnnotation} onEditItem={handleEditAnnotation} onColorItem={handleCycleAnnotationColor} tt={tt} lang={lang} />
                     <ReaderSelectionMenu selection={selectionSnapshot} themeStyle={themeStyle} onHighlight={() => createAnnotation('highlight')} onNote={() => createAnnotation('note')} onClear={() => { setSelectionSnapshot(null); clearCurrentSelection() }} tt={tt} />
+                    {epubTypographyCss && <style>{epubTypographyCss}</style>}
                     <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{(chapterPage > 0 || chapterIndex > 0) && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
                     <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{(chapterPage < chapterTotalPages - 1 || (chapter && chapterIndex < chapter.total - 1)) && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
 
@@ -972,7 +996,7 @@ function EpubReader() {
                             <div key={chapter?.index ?? 0} ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
                                 <div ref={contentRef} className="select-text epub-content [&_p]:mb-4 [&_p]:break-inside-avoid [&_h1]:text-2xl [&_h1]:mb-5 [&_h1]:break-after-avoid [&_h2]:text-xl [&_h2]:mb-4 [&_h2]:break-after-avoid [&_h3]:text-lg [&_h3]:mb-3 [&_h3]:break-after-avoid [&_img]:max-w-full [&_img]:max-h-[50vh] [&_img]:rounded-lg [&_img]:mx-auto [&_img]:my-4 [&_img]:break-inside-avoid [&_img]:cursor-zoom-in [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:opacity-80 [&_blockquote]:break-inside-avoid"
                                     style={{ height: '100%', boxSizing: 'border-box', display: 'block', backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${columnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
-                                    dangerouslySetInnerHTML={{ __html: chapter.html }}
+                                    dangerouslySetInnerHTML={{ __html: sanitizedChapterHtml }}
                                 />
                             </div>
                         ) : null}
