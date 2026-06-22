@@ -29,6 +29,7 @@ class BookMeta(BaseModel):
     duplicate_group: str | None = None
     version_label: str | None = None
     duplicate_lead: bool = False
+    file_missing: bool = False
     content_fingerprint: str | None = None
     annotation_count: int = 0
 

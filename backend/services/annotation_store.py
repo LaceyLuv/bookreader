@@ -14,6 +14,10 @@ STORE_WRITE_ENCODING = "utf-8"
 _STORE_LOCK = threading.Lock()
 
 
+class StoreCorruptionError(RuntimeError):
+    pass
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -52,12 +56,14 @@ def _read_store_unlocked() -> dict[str, Any]:
     try:
         with ANNOTATIONS_DATA_PATH.open("r", encoding=STORE_WRITE_ENCODING) as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return _empty_store()
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StoreCorruptionError(f"Unable to read annotation store: {ANNOTATIONS_DATA_PATH}") from exc
     if not isinstance(data, dict):
-        return _empty_store()
+        raise StoreCorruptionError(f"Annotation store must be a JSON object: {ANNOTATIONS_DATA_PATH}")
     annotations = data.get("annotations")
-    if not isinstance(annotations, list):
+    if "annotations" in data and not isinstance(annotations, list):
+        raise StoreCorruptionError(f"Annotation store annotations must be a list: {ANNOTATIONS_DATA_PATH}")
+    if annotations is None:
         annotations = []
     return {"version": ANNOTATIONS_VERSION, "annotations": annotations}
 

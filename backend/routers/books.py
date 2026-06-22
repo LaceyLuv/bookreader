@@ -16,13 +16,15 @@ from services.epub_service import clear_epub_caches, get_epub_asset, get_epub_ch
 from services.library_store import add_book_record, delete_book_record, get_book_path, get_book_record, list_book_records, prepare_upload, touch_book, update_book_record
 from services.search_service import clear_search_caches, prewarm_search_cache, search_epub_file, search_txt_file
 from services.txt_service import clear_txt_caches, read_txt_file, read_txt_manifest
-from services.zip_service import get_zip_image, list_zip_images
+from services.zip_service import ZipSafetyError, get_zip_image, list_zip_images
 
 router = APIRouter(prefix='/api/books', tags=['books'])
 
 ALLOWED_EXTENSIONS = {'txt', 'epub', 'zip'}
 EPUB_DEBUG_ENABLED = os.getenv('BOOKREADER_EPUB_DEBUG') == '1'
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+MAX_BOOK_UPLOAD_BYTES = int(os.getenv('BOOKREADER_MAX_BOOK_UPLOAD_BYTES', str(512 * 1024 * 1024)))
+MAX_BOOK_UPLOAD_REQUEST_BYTES = int(os.getenv('BOOKREADER_MAX_BOOK_UPLOAD_REQUEST_BYTES', str(MAX_BOOK_UPLOAD_BYTES + UPLOAD_CHUNK_SIZE)))
 
 EPUB_DEBUG_LOG_PATH = Path(tempfile.gettempdir()) / 'bookreader_epub_debug.log'
 HTML_IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
@@ -72,12 +74,16 @@ def _clear_related_caches(file_type: str) -> None:
 
 
 async def _save_upload_file(file: UploadFile, destination: Path) -> None:
+    total_bytes = 0
     try:
         with destination.open('wb') as f:
             while True:
                 chunk = await file.read(UPLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_BOOK_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail='Book file is too large')
                 f.write(chunk)
     except Exception:
         try:
@@ -96,13 +102,23 @@ def _get_record_or_404(book_id: str) -> dict:
     return record
 
 
+def _reject_oversized_content_length(request: Request) -> None:
+    raw_value = request.headers.get('content-length')
+    if raw_value is None:
+        return
+    try:
+        content_length = int(raw_value)
+    except ValueError:
+        return
+    if content_length > MAX_BOOK_UPLOAD_REQUEST_BYTES:
+        raise HTTPException(status_code=413, detail='Book file is too large')
+
+
 def _resolve_book_file(book_id: str) -> tuple[dict, Path]:
     record = _get_record_or_404(book_id)
     path = get_book_path(record)
     if not path.exists():
         _clear_related_caches(record['file_type'])
-        delete_book_record(record['id'])
-        delete_book_annotations(record['id'])
         raise HTTPException(status_code=404, detail='Book file not found')
     return record, path
 
@@ -124,7 +140,8 @@ async def list_books():
 
 
 @router.post('', response_model=BookMeta)
-async def upload_book(file: UploadFile = File(...)):
+async def upload_book(request: Request, file: UploadFile = File(...)):
+    _reject_oversized_content_length(request)
     try:
         upload_plan = prepare_upload(file.filename)
     except ValueError:
@@ -382,7 +399,10 @@ async def get_images(book_id: str):
     if record['file_type'] != 'zip':
         raise HTTPException(status_code=400, detail='Not a ZIP file')
     _touch_book_open(record)
-    result = list_zip_images(str(path))
+    try:
+        result = list_zip_images(str(path))
+    except ZipSafetyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ZipImageList(**result)
 
 
@@ -391,5 +411,10 @@ async def get_image(book_id: str, image_name: str):
     record, path = _resolve_book_file(book_id)
     if record['file_type'] != 'zip':
         raise HTTPException(status_code=400, detail='Not a ZIP file')
-    data, media_type = get_zip_image(str(path), image_name)
+    try:
+        data, media_type = get_zip_image(str(path), image_name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail='Image not found') from None
+    except ZipSafetyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(content=data, media_type=media_type)

@@ -22,6 +22,10 @@ FINGERPRINT_CHUNK_SIZE = 1024 * 1024
 _STORE_LOCK = threading.Lock()
 
 
+class StoreCorruptionError(RuntimeError):
+    pass
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec=STORE_DATE_FORMAT_SECONDS)
 
@@ -153,15 +157,19 @@ def _read_store_unlocked() -> dict[str, Any]:
     try:
         with LIBRARY_DATA_PATH.open('r', encoding=STORE_WRITE_ENCODING) as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return _empty_store()
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StoreCorruptionError(f'Unable to read library store: {LIBRARY_DATA_PATH}') from exc
     if not isinstance(data, dict):
-        return _empty_store()
+        raise StoreCorruptionError(f'Library store must be a JSON object: {LIBRARY_DATA_PATH}')
     books = data.get('books')
     folders = data.get('folders')
-    if not isinstance(books, list):
+    if 'books' in data and not isinstance(books, list):
+        raise StoreCorruptionError(f'Library store books must be a list: {LIBRARY_DATA_PATH}')
+    if 'folders' in data and not isinstance(folders, list):
+        raise StoreCorruptionError(f'Library store folders must be a list: {LIBRARY_DATA_PATH}')
+    if books is None:
         books = []
-    if not isinstance(folders, list):
+    if folders is None:
         folders = []
     return {
         'version': LIBRARY_VERSION,
@@ -312,9 +320,53 @@ def _normalize_record(raw: dict[str, Any], file_path: Path, folder_name_by_id: d
         'duplicate_group': _normalize_optional_text(raw.get('duplicate_group')),
         'version_label': _normalize_optional_text(raw.get('version_label')),
         'duplicate_lead': bool(raw.get('duplicate_lead', False)),
+        'file_missing': False,
         'content_fingerprint': fingerprint,
         'content_fingerprint_size': fingerprint_size,
         'content_fingerprint_mtime_ns': fingerprint_mtime_ns,
+    }
+
+
+def _normalize_missing_record(raw: dict[str, Any], folder_name_by_id: dict[str, str]) -> dict[str, Any] | None:
+    display_name = _safe_display_name(raw.get('filename') or raw.get('stored_filename'))
+    stored_filename = _safe_display_name(raw.get('stored_filename') or raw.get('filename'))
+    file_type = detect_book_file_type(raw.get('file_type')) or detect_book_file_type(display_name) or detect_book_file_type(stored_filename)
+    if not file_type:
+        file_type = 'unknown'
+    reading_status = str(raw.get('reading_status') or 'unread')
+    if reading_status not in READING_STATUSES:
+        reading_status = 'unread'
+    folder_id = _normalize_optional_text(raw.get('library_folder_id'))
+    if folder_id and folder_id not in folder_name_by_id:
+        folder_id = None
+    return {
+        'id': str(raw.get('id') or uuid4().hex[:16]),
+        'legacy_id': str(raw.get('legacy_id') or make_legacy_id(display_name)),
+        'title': str(raw.get('title') or Path(display_name).stem),
+        'author': _normalize_optional_text(raw.get('author')),
+        'file_type': file_type,
+        'filename': display_name,
+        'stored_filename': stored_filename,
+        'size': _normalize_nonnegative_int(raw.get('size')) or 0,
+        'upload_date': _normalize_optional_text(raw.get('upload_date')) or _now_iso(),
+        'last_opened_at': _normalize_optional_text(raw.get('last_opened_at')),
+        'last_read_at': _normalize_optional_text(raw.get('last_read_at')),
+        'reading_status': reading_status,
+        'favorite': bool(raw.get('favorite', False)),
+        'pinned': bool(raw.get('pinned', False)),
+        'tags': _normalize_name_list(raw.get('tags')),
+        'collections': _normalize_name_list(raw.get('collections')),
+        'library_folder_id': folder_id,
+        'library_folder_name': folder_name_by_id.get(folder_id) if folder_id else None,
+        'series_name': _normalize_optional_text(raw.get('series_name')),
+        'series_index': _normalize_nonnegative_int(raw.get('series_index')),
+        'duplicate_group': _normalize_optional_text(raw.get('duplicate_group')),
+        'version_label': _normalize_optional_text(raw.get('version_label')),
+        'duplicate_lead': bool(raw.get('duplicate_lead', False)),
+        'file_missing': True,
+        'content_fingerprint': _normalize_fingerprint(raw.get('content_fingerprint')),
+        'content_fingerprint_size': _normalize_nonnegative_int(raw.get('content_fingerprint_size')),
+        'content_fingerprint_mtime_ns': _normalize_nonnegative_int(raw.get('content_fingerprint_mtime_ns')),
     }
 
 
@@ -353,6 +405,7 @@ def _sync_store_unlocked() -> dict[str, Any]:
 
     normalized_books: list[dict[str, Any]] = []
     stored_name_to_index: dict[str, int] = {}
+    used_record_ids: set[str] = set()
 
     for raw_book in data.get('books', []):
         if not isinstance(raw_book, dict):
@@ -365,7 +418,18 @@ def _sync_store_unlocked() -> dict[str, Any]:
         stored_name = _safe_display_name(raw_book.get('stored_filename') or raw_book.get('filename'))
         file_path = existing_files.get(stored_name)
         if file_path is None:
-            changed = True
+            normalized = _normalize_missing_record(raw_book, folder_name_by_id)
+            if normalized is None:
+                changed = True
+                continue
+            record_id = normalized['id']
+            if record_id in used_record_ids:
+                changed = True
+                continue
+            if normalized != raw_book:
+                changed = True
+            used_record_ids.add(record_id)
+            normalized_books.append(normalized)
             continue
         normalized = _normalize_record(raw_book, file_path, folder_name_by_id)
         if normalized != raw_book:
@@ -375,9 +439,10 @@ def _sync_store_unlocked() -> dict[str, Any]:
             preferred = _prefer_duplicate_record(normalized_books[existing_index], normalized)
             if preferred != normalized_books[existing_index]:
                 normalized_books[existing_index] = preferred
-            changed = True
-            continue
+                changed = True
+                continue
         stored_name_to_index[stored_name] = len(normalized_books)
+        used_record_ids.add(normalized['id'])
         normalized_books.append(normalized)
 
     orphan_files = [
