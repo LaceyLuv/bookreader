@@ -22,6 +22,31 @@ const API_ROOT = API.replace(/\/books$/, '')
 const PAGE_COUNT_START_DELAY_MS = 2200
 const PAGE_COUNT_IDLE_TIMEOUT_MS = 1500
 
+function normalizeEpubHrefPath(href) {
+    if (!href || href.startsWith('#')) return ''
+    try {
+        const parsed = new URL(href, 'https://bookreader.local/')
+        return decodeURIComponent(parsed.pathname.replace(/^\/+/, '')).replace(/\\/g, '/')
+    } catch {
+        return String(href).split('#')[0].split('?')[0].replace(/^\/+/, '').replace(/\\/g, '/')
+    }
+}
+
+function hrefPathsMatch(left, right) {
+    const leftPath = normalizeEpubHrefPath(left)
+    const rightPath = normalizeEpubHrefPath(right)
+    if (!leftPath || !rightPath) return false
+    if (leftPath === rightPath) return true
+    return leftPath.endsWith(`/${rightPath}`)
+        || rightPath.endsWith(`/${leftPath}`)
+        || leftPath.split('/').pop() === rightPath.split('/').pop()
+}
+
+function escapeCssIdent(value) {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value)
+    return String(value).replace(/["\\#.;,[\]=~>*+^$|!:\s]/g, '\\$&')
+}
+
 function scheduleBackgroundWork(callback, delay = 0) {
     if (typeof window === 'undefined') return () => {}
 
@@ -695,6 +720,37 @@ function EpubReader() {
         popup.document.close()
     }, [])
 
+    const goToInternalAnchor = useCallback((hash) => {
+        if (!hash) return false
+        const contentEl = contentRef.current
+        const scroller = scrollerRef.current
+        if (!contentEl || !scroller) return false
+        const targetId = decodeURIComponent(hash.replace(/^#/, ''))
+        if (!targetId) return false
+        const escapedTargetId = escapeCssIdent(targetId)
+        const target = contentEl.querySelector(`#${escapedTargetId}, [name="${escapedTargetId}"]`)
+        if (!target) return false
+        const step = stepRef.current || scroller.clientWidth || 1
+        const targetPage = Math.max(0, Math.round((target.offsetLeft || 0) / step))
+        goToPage(targetPage)
+        return true
+    }, [goToPage])
+
+    const goToInternalHref = useCallback((href) => {
+        if (!href) return false
+        const rawHref = String(href).trim()
+        if (!rawHref || /^(?:https?:|mailto:|tel:|data:|javascript:)/i.test(rawHref)) return false
+
+        const hashIndex = rawHref.indexOf('#')
+        const hash = hashIndex >= 0 ? rawHref.slice(hashIndex) : ''
+        if (rawHref.startsWith('#')) return goToInternalAnchor(hash)
+
+        const target = toc.find((item) => hrefPathsMatch(item.href, rawHref))
+        if (!target || !Number.isFinite(target.index)) return false
+        loadChapter(target.index, { page: 0 })
+        return true
+    }, [goToInternalAnchor, toc])
+
 
     useEffect(() => {
         if (!chapter || loading) return
@@ -744,15 +800,24 @@ function EpubReader() {
             const target = event.target
             if (!(target instanceof Element)) return
             const imgEl = target.closest('img')
-            if (!imgEl || !contentEl.contains(imgEl)) return
-            event.preventDefault()
-            event.stopPropagation()
-            openEpubImageInWindow(imgEl)
+            if (imgEl && contentEl.contains(imgEl)) {
+                event.preventDefault()
+                event.stopPropagation()
+                openEpubImageInWindow(imgEl)
+                return
+            }
+
+            const linkEl = target.closest('a[href]')
+            if (!linkEl || !contentEl.contains(linkEl)) return
+            if (goToInternalHref(linkEl.getAttribute('href'))) {
+                event.preventDefault()
+                event.stopPropagation()
+            }
         }
 
         contentEl.addEventListener('click', onClick)
         return () => contentEl.removeEventListener('click', onClick)
-    }, [chapter?.index, openEpubImageInWindow])
+    }, [chapter?.index, goToInternalHref, openEpubImageInWindow])
 
     useEffect(() => {
         if (loading) return

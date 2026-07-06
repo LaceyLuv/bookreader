@@ -4,8 +4,16 @@ from PyInstaller.utils.hooks import collect_data_files
 
 hiddenimports = [
     "main",
+    "models",
+    "paths",
+    "routers.annotations",
     "routers.books",
     "routers.fonts",
+    "routers.library_folders",
+    "services.annotation_store",
+    "services.library_store",
+    "services.search_service",
+    "services.txt_transform_service",
     "services.txt_service",
     "services.epub_service",
     "services.zip_service",

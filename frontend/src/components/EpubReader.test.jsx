@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
 
@@ -104,16 +104,24 @@ beforeEach(() => {
             return jsonResponse({
                 title: 'Smoke EPUB',
                 toc: [
-                    { title: 'Chapter One', index: 0 },
-                    { title: 'Chapter Two', index: 1 },
+                    { title: 'Chapter One', index: 0, href: 'Text/chapter1.xhtml' },
+                    { title: 'Chapter Two', index: 1, href: 'Text/chapter2.xhtml' },
                 ],
             })
         }
         if (requestUrl.endsWith('/api/books/epub-1/chapter/0')) {
             return jsonResponse({
                 title: 'Chapter One',
-                html: '<main><h1>Chapter One</h1><p>Hello <strong>reader</strong>.</p><img src="/api/books/epub-1/asset/cover.jpg" onerror="window.bad=true"><script>window.bad=true</script></main>',
+                html: '<main><h1>Chapter One</h1><p>Hello <strong>reader</strong>.</p><a href="chapter2.xhtml#target">Next chapter</a><img src="/api/books/epub-1/asset/cover.jpg" onerror="window.bad=true"><script>window.bad=true</script></main>',
                 index: 0,
+                total: 2,
+            })
+        }
+        if (requestUrl.endsWith('/api/books/epub-1/chapter/1')) {
+            return jsonResponse({
+                title: 'Chapter Two',
+                html: '<main><h1 id="target">Chapter Two</h1><p>Second body.</p></main>',
+                index: 1,
                 total: 2,
             })
         }
@@ -144,4 +152,15 @@ test('loads toc and renders sanitized chapter html', async () => {
     expect(renderedImage.hasAttribute('onerror')).toBe(false)
     expect(document.querySelector('.epub-content script')).toBeNull()
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
+})
+
+test('clicking an internal chapter link loads the mapped chapter', async () => {
+    renderReader()
+
+    fireEvent.click(await screen.findByText('Next chapter'))
+
+    await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1')
+    })
+    expect(await screen.findByText('Second body.')).toBeTruthy()
 })

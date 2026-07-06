@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -50,22 +53,77 @@ def _empty_store() -> dict[str, Any]:
     return {"version": ANNOTATIONS_VERSION, "annotations": []}
 
 
+def _backup_path() -> Path:
+    return ANNOTATIONS_DATA_PATH.with_name(f"{ANNOTATIONS_DATA_PATH.name}.bak")
+
+
+def _tmp_path() -> Path:
+    return ANNOTATIONS_DATA_PATH.with_name(f"{ANNOTATIONS_DATA_PATH.name}.tmp")
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        directory_fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(directory_fd)
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding=STORE_WRITE_ENCODING) as f:
+        data = json.load(f)
+    return _validate_store_data(data, path)
+
+
+def _validate_store_data(data: Any, source_path: Path) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise StoreCorruptionError(f"Annotation store must be a JSON object: {source_path}")
+    annotations = data.get("annotations")
+    if "annotations" in data and not isinstance(annotations, list):
+        raise StoreCorruptionError(f"Annotation store annotations must be a list: {source_path}")
+    if annotations is None:
+        annotations = []
+    return {"version": ANNOTATIONS_VERSION, "annotations": annotations}
+
+
+def _replace_store_file(payload: dict[str, Any], *, keep_backup: bool = True) -> None:
+    ANNOTATIONS_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if keep_backup and ANNOTATIONS_DATA_PATH.exists():
+        shutil.copy2(ANNOTATIONS_DATA_PATH, _backup_path())
+    tmp_path = _tmp_path()
+    with tmp_path.open("w", encoding=STORE_WRITE_ENCODING) as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    tmp_path.replace(ANNOTATIONS_DATA_PATH)
+    _fsync_directory(ANNOTATIONS_DATA_PATH.parent)
+
+
+def _recover_store_from_backup(exc: Exception) -> dict[str, Any]:
+    backup_path = _backup_path()
+    if not backup_path.exists():
+        raise StoreCorruptionError(f"Unable to read annotation store: {ANNOTATIONS_DATA_PATH}") from exc
+    try:
+        recovered = _read_json_file(backup_path)
+    except (OSError, json.JSONDecodeError, StoreCorruptionError) as backup_exc:
+        raise StoreCorruptionError(f"Unable to read annotation store or backup: {ANNOTATIONS_DATA_PATH}") from backup_exc
+    _replace_store_file(recovered, keep_backup=False)
+    return recovered
+
+
 def _read_store_unlocked() -> dict[str, Any]:
     if not ANNOTATIONS_DATA_PATH.exists():
         return _empty_store()
     try:
-        with ANNOTATIONS_DATA_PATH.open("r", encoding=STORE_WRITE_ENCODING) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise StoreCorruptionError(f"Unable to read annotation store: {ANNOTATIONS_DATA_PATH}") from exc
-    if not isinstance(data, dict):
-        raise StoreCorruptionError(f"Annotation store must be a JSON object: {ANNOTATIONS_DATA_PATH}")
-    annotations = data.get("annotations")
-    if "annotations" in data and not isinstance(annotations, list):
-        raise StoreCorruptionError(f"Annotation store annotations must be a list: {ANNOTATIONS_DATA_PATH}")
-    if annotations is None:
-        annotations = []
-    return {"version": ANNOTATIONS_VERSION, "annotations": annotations}
+        return _read_json_file(ANNOTATIONS_DATA_PATH)
+    except (OSError, json.JSONDecodeError, StoreCorruptionError) as exc:
+        return _recover_store_from_backup(exc)
 
 
 def _write_store_unlocked(data: dict[str, Any]) -> None:
@@ -73,10 +131,7 @@ def _write_store_unlocked(data: dict[str, Any]) -> None:
         "version": ANNOTATIONS_VERSION,
         "annotations": data.get("annotations", []),
     }
-    tmp_path = ANNOTATIONS_DATA_PATH.with_suffix(".tmp")
-    with tmp_path.open("w", encoding=STORE_WRITE_ENCODING) as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    tmp_path.replace(ANNOTATIONS_DATA_PATH)
+    _replace_store_file(payload)
 
 
 def _default_snippet(selected_text: str, note_text: str | None) -> str:

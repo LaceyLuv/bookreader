@@ -5,6 +5,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List
+from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
@@ -13,9 +14,9 @@ from models import BookInfo, BookMeta, BookMetaUpdate, BookSearchResponse, EpubC
 from paths import BOOKS_DIR
 from services.annotation_store import delete_book_annotations, get_annotation_counts_by_book
 from services.epub_service import clear_epub_caches, get_epub_asset, get_epub_chapter, get_epub_toc
-from services.library_store import add_book_record, delete_book_record, get_book_path, get_book_record, list_book_records, prepare_upload, touch_book, update_book_record
+from services.library_store import add_book_record, delete_book_record, get_book_path, get_book_record, list_book_records, prepare_upload, restore_book_record, touch_book, update_book_record
 from services.search_service import clear_search_caches, prewarm_search_cache, search_epub_file, search_txt_file
-from services.txt_service import clear_txt_caches, read_txt_file, read_txt_manifest
+from services.txt_service import clear_txt_caches, read_txt_file, read_txt_manifest, read_txt_segment_window
 from services.zip_service import ZipSafetyError, get_zip_image, list_zip_images
 
 router = APIRouter(prefix='/api/books', tags=['books'])
@@ -75,8 +76,10 @@ def _clear_related_caches(file_type: str) -> None:
 
 async def _save_upload_file(file: UploadFile, destination: Path) -> None:
     total_bytes = 0
+    temp_path = destination.with_name(f'.{destination.name}.{uuid4().hex}.uploading')
     try:
-        with destination.open('wb') as f:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with temp_path.open('wb') as f:
             while True:
                 chunk = await file.read(UPLOAD_CHUNK_SIZE)
                 if not chunk:
@@ -85,14 +88,49 @@ async def _save_upload_file(file: UploadFile, destination: Path) -> None:
                 if total_bytes > MAX_BOOK_UPLOAD_BYTES:
                     raise HTTPException(status_code=413, detail='Book file is too large')
                 f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+        temp_path.replace(destination)
+        _fsync_directory(destination.parent)
     except Exception:
         try:
-            destination.unlink()
+            temp_path.unlink()
         except FileNotFoundError:
             pass
         raise
     finally:
         await file.close()
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        directory_fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(directory_fd)
+
+
+def _cleanup_failed_upload(destination: Path) -> None:
+    candidates = [destination]
+    try:
+        candidates.extend(destination.parent.glob(f'{destination.name}.*'))
+        candidates.extend(destination.parent.glob(f'.{destination.name}.*'))
+    except OSError:
+        pass
+    for path in candidates:
+        if path.is_file() and (path == destination or path.suffix.lower() in {'.uploading', '.tmp', '.partial'}):
+            path.unlink(missing_ok=True)
+
+
+def _trash_path_for(path: Path) -> Path:
+    trash_dir = BOOKS_DIR / '.trash'
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    return trash_dir / f'{path.name}.{uuid4().hex}.trash'
 
 
 def _get_record_or_404(book_id: str) -> dict:
@@ -151,7 +189,14 @@ async def upload_book(request: Request, file: UploadFile = File(...)):
     BOOKS_DIR.mkdir(parents=True, exist_ok=True)
     destination = BOOKS_DIR / upload_plan['stored_filename']
 
-    await _save_upload_file(file, destination)
+    try:
+        await _save_upload_file(file, destination)
+    except HTTPException:
+        _cleanup_failed_upload(destination)
+        raise
+    except Exception as exc:
+        _cleanup_failed_upload(destination)
+        raise HTTPException(status_code=500, detail='Failed to save uploaded book') from exc
     try:
         record = add_book_record(
             book_id=upload_plan['id'],
@@ -201,10 +246,42 @@ async def delete_book(book_id: str):
     record = _get_record_or_404(book_id)
     path = get_book_path(record)
     file_type = record['file_type']
+    trash_path = None
+    removed_record = None
     if path.exists():
-        path.unlink()
-    delete_book_record(record['id'])
-    delete_book_annotations(record['id'])
+        trash_path = _trash_path_for(path)
+        try:
+            path.replace(trash_path)
+            _fsync_directory(path.parent)
+            _fsync_directory(trash_path.parent)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail='Failed to stage book file for deletion') from exc
+    try:
+        removed_record = delete_book_record(record['id'])
+        delete_book_annotations(record['id'])
+    except Exception as exc:
+        rollback_errors = []
+        if trash_path is not None and trash_path.exists() and not path.exists():
+            try:
+                trash_path.replace(path)
+                _fsync_directory(path.parent)
+            except OSError as rollback_exc:
+                rollback_errors.append(f'file rollback failed: {rollback_exc}')
+        if removed_record is not None:
+            try:
+                restore_book_record(removed_record)
+            except Exception as rollback_exc:
+                rollback_errors.append(f'library rollback failed: {rollback_exc}')
+        detail = 'Failed to delete book'
+        if rollback_errors:
+            detail = f"{detail}; {'; '.join(rollback_errors)}"
+        raise HTTPException(status_code=500, detail=detail) from exc
+    if trash_path is not None:
+        try:
+            trash_path.unlink(missing_ok=True)
+            _fsync_directory(trash_path.parent)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail='Book metadata deleted, but trash cleanup failed') from exc
     _clear_related_caches(file_type)
     return {'detail': 'Book deleted'}
 
@@ -240,12 +317,9 @@ async def get_txt_manifest(
             'remove_empty_lines': remove_empty_lines,
             'split_paragraphs': split_paragraphs,
         },
+        include_fragments=False,
+        include_segments=False,
     )
-    if 'display_fragments' in manifest:
-        manifest = {
-            **manifest,
-            'segment_count': len(manifest['display_fragments']),
-        }
     return TxtManifest(**manifest)
 
 
@@ -262,24 +336,17 @@ async def get_txt_segments(
     if record['file_type'] != 'txt':
         raise HTTPException(status_code=400, detail='Not a TXT file')
 
-    manifest = read_txt_manifest(
+    window = read_txt_segment_window(
         str(path),
+        start=start,
+        limit=limit,
         transform_options={
             'trim_spaces': trim_spaces,
             'remove_empty_lines': remove_empty_lines,
             'split_paragraphs': split_paragraphs,
         },
     )
-    safe_start = max(0, start)
-    safe_limit = max(1, min(limit, 120))
-    window = manifest['display_fragments'][safe_start:safe_start + safe_limit]
-    return TxtSegmentWindow(
-        start=safe_start,
-        limit=safe_limit,
-        total=len(manifest['display_fragments']),
-        transform_options=manifest.get('transform_options', {}),
-        display_fragments=window,
-    )
+    return TxtSegmentWindow(**window)
 
 
 @router.get('/{book_id}/toc', response_model=EpubToc)

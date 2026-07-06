@@ -58,7 +58,7 @@ def get_epub_toc(file_path: str) -> dict:
         title = heading.get_text(strip=True) if heading else f"Chapter {i + 1}"
         if not title:
             title = f"Chapter {i + 1}"
-        toc.append({"title": title, "index": i})
+        toc.append({"title": title, "index": i, "href": _normalize_item_path(item)})
 
     return {"title": book_title, "toc": toc}
 
@@ -124,6 +124,8 @@ def _get_spine_items(book) -> list:
     spine_ids = [item_id for item_id, _ in book.spine]
     items = []
     for item_id in spine_ids:
+        if item_id == "nav":
+            continue
         item = book.get_item_with_id(item_id)
         if item and item.get_type() == ebooklib.ITEM_DOCUMENT:
             items.append(item)
@@ -149,8 +151,23 @@ def _item_paths(item) -> list[str]:
 def _normalize_path(path: str | None, allow_parent: bool = False) -> str:
     if not path:
         return ""
-    raw = unquote(str(path)).replace("\\", "/").strip()
+    raw = unquote(str(path)).strip()
+    if not raw:
+        return ""
+    if not allow_parent:
+        raw_for_checks = raw.replace("\\", "/")
+        if raw.startswith(("/", "\\")):
+            return ""
+        if re.match(r"^[A-Za-z]:[\\/]", raw):
+            return ""
+        if "\\" in raw:
+            return ""
+        if any(part == ".." for part in raw_for_checks.split("/")):
+            return ""
+    raw = raw.replace("\\", "/")
     parsed = urlsplit(raw)
+    if parsed.scheme:
+        return ""
     candidate = parsed.path.lstrip("/")
     if not candidate:
         return ""
@@ -171,6 +188,9 @@ def _normalize_item_path(item) -> str:
 
 
 def _resolve_relative_path(base_dir: str, raw_path: str) -> str:
+    stripped = (raw_path or "").strip()
+    if stripped.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", stripped):
+        return ""
     cleaned = _normalize_path(raw_path, allow_parent=True)
     if not cleaned:
         return ""
@@ -198,6 +218,8 @@ def _rewrite_url(book_id: str, base_dir: str, raw_url: str, asset_base_url: str 
     if not stripped or stripped.startswith("#") or lowered.startswith(ASSET_SCHEMES) or lowered.startswith("//"):
         return None
     parsed = urlsplit(stripped)
+    if parsed.scheme:
+        return None
     resolved = _resolve_relative_path(base_dir, parsed.path)
     if not resolved:
         return None
@@ -351,7 +373,7 @@ def _toc_from_nav(book, spine_items: list) -> list[dict] | None:
             continue
         seen_indices.add(idx)
         title = getattr(entry, "title", None) or f"Chapter {idx + 1}"
-        toc.append({"title": title, "index": idx})
+        toc.append({"title": title, "index": idx, "href": entry.href or path})
 
     return toc if toc else None
 

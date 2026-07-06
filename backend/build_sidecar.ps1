@@ -14,6 +14,15 @@ $DistDir = Join-Path $ScriptDir "dist-sidecar"
 $VenvPython = Join-Path $ScriptDir ".venv\\Scripts\\python.exe"
 $buildStartedAt = Get-Date
 
+# Windows packaging note:
+# This PowerShell script currently builds the PyInstaller .exe expected by Tauri
+# externalBin on Windows. macOS/Linux need a separate PyInstaller build path that
+# copies bookreader-backend-$targetTriple without the .exe suffix.
+$IsWindowsHost = ($PSVersionTable.PSEdition -eq "Desktop") -or ($PSVersionTable.ContainsKey("Platform") -and $PSVersionTable.Platform -eq "Win32NT") -or ($null -ne (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue) -and $IsWindows)
+if (-not $IsWindowsHost) {
+    throw "build_sidecar.ps1 currently supports Windows PyInstaller/Tauri externalBin packaging only."
+}
+
 function Get-RustTargetTriple {
     $targetTriple = (& rustc --print host-tuple 2>$null)
     if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($targetTriple)) {

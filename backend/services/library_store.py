@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +21,7 @@ STORE_WRITE_ENCODING = 'utf-8'
 STORE_DATE_FORMAT_SECONDS = 'seconds'
 TIMESTAMP_WRITE_THROTTLE_SECONDS = 15
 FINGERPRINT_CHUNK_SIZE = 1024 * 1024
+TEMP_BOOK_FILE_SUFFIXES = {'.uploading', '.tmp', '.partial'}
 _STORE_LOCK = threading.Lock()
 
 
@@ -88,6 +91,11 @@ def detect_book_file_type(filename: str | None) -> str:
     return ext if ext in ALLOWED_BOOK_EXTENSIONS else ''
 
 
+def is_temporary_book_file(file_path: Path | str) -> bool:
+    path = Path(file_path)
+    return any(suffix.lower() in TEMP_BOOK_FILE_SUFFIXES for suffix in path.suffixes)
+
+
 def make_legacy_id(filename: str | None) -> str:
     return hashlib.md5(_safe_display_name(filename).encode('utf-8')).hexdigest()[:12]
 
@@ -151,22 +159,42 @@ def _empty_store() -> dict[str, Any]:
     return {'version': LIBRARY_VERSION, 'books': [], 'folders': []}
 
 
-def _read_store_unlocked() -> dict[str, Any]:
-    if not LIBRARY_DATA_PATH.exists():
-        return _empty_store()
+def _backup_path() -> Path:
+    return LIBRARY_DATA_PATH.with_name(f'{LIBRARY_DATA_PATH.name}.bak')
+
+
+def _tmp_path() -> Path:
+    return LIBRARY_DATA_PATH.with_name(f'{LIBRARY_DATA_PATH.name}.tmp')
+
+
+def _fsync_directory(path: Path) -> None:
     try:
-        with LIBRARY_DATA_PATH.open('r', encoding=STORE_WRITE_ENCODING) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise StoreCorruptionError(f'Unable to read library store: {LIBRARY_DATA_PATH}') from exc
+        directory_fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(directory_fd)
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    with path.open('r', encoding=STORE_WRITE_ENCODING) as f:
+        data = json.load(f)
+    return _validate_store_data(data, path)
+
+
+def _validate_store_data(data: Any, source_path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
-        raise StoreCorruptionError(f'Library store must be a JSON object: {LIBRARY_DATA_PATH}')
+        raise StoreCorruptionError(f'Library store must be a JSON object: {source_path}')
     books = data.get('books')
     folders = data.get('folders')
     if 'books' in data and not isinstance(books, list):
-        raise StoreCorruptionError(f'Library store books must be a list: {LIBRARY_DATA_PATH}')
+        raise StoreCorruptionError(f'Library store books must be a list: {source_path}')
     if 'folders' in data and not isinstance(folders, list):
-        raise StoreCorruptionError(f'Library store folders must be a list: {LIBRARY_DATA_PATH}')
+        raise StoreCorruptionError(f'Library store folders must be a list: {source_path}')
     if books is None:
         books = []
     if folders is None:
@@ -178,16 +206,48 @@ def _read_store_unlocked() -> dict[str, Any]:
     }
 
 
+def _recover_store_from_backup(exc: Exception) -> dict[str, Any]:
+    backup_path = _backup_path()
+    if not backup_path.exists():
+        raise StoreCorruptionError(f'Unable to read library store: {LIBRARY_DATA_PATH}') from exc
+    try:
+        recovered = _read_json_file(backup_path)
+    except (OSError, json.JSONDecodeError, StoreCorruptionError) as backup_exc:
+        raise StoreCorruptionError(f'Unable to read library store or backup: {LIBRARY_DATA_PATH}') from backup_exc
+    _replace_store_file(recovered, keep_backup=False)
+    return recovered
+
+
+def _read_store_unlocked() -> dict[str, Any]:
+    if not LIBRARY_DATA_PATH.exists():
+        return _empty_store()
+    try:
+        return _read_json_file(LIBRARY_DATA_PATH)
+    except (OSError, json.JSONDecodeError, StoreCorruptionError) as exc:
+        return _recover_store_from_backup(exc)
+
+
+def _replace_store_file(payload: dict[str, Any], *, keep_backup: bool = True) -> None:
+    LIBRARY_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if keep_backup and LIBRARY_DATA_PATH.exists():
+        shutil.copy2(LIBRARY_DATA_PATH, _backup_path())
+    tmp_path = _tmp_path()
+    with tmp_path.open('w', encoding=STORE_WRITE_ENCODING) as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+        f.flush()
+        os.fsync(f.fileno())
+    tmp_path.replace(LIBRARY_DATA_PATH)
+    _fsync_directory(LIBRARY_DATA_PATH.parent)
+
+
 def _write_store_unlocked(data: dict[str, Any]) -> None:
     payload = {
         'version': LIBRARY_VERSION,
         'books': data.get('books', []),
         'folders': data.get('folders', []),
     }
-    tmp_path = LIBRARY_DATA_PATH.with_suffix('.tmp')
-    with tmp_path.open('w', encoding=STORE_WRITE_ENCODING) as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    tmp_path.replace(LIBRARY_DATA_PATH)
+    _replace_store_file(payload)
 
 
 def _normalize_folder_record(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -400,7 +460,7 @@ def _sync_store_unlocked() -> dict[str, Any]:
     existing_files = {
         file_path.name: file_path
         for file_path in BOOKS_DIR.iterdir()
-        if file_path.is_file() and detect_book_file_type(file_path.name)
+        if file_path.is_file() and detect_book_file_type(file_path.name) and not is_temporary_book_file(file_path)
     }
 
     normalized_books: list[dict[str, Any]] = []
@@ -634,6 +694,30 @@ def delete_book_record(book_id: str) -> dict[str, Any] | None:
     return None
 
 
+def restore_book_record(record: dict[str, Any]) -> dict[str, Any]:
+    with _STORE_LOCK:
+        data = _read_store_unlocked()
+        books = data.get('books', [])
+        record_id = str(record.get('id') or '')
+        legacy_id = str(record.get('legacy_id') or '')
+        existing_index = next(
+            (
+                index
+                for index, item in enumerate(books)
+                if item.get('id') == record_id or (legacy_id and item.get('legacy_id') == legacy_id)
+            ),
+            None,
+        )
+        restored = dict(record)
+        if existing_index is None:
+            books.append(restored)
+        else:
+            books[existing_index] = restored
+        data['books'] = books
+        _write_store_unlocked(data)
+        return restored
+
+
 def delete_folder_record(folder_id: str) -> dict[str, Any] | None:
     with _STORE_LOCK:
         data = _sync_store_unlocked()
@@ -682,6 +766,12 @@ def assign_books_to_folder(book_ids: list[str], folder_id: str | None) -> dict[s
 
         folder_name = folder_lookup.get(requested_folder_id, {}).get('name') if requested_folder_id else None
         books = data.get('books', [])
+        missing_ids = [
+            book_id for book_id in normalized_ids
+            if not any(record.get('id') == book_id or record.get('legacy_id') == book_id for record in books)
+        ]
+        if missing_ids:
+            raise ValueError('Book not found')
         updated_records = []
         for index, record in enumerate(books):
             if record.get('id') not in normalized_ids and record.get('legacy_id') not in normalized_ids:

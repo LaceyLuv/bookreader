@@ -41,3 +41,42 @@ def test_frontend_perf_report_scripts_have_an_implementation():
     assert "collect-build-metrics.ps1" in scripts["perf:report"]
     assert "collect-build-metrics.ps1" in scripts["perf:report:web"]
     assert "collect-build-metrics.ps1" in scripts["perf:report:desktop"]
+
+
+def test_tauri_external_bin_matches_sidecar_build_output_name():
+    tauri_config = json.loads(read_text(FRONTEND / "src-tauri" / "tauri.conf.json"))
+    build_script = read_text(BACKEND / "build_sidecar.ps1")
+
+    assert tauri_config["bundle"]["externalBin"] == ["binaries/bookreader-backend"]
+    assert '"bookreader-backend-" + $targetTriple + ".exe"' in build_script
+    assert "bookreader-backend.exe" in build_script
+
+
+def test_pyinstaller_spec_includes_backend_entrypoints_and_router_imports():
+    spec = read_text(BACKEND / "bookreader-backend.spec")
+
+    for import_name in [
+        '"main"',
+        '"paths"',
+        '"models"',
+        '"routers.annotations"',
+        '"routers.books"',
+        '"routers.fonts"',
+        '"routers.library_folders"',
+        '"services.annotation_store"',
+        '"services.library_store"',
+        '"services.search_service"',
+        '"services.txt_transform_service"',
+        '"services.txt_service"',
+        '"services.epub_service"',
+        '"services.zip_service"',
+    ]:
+        assert import_name in spec
+
+
+def test_windows_sidecar_script_documents_platform_limit():
+    script = read_text(BACKEND / "build_sidecar.ps1")
+
+    assert "Windows" in script
+    assert "PowerShell" in script
+    assert "Tauri externalBin" in script

@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { API_BOOKS_BASE } from '../lib/apiBase'
-import { getBookProgress } from '../hooks/useReadingProgress'
+import { getBookProgress, removeBookProgress } from '../hooks/useReadingProgress'
 import { createT } from '../i18n'
 import { readErrorDetail } from '../lib/readErrorDetail'
 
@@ -606,6 +606,7 @@ function Dashboard() {
             setBooks((prev) => prev.filter((item) => item.id !== book.id))
             setSelectedInfo((prev) => (prev?.id === book.id ? null : prev))
             setSelectedBookIds((prev) => prev.filter((id) => id !== book.id))
+            removeBookProgress(book.id, book.legacy_id ?? null)
             await fetchFolders()
         } catch (err) {
             console.error('Delete failed', err)

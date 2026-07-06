@@ -198,6 +198,7 @@ class TxtSegmentWindow(BaseModel):
 class EpubTocItem(BaseModel):
     title: str
     index: int
+    href: str | None = None
 
 
 class EpubToc(BaseModel):

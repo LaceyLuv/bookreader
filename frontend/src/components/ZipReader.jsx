@@ -7,6 +7,7 @@ import ReaderToolbar from './ReaderToolbar'
 import ReaderProgressBar from './ReaderProgressBar'
 import ResumeToast from './ResumeToast'
 import { API_BOOKS_BASE } from '../lib/apiBase'
+import { getZipImageLayout } from '../lib/zipReaderLayout'
 
 const API = API_BOOKS_BASE
 
@@ -20,19 +21,27 @@ function ZipReader() {
 
     const [images, setImages] = useState([])
     const [loading, setLoading] = useState(true)
+    const [failedImages, setFailedImages] = useState(() => new Set())
 
     useEffect(() => {
+        let cancelled = false
+        setLoading(true)
+        setFailedImages(new Set())
         ; (async () => {
             try {
                 const res = await fetch(`${API}/${id}/images`)
                 if (!res.ok) throw new Error(`HTTP ${res.status}`)
                 const data = await res.json()
-                setImages(data.images)
+                if (!cancelled) setImages(Array.isArray(data.images) ? data.images : [])
             } catch {
                 console.error('Failed to load images')
+                if (!cancelled) setImages([])
             }
-            setLoading(false)
+            if (!cancelled) setLoading(false)
         })()
+        return () => {
+            cancelled = true
+        }
     }, [id])
 
     const progress = useReadingProgress(id, { totalPages: images.length, type: 'zip', legacyId })
@@ -76,10 +85,47 @@ function ZipReader() {
     useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true, readerRootRef })
 
     const imageUrl = (name) => `${API}/${id}/image/${encodeURIComponent(name)}`
-    const clampedScale = Math.max(0.5, Math.min(2.5, Number(zipImageScale) || 1))
-    const singleMaxWidth = `${90 * clampedScale}%`
-    const dualMaxWidth = `${48 * clampedScale}%`
-    const imageMaxHeight = `${100 * clampedScale}%`
+    const markImageFailed = useCallback((name) => {
+        setFailedImages((prev) => {
+            const next = new Set(prev)
+            next.add(name)
+            return next
+        })
+    }, [])
+    const {
+        scale: clampedScale,
+        singleMaxWidth,
+        dualMaxWidth,
+        imageMaxHeight,
+    } = getZipImageLayout(zipImageScale)
+    const renderImagePage = (imageName, pageIndex, maxWidth) => {
+        if (!imageName) return null
+        if (failedImages.has(imageName)) {
+            return (
+                <div
+                    className="rounded border px-4 py-3 text-sm opacity-70"
+                    style={{
+                        maxWidth,
+                        borderColor: themeStyle.border,
+                        color: themeStyle.text,
+                        backgroundColor: `${themeStyle.card}99`,
+                    }}
+                >
+                    {tt('imageLoadFailed')}
+                </div>
+            )
+        }
+
+        return (
+            <img
+                src={imageUrl(imageName)}
+                alt={`Page ${pageIndex + 1}`}
+                onError={() => markImageFailed(imageName)}
+                className="rounded shadow-lg"
+                style={{ maxHeight: imageMaxHeight, maxWidth, objectFit: 'contain' }}
+            />
+        )
+    }
 
     return (
         <div ref={readerRootRef} tabIndex={-1} className="readerRoot h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}>
@@ -118,9 +164,9 @@ function ZipReader() {
                         <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
                     ) : images.length > 0 ? (
                         <div className="flex h-full items-center justify-center gap-4">
-                            <img src={imageUrl(images[currentPage])} alt={`Page ${currentPage + 1}`} className="rounded shadow-lg" style={{ maxHeight: imageMaxHeight, maxWidth: layout === 'dual' ? dualMaxWidth : singleMaxWidth, objectFit: 'contain' }} />
+                            {renderImagePage(images[currentPage], currentPage, layout === 'dual' ? dualMaxWidth : singleMaxWidth)}
                             {layout === 'dual' && currentPage + 1 < images.length && (
-                                <img src={imageUrl(images[currentPage + 1])} alt={`Page ${currentPage + 2}`} className="rounded shadow-lg" style={{ maxHeight: imageMaxHeight, maxWidth: dualMaxWidth, objectFit: 'contain' }} />
+                                renderImagePage(images[currentPage + 1], currentPage + 1, dualMaxWidth)
                             )}
                         </div>
                     ) : (

@@ -874,6 +874,8 @@ test('TXT reader keeps the current page after the full-book page map finishes hy
 
     await waitFor(() => {
         expect(screen.getByTestId('progress-current-page').textContent).toBe('2')
+        expect(screen.getByTestId('txt-reader-content').textContent).toContain('B'.repeat(24))
+        expect(screen.getByTestId('txt-reader-content').textContent).not.toContain('A'.repeat(24))
     })
 
     await act(async () => {

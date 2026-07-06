@@ -106,6 +106,30 @@ def _segments_to_display_fragments(segments: list[dict]) -> list[dict]:
     return fragments
 
 
+def _build_txt_response(
+    manifest: dict,
+    options: dict,
+    display_fragments: list[dict] | None = None,
+    include_segments: bool = True,
+    segment_count: int | None = None,
+) -> dict:
+    fragments = display_fragments if display_fragments is not None else _segments_to_display_fragments(manifest["segments"])
+    response = {
+        "encoding": manifest["encoding"],
+        "total_chars": manifest["total_chars"],
+        "segment_count": segment_count if _is_nonnegative_int(segment_count) else len(fragments),
+        "transform_options": options,
+        "display_fragments": fragments,
+    }
+    if include_segments:
+        response["segments"] = manifest["segments"]
+    return response
+
+
+def _is_nonnegative_int(value: int | None) -> bool:
+    return isinstance(value, int) and value >= 0
+
+
 def clear_txt_caches() -> None:
     _read_txt_file_cached.cache_clear()
     _read_txt_manifest_cached.cache_clear()
@@ -119,12 +143,26 @@ def read_txt_file(file_path: str) -> dict:
     return {"text": text, "encoding": encoding}
 
 
-def read_txt_manifest(file_path: str, transform_options: dict | None = None) -> dict:
+def read_txt_manifest(
+    file_path: str,
+    transform_options: dict | None = None,
+    include_fragments: bool = True,
+    include_segments: bool = True,
+) -> dict:
     stat = Path(file_path).stat()
     normalized_path = str(Path(file_path).resolve())
     manifest = _read_txt_manifest_cached(normalized_path, stat.st_size, stat.st_mtime_ns)
     options = {**_DEFAULT_TRANSFORM_OPTIONS, **(transform_options or {})}
-    if any(options.values()):
+    if not any(options.values()):
+        return _build_txt_response(
+            manifest,
+            options,
+            display_fragments=_segments_to_display_fragments(manifest["segments"]) if include_fragments else [],
+            include_segments=include_segments,
+            segment_count=len(manifest["segments"]) if not include_fragments else None,
+        )
+
+    if include_fragments:
         transformed = transform_txt_segments(
             manifest["segments"],
             trim_spaces=options["trim_spaces"],
@@ -133,10 +171,56 @@ def read_txt_manifest(file_path: str, transform_options: dict | None = None) -> 
         )
         display_fragments = transformed["fragments"]
     else:
-        display_fragments = _segments_to_display_fragments(manifest["segments"])
+        transformed_count = 0
+        for segment in manifest["segments"]:
+            transformed = transform_txt_segments(
+                [segment],
+                trim_spaces=options["trim_spaces"],
+                remove_empty_lines=options["remove_empty_lines"],
+                split_paragraphs=options["split_paragraphs"],
+            )
+            transformed_count += len(transformed["fragments"])
+
+    return _build_txt_response(
+        manifest,
+        options,
+        display_fragments=display_fragments if include_fragments else [],
+        include_segments=include_segments,
+        segment_count=len(display_fragments) if include_fragments else transformed_count,
+    )
+
+
+def read_txt_segment_window(
+    file_path: str,
+    start: int = 0,
+    limit: int = 40,
+    transform_options: dict | None = None,
+) -> dict:
+    stat = Path(file_path).stat()
+    normalized_path = str(Path(file_path).resolve())
+    manifest = _read_txt_manifest_cached(normalized_path, stat.st_size, stat.st_mtime_ns)
+    options = {**_DEFAULT_TRANSFORM_OPTIONS, **(transform_options or {})}
+    safe_start = max(0, start)
+    safe_limit = max(1, min(limit, 120))
+
+    if not any(options.values()):
+        fragments = _segments_to_display_fragments(manifest["segments"][safe_start:safe_start + safe_limit])
+        total = len(manifest["segments"])
+    else:
+        transformed = transform_txt_segments(
+            manifest["segments"],
+            trim_spaces=options["trim_spaces"],
+            remove_empty_lines=options["remove_empty_lines"],
+            split_paragraphs=options["split_paragraphs"],
+        )
+        all_fragments = transformed["fragments"]
+        fragments = all_fragments[safe_start:safe_start + safe_limit]
+        total = len(all_fragments)
+
     return {
-        **manifest,
-        "segment_count": len(display_fragments),
+        "start": safe_start,
+        "limit": safe_limit,
+        "total": total,
         "transform_options": options,
-        "display_fragments": display_fragments,
+        "display_fragments": fragments,
     }

@@ -20,27 +20,35 @@ function calculatePercent(position, totalPages) {
     return Math.round(((position + 1) / totalPages) * 100)
 }
 
+function clampPosition(position, totalPages) {
+    const maxPosition = Math.max(0, (Number.isFinite(totalPages) ? totalPages : 1) - 1)
+    const safePosition = Number.isFinite(position) ? position : 0
+    return Math.max(0, Math.min(safePosition, maxPosition))
+}
+
 function buildProgressEntry(currentPosition, totalPages, type, bookmarks) {
+    const position = clampPosition(currentPosition, totalPages)
     return {
-        position: currentPosition,
+        position,
         totalPages,
         type,
-        percent: calculatePercent(currentPosition, totalPages),
+        percent: calculatePercent(position, totalPages),
         bookmarks,
         updatedAt: new Date().toISOString(),
     }
 }
 
-function normalizeProgressEntry(entry, fallbackType = 'txt') {
-    const position = Number.isFinite(entry?.position) ? entry.position : 0
+function normalizeProgressEntry(entry, fallbackType = 'txt', currentTotalPages = null) {
     const totalPages = Number.isFinite(entry?.totalPages) && entry.totalPages > 0 ? entry.totalPages : 1
+    const effectiveTotalPages = Number.isFinite(currentTotalPages) && currentTotalPages > 0 ? currentTotalPages : totalPages
+    const position = clampPosition(entry?.position, effectiveTotalPages)
     const type = typeof entry?.type === 'string' ? entry.type : fallbackType
     const bookmarks = Array.isArray(entry?.bookmarks) ? entry.bookmarks : []
     return {
         position,
         totalPages,
         type,
-        percent: Number.isFinite(entry?.percent) ? entry.percent : calculatePercent(position, totalPages),
+        percent: calculatePercent(position, effectiveTotalPages),
         bookmarks,
         updatedAt: entry?.updatedAt || new Date().toISOString(),
     }
@@ -66,6 +74,18 @@ function persistProgressEntry(bookId, legacyId, entry) {
     saveAllProgress(all)
 }
 
+export function removeBookProgress(bookId, legacyId = null) {
+    if (!bookId && !legacyId) return
+    const all = getAllProgress()
+    if (bookId) delete all[bookId]
+    if (legacyId && legacyId !== bookId) delete all[legacyId]
+    try {
+        saveAllProgress(all)
+    } catch {
+        // Ignore storage failures; deletion already succeeded server-side.
+    }
+}
+
 /**
  * Hook for managing reading progress for a specific book.
  */
@@ -86,7 +106,7 @@ export function useReadingProgress(bookId, { totalPages = 1, type = 'txt', legac
         const { entry, sourceKey } = resolveStoredEntry(all, bookId, legacyId)
         if (!entry) return
 
-        const normalized = normalizeProgressEntry(entry, type)
+        const normalized = normalizeProgressEntry(entry, type, totalPages)
         latestEntryRef.current = normalized
         setBookmarks(normalized.bookmarks)
         if (normalized.position > 0) {
@@ -100,6 +120,25 @@ export function useReadingProgress(bookId, { totalPages = 1, type = 'txt', legac
             persistProgressEntry(bookId, legacyId, normalized)
         }
     }, [bookId, legacyId])
+
+    useEffect(() => {
+        const maxPosition = Math.max(0, totalPages - 1)
+        setCurrentPosition((position) => clampPosition(position, totalPages))
+        setResumePrompt((prompt) => {
+            if (!prompt) return prompt
+            const nextPosition = clampPosition(prompt.position, totalPages)
+            return {
+                ...prompt,
+                position: nextPosition,
+                percent: calculatePercent(nextPosition, totalPages),
+            }
+        })
+        setBookmarks((items) => items.filter((bookmark) => (
+            Number.isFinite(bookmark?.position)
+            && bookmark.position >= 0
+            && bookmark.position <= maxPosition
+        )))
+    }, [totalPages])
 
     useEffect(() => {
         latestEntryRef.current = buildProgressEntry(currentPosition, totalPages, type, bookmarks)

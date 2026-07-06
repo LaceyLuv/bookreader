@@ -5,6 +5,7 @@ import TitleBar from './components/TitleBar'
 import FontStyleInjector from './components/FontStyleInjector'
 import { onTitleBarVisibilityChange, setTitleBarOffset, getInitialAppTheme, setAppThemeVars } from './lib/appChrome'
 import { IS_TAURI_RUNTIME } from './lib/apiBase'
+import { useBackendStartup } from './hooks/useBackendStartup'
 import { createT } from './i18n'
 
 const TxtReader = lazy(() => import('./components/TxtReader'))
@@ -22,6 +23,7 @@ function getSavedLang() {
 
 function App() {
     const [showTitleBar, setShowTitleBar] = useState(IS_TAURI_RUNTIME)
+    const backendStartup = useBackendStartup()
     const tt = createT(getSavedLang())
 
     useEffect(() => {
@@ -36,19 +38,37 @@ function App() {
         return onTitleBarVisibilityChange((visible) => setShowTitleBar(visible))
     }, [])
 
+    const backendBlocked = IS_TAURI_RUNTIME && !backendStartup.ready
+    const backendMessage = backendStartup.checking
+        ? 'Starting local backend...'
+        : (backendStartup.message || 'Local backend failed to start.')
+
     return (
         <BrowserRouter>
-            <FontStyleInjector />
+            {!backendBlocked && <FontStyleInjector />}
             {showTitleBar && <TitleBar visible={showTitleBar} />}
             <div style={{ paddingTop: showTitleBar ? 'var(--titlebar-height, 0px)' : '0px' }}>
-                <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh', color: 'var(--app-fg)', opacity: 0.5 }}>{tt('loading')}</div>}>
-                    <Routes>
-                        <Route path="/" element={<Dashboard />} />
-                        <Route path="/read/txt/:id" element={<TxtReader />} />
-                        <Route path="/read/epub/:id" element={<EpubReader />} />
-                        <Route path="/read/zip/:id" element={<ZipReader />} />
-                    </Routes>
-                </Suspense>
+                {backendBlocked ? (
+                    <div style={{ display: 'flex', minHeight: '60vh', alignItems: 'center', justifyContent: 'center', padding: '24px', color: 'var(--app-fg)' }}>
+                        <div style={{ maxWidth: '520px', textAlign: 'center' }}>
+                            <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>
+                                {backendStartup.checking ? tt('loading') : 'Backend unavailable'}
+                            </div>
+                            <div style={{ fontSize: '13px', lineHeight: 1.6, opacity: 0.7 }}>
+                                {backendMessage}
+                            </div>
+                        </div>
+                    </div>
+                ) : (
+                    <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh', color: 'var(--app-fg)', opacity: 0.5 }}>{tt('loading')}</div>}>
+                        <Routes>
+                            <Route path="/" element={<Dashboard />} />
+                            <Route path="/read/txt/:id" element={<TxtReader />} />
+                            <Route path="/read/epub/:id" element={<EpubReader />} />
+                            <Route path="/read/zip/:id" element={<ZipReader />} />
+                        </Routes>
+                    </Suspense>
+                )}
             </div>
         </BrowserRouter>
     )

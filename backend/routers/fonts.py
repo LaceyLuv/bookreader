@@ -18,6 +18,13 @@ ALLOWED_FONT_EXTS = {".ttf", ".otf", ".woff", ".woff2"}
 FONT_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+MAX_FONT_UPLOAD_BYTES = int(os.getenv("BOOKREADER_MAX_FONT_UPLOAD_BYTES", str(32 * 1024 * 1024)))
+FONT_SIGNATURES = {
+    ".ttf": (b"\x00\x01\x00\x00", b"true", b"typ1"),
+    ".otf": (b"OTTO",),
+    ".woff": (b"wOFF",),
+    ".woff2": (b"wOF2",),
+}
 
 
 def _safe_name(name: str) -> str:
@@ -55,6 +62,10 @@ def _find_font_path(font_id: str) -> Path | None:
     return None
 
 
+def _is_valid_font_signature(ext: str, prefix: bytes) -> bool:
+    return any(prefix.startswith(signature) for signature in FONT_SIGNATURES.get(ext, ()))
+
+
 @router.get("", response_model=List[FontMeta])
 async def list_fonts():
     FONTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -74,6 +85,7 @@ async def upload_font(file: UploadFile = File(...)):
     temp_path = Path(temp_name)
     hasher = hashlib.md5()
     total_bytes = 0
+    signature_prefix = b""
 
     try:
         with os.fdopen(temp_fd, "wb") as temp_file:
@@ -82,11 +94,17 @@ async def upload_font(file: UploadFile = File(...)):
                 if not chunk:
                     break
                 total_bytes += len(chunk)
+                if total_bytes > MAX_FONT_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Font file is too large")
+                if len(signature_prefix) < 16:
+                    signature_prefix = (signature_prefix + chunk)[:16]
                 hasher.update(chunk)
                 temp_file.write(chunk)
 
         if total_bytes == 0:
             raise HTTPException(status_code=400, detail="Empty font file")
+        if not _is_valid_font_signature(ext, signature_prefix):
+            raise HTTPException(status_code=400, detail="Invalid font file")
 
         font_id = hasher.hexdigest()[:12]
         existing = _find_font_path(font_id)
@@ -118,3 +136,15 @@ async def get_font(font_id: str):
         filename=font_path.name,
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@router.delete("/{font_id}")
+async def delete_font(font_id: str):
+    font_path = _find_font_path(font_id)
+    if not font_path:
+        raise HTTPException(status_code=404, detail="Font not found")
+    try:
+        font_path.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to delete font") from exc
+    return {"detail": "Font deleted"}
