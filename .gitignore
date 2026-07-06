@@ -22,6 +22,12 @@ backend/dist-sidecar/
 frontend/src-tauri/binaries/
 frontend/*.log
 
+# ===== BookReader local runtime data =====
+backend/library.json
+backend/annotations.json
+backend/backend*.log
+backend/backend_*.log
+
 # ===== IDE / Editor =====
 .vscode/
 .idea/
