@@ -150,6 +150,7 @@ function TxtReader() {
     const navigate = useNavigate()
     const location = useLocation()
     const legacyId = location.state?.legacyId ?? null
+    const [bookTitle, setBookTitle] = useState(location.state?.bookTitle || '')
     const settings = useReaderSettings()
     const {
         contentStyle,
@@ -213,6 +214,28 @@ function TxtReader() {
         loading,
         error,
     } = useTxtSegmentWindow(id, transformOptions)
+
+    useEffect(() => {
+        if (manifest?.title) {
+            setBookTitle(manifest.title)
+            return
+        }
+
+        const controller = new AbortController()
+        ; (async () => {
+            try {
+                const res = await fetch(`${API}/${id}`, { signal: controller.signal })
+                if (!res.ok) return
+                const data = await res.json()
+                setBookTitle(data.title || data.filename?.replace(/\.txt$/i, '') || '')
+            } catch (err) {
+                if (err?.name !== 'AbortError') console.error('Failed to load TXT book title', err)
+            }
+        })()
+
+        return () => controller.abort()
+    }, [id, manifest?.title])
+
     const visibleWindowStartsAtZero = visibleStart === 0
     const hasActiveTransforms = transformOptions.trimSpaces || transformOptions.removeEmptyLines || transformOptions.splitParagraphs
     const hasGlobalRenderPageMap = Array.isArray(globalRenderPages) && globalRenderPages.length > 0
@@ -1319,6 +1342,7 @@ function TxtReader() {
                 <div className="flex items-center gap-3">
                     <button onClick={() => navigate('/')} title={tt('backToLibrary')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg></button>
                     <div className="h-5 w-px opacity-20" style={{ backgroundColor: themeStyle.text }} />
+                    {bookTitle && <span className="text-sm opacity-60 truncate max-w-[18rem]" style={{ color: themeStyle.text }}>{bookTitle}</span>}
                     <span className="text-[11px] font-semibold uppercase tracking-widest opacity-40" style={{ color: themeStyle.text }}>TXT</span>
                     {manifest?.encoding && <span className="text-[11px] opacity-30" style={{ color: themeStyle.text }}>{manifest.encoding}</span>}
                 </div>

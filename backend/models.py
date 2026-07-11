@@ -193,6 +193,7 @@ class TxtDisplayFragment(BaseModel):
 
 
 class TxtManifest(BaseModel):
+    title: str | None = None
     encoding: str
     total_chars: int
     segment_count: int

@@ -350,7 +350,7 @@ async def get_txt_manifest(
         include_fragments=False,
         include_segments=False,
     )
-    return TxtManifest(**manifest)
+    return TxtManifest(title=record.get('title') or Path(record.get('filename', '')).stem or None, **manifest)
 
 
 @router.get('/{book_id}/txt-segments', response_model=TxtSegmentWindow)

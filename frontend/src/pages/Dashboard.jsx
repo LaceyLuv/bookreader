@@ -615,7 +615,7 @@ function Dashboard() {
 
     const openBook = useCallback((book) => {
         navigate(`/read/${book.file_type}/${book.id}`, {
-            state: { legacyId: book.legacy_id ?? null },
+            state: { legacyId: book.legacy_id ?? null, bookTitle: book.title || book.filename?.replace(/\.[^.]+$/, '') || '' },
         })
     }, [navigate])
 

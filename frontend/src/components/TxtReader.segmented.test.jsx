@@ -94,6 +94,25 @@ function renderReader() {
     )
 }
 
+test('shows the book title to the left of the TXT format label', async () => {
+    global.fetch = vi.fn(async (url) => {
+        if (String(url).includes('/txt-manifest')) {
+            return new Response(JSON.stringify({ title: 'Test Book', encoding: 'utf-16', total_chars: 0, segment_count: 0 }), { status: 200 })
+        }
+        if (String(url).includes('/txt-segments')) {
+            return new Response(JSON.stringify({ start: 0, limit: 40, total: 0, display_fragments: [] }), { status: 200 })
+        }
+        return new Response(JSON.stringify([]), { status: 200 })
+    })
+
+    renderReader()
+
+    const title = await screen.findByText('Test Book')
+    const format = screen.getByText('TXT')
+    expect(title.compareDocumentPosition(format) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText('utf-16')).toBeTruthy()
+})
+
 function RouteControlHarness() {
     const navigate = useNavigate()
 
