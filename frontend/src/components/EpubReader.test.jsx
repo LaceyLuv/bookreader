@@ -155,6 +155,21 @@ test('loads toc and renders sanitized chapter html', async () => {
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
 })
 
+test('dual EPUB layout applies horizontal margins symmetrically around one center gutter', async () => {
+    mockUseReaderSettings.mockReturnValue(createSettings({ layout: 'dual', hMargin: 20, columnGap: 32 }))
+    renderReader()
+
+    await screen.findByText('Chapter One')
+    const stage = screen.getByTestId('epub-reader-stage')
+    const content = document.querySelector('.epub-content')
+
+    expect(stage.style.paddingLeft).toBe('0px')
+    expect(stage.style.paddingRight).toBe('0px')
+    expect(content.style.paddingLeft).toBe('20px')
+    expect(content.style.paddingRight).toBe('20px')
+    expect(content.style.columnGap).toBe('72px')
+})
+
 test('clicking an internal chapter link loads the mapped chapter', async () => {
     renderReader()
 

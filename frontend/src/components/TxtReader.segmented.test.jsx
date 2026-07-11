@@ -404,12 +404,17 @@ test('TXT reader renders a shared dual spread with two page surfaces and no segm
 
     const spread = await screen.findByTestId('txt-spread')
     const pageSurfaces = within(spread).getAllByTestId('txt-page-surface')
+    const stage = screen.getByTestId('txt-reader-stage')
 
     expect(pageSurfaces).toHaveLength(2)
     expect(pageSurfaces[0].textContent).toBe(getMeasuredPageText(expectedPages[0]))
     expect(pageSurfaces[1].textContent).toBe(getMeasuredPageText(expectedPages[1]))
     expect(within(spread).queryByText(getMeasuredPageText(expectedPages[2]))).toBeNull()
     expect(screen.queryByTestId('txt-segment-card')).toBeNull()
+    expect(stage.style.paddingLeft).toBe('0px')
+    expect(stage.style.paddingRight).toBe('0px')
+    expect(pageSurfaces.every((surface) => surface.style.paddingLeft === '20px' && surface.style.paddingRight === '20px')).toBe(true)
+    expect(pageSurfaces.every((surface) => !surface.style.borderRight || surface.style.borderRight === 'none')).toBe(true)
 })
 
 test('TXT reader renders oversized content as measured slices instead of one clipped fragment block', async () => {
