@@ -155,7 +155,7 @@ test('loads toc and renders sanitized chapter html', async () => {
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
 })
 
-test('dual EPUB layout converts horizontal margin into symmetric center distance', async () => {
+test('dual EPUB layout uses the original outer horizontal margin behavior', async () => {
     mockUseReaderSettings.mockReturnValue(createSettings({ layout: 'dual', hMargin: 20, columnGap: 32 }))
     renderReader()
 
@@ -163,11 +163,9 @@ test('dual EPUB layout converts horizontal margin into symmetric center distance
     const stage = screen.getByTestId('epub-reader-stage')
     const content = document.querySelector('.epub-content')
 
-    expect(stage.style.paddingLeft).toBe('0px')
-    expect(stage.style.paddingRight).toBe('0px')
-    expect(content.style.paddingLeft).toBe('0px')
-    expect(content.style.paddingRight).toBe('0px')
-    expect(content.style.columnGap).toBe('72px')
+    expect(stage.style.paddingLeft).toBe('20px')
+    expect(stage.style.paddingRight).toBe('20px')
+    expect(content.style.columnGap).toBe('32px')
 })
 
 test('clicking an internal chapter link loads the mapped chapter', async () => {
