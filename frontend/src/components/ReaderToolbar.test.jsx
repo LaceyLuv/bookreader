@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { expect, test, vi } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import ReaderToolbar from './ReaderToolbar'
 
-function createSettings() {
+function createSettings(overrides = {}) {
     return {
         theme: 'light', font: 'system', setFont: vi.fn(), fontMode: 'user', setFontMode: vi.fn(),
         fontFamily: '', setFontFamily: vi.fn(), fontWeight: 400, setFontWeight: vi.fn(), fontSize: 18,
@@ -17,32 +17,119 @@ function createSettings() {
         lang: 'ko', setLang: vi.fn(), resetDefaults: vi.fn(), resetToast: false, settingsOpen: true,
         toggleSettings: vi.fn(), THEMES: { light: { text: '#38342f' } },
         FONTS: { system: { family: 'system-ui' } },
-        tt: (key) => ({ trimSpaces: '공백 정리', splitParagraphs: '문단 나누기' }[key] || key),
+        tt: (key) => key,
+        ...overrides,
     }
 }
 
-test('TXT transforms live in reading settings and call their existing setters', async () => {
+function renderToolbar({ settings = createSettings(), readerType = 'epub', txtTransforms = null } = {}) {
     global.fetch = vi.fn(() => new Promise(() => {}))
+    render(<ReaderToolbar settings={settings} readerType={readerType} txtTransforms={txtTransforms} />)
+    return settings
+}
+
+afterEach(() => {
+    vi.restoreAllMocks()
+})
+
+test('reading tab keeps typography and layout controls connected to existing setters', async () => {
+    const user = userEvent.setup()
+    const settings = renderToolbar()
+
+    expect(screen.getByRole('tab', { name: 'settingsReadTab' }).getAttribute('aria-selected')).toBe('true')
+    await user.click(screen.getByRole('button', { name: 'increaseFontSize' }))
+    await user.click(screen.getByRole('button', { name: 'boldWeight' }))
+    await user.click(screen.getByRole('button', { name: 'single' }))
+    fireEvent.change(screen.getByRole('slider', { name: 'lineHeight' }), { target: { value: '2' } })
+
+    expect(settings.incFont).toHaveBeenCalledOnce()
+    expect(settings.setFontWeight).toHaveBeenCalledWith(700)
+    expect(settings.setLayout).toHaveBeenCalledWith('single')
+    expect(settings.setLineHeight).toHaveBeenCalledWith(2)
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'settingsReadTab' }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: 'settingsDisplayTab' }).getAttribute('aria-selected')).toBe('true')
+})
+
+test('display tab exposes colors, margins, title bar, and ZIP scale only for ZIP readers', async () => {
+    const user = userEvent.setup()
+    const settings = renderToolbar({ readerType: 'zip' })
+    await user.click(screen.getByRole('tab', { name: 'settingsDisplayTab' }))
+
+    fireEvent.change(screen.getByRole('slider', { name: 'hMargin' }), { target: { value: '64' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'zipImageScale' }), { target: { value: '1.5' } })
+    await user.click(screen.getByRole('button', { name: 'titleBar' }))
+
+    expect(settings.setHMargin).toHaveBeenCalledWith(64)
+    expect(settings.setZipImageScale).toHaveBeenCalledWith(1.5)
+    expect(settings.toggleTitleBar).toHaveBeenCalledOnce()
+})
+
+test('TXT transforms live in the advanced tab and call their existing setters', async () => {
     const user = userEvent.setup()
     const onTrimSpacesChange = vi.fn()
     const onSplitParagraphsChange = vi.fn()
-    render(<ReaderToolbar settings={createSettings()} readerType="txt" txtTransforms={{
+    renderToolbar({ readerType: 'txt', txtTransforms: {
         trimSpaces: false, splitParagraphs: true, onTrimSpacesChange, onSplitParagraphsChange,
-    }} />)
+    } })
 
-    const trim = screen.getByRole('checkbox', { name: '공백 정리' })
-    const split = screen.getByRole('checkbox', { name: '문단 나누기' })
-    expect(trim.checked).toBe(false)
-    expect(split.checked).toBe(true)
+    expect(screen.queryByRole('checkbox', { name: 'trimSpaces' })).toBeNull()
+    await user.click(screen.getByRole('tab', { name: 'settingsAdvancedTab' }))
+    const trim = screen.getByRole('checkbox', { name: 'trimSpaces' })
+    const split = screen.getByRole('checkbox', { name: 'splitParagraphs' })
     await user.click(trim)
     await user.click(split)
+
     expect(onTrimSpacesChange).toHaveBeenCalledWith(true)
     expect(onSplitParagraphsChange).toHaveBeenCalledWith(false)
 })
 
-test('non-TXT readers do not show TXT transform settings', () => {
-    global.fetch = vi.fn(() => new Promise(() => {}))
-    render(<ReaderToolbar settings={createSettings()} readerType="epub" />)
-    expect(screen.queryByText('공백 정리')).toBeNull()
-    expect(screen.queryByText('문단 나누기')).toBeNull()
+test('advanced format options are contextual', async () => {
+    const user = userEvent.setup()
+    renderToolbar({ readerType: 'epub' })
+    await user.click(screen.getByRole('tab', { name: 'settingsAdvancedTab' }))
+
+    expect(screen.getByRole('checkbox', { name: /useEpubEmbeddedFonts/ })).toBeTruthy()
+    expect(screen.queryByText('trimSpaces')).toBeNull()
+    expect(screen.queryByRole('slider', { name: 'zipImageScale' })).toBeNull()
+})
+
+test('done, close, backdrop, and Escape all use the existing close callback', async () => {
+    const user = userEvent.setup()
+    const settings = renderToolbar()
+
+    await user.click(screen.getByRole('button', { name: 'done' }))
+    await user.click(screen.getByRole('button', { name: 'closeSettings' }))
+    fireEvent.mouseDown(screen.getByRole('dialog').parentElement)
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    expect(settings.toggleSettings).toHaveBeenCalledTimes(4)
+})
+
+test('reset honors confirmation before calling the existing reset action', async () => {
+    const user = userEvent.setup()
+    const settings = renderToolbar()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+
+    await user.click(screen.getByRole('button', { name: 'resetDefaults' }))
+    await user.click(screen.getByRole('button', { name: 'resetDefaults' }))
+
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(settings.resetDefaults).toHaveBeenCalledOnce()
+})
+
+test('font upload keeps using the existing fonts endpoint and selects the saved font', async () => {
+    const user = userEvent.setup()
+    const settings = createSettings()
+    global.fetch = vi.fn(async (_url, options) => {
+        if (options?.method === 'POST') return { ok: true, json: async () => ({ id: 7 }) }
+        return { ok: true, json: async () => [] }
+    })
+    const { container } = render(<ReaderToolbar settings={settings} readerType="epub" />)
+    await user.click(screen.getByRole('tab', { name: 'settingsAdvancedTab' }))
+    await user.upload(container.querySelector('input[type="file"]'), new File(['font'], 'reader.woff2', { type: 'font/woff2' }))
+
+    expect(global.fetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ method: 'POST' }))
+    expect(settings.setFontFamily).toHaveBeenCalledWith('UserFont_7')
+    expect(settings.setFontMode).toHaveBeenCalledWith('user')
 })

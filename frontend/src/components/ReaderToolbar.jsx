@@ -54,13 +54,16 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
     const SETTINGS_BG = 'rgb(250, 250, 250)'
     const SETTINGS_TEXT = 'rgb(51, 51, 51)'
     const SETTINGS_BORDER = 'rgba(51, 51, 51, 0.22)'
-    const SETTINGS_INPUT_BG = 'rgba(255, 255, 255, 0.92)'
     const SETTINGS_FONT_FAMILY = "'RIDIBatang', 'RidiBatang', 'Noto Serif KR', 'Noto Sans KR', 'Malgun Gothic', serif"
     const [themeToast, setThemeToast] = useState(null)
     const [userFonts, setUserFonts] = useState([])
     const [fontsLoading, setFontsLoading] = useState(false)
     const [fontError, setFontError] = useState('')
+    const [activeTab, setActiveTab] = useState('reading')
     const fileInputRef = useRef(null)
+    const panelRef = useRef(null)
+    const triggerRef = useRef(null)
+    const wasSettingsOpenRef = useRef(false)
 
     const rgbToHex = (value) => {
         if (!value) return '#000000'
@@ -107,6 +110,36 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
         if (settingsOpen) fetchUserFonts()
     }, [settingsOpen])
 
+    useEffect(() => {
+        if (!settingsOpen) {
+            if (wasSettingsOpenRef.current) triggerRef.current?.focus()
+            wasSettingsOpenRef.current = false
+            return undefined
+        }
+        wasSettingsOpenRef.current = true
+        panelRef.current?.focus()
+        const handleKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                toggleSettings()
+                return
+            }
+            if (event.key !== 'Tab') return
+            const focusable = [...(panelRef.current?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])]
+            if (!focusable.length) return
+            const first = focusable[0]
+            const last = focusable[focusable.length - 1]
+            if (event.shiftKey && (document.activeElement === first || document.activeElement === panelRef.current)) {
+                event.preventDefault()
+                last.focus()
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault()
+                first.focus()
+            }
+        }
+        window.addEventListener('keydown', handleKeyDown)
+        return () => window.removeEventListener('keydown', handleKeyDown)
+    }, [settingsOpen, toggleSettings])
+
     const handleUploadFont = async (e) => {
         const file = e.target.files?.[0]
         if (!file) return
@@ -131,13 +164,16 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
         }
     }
 
-    const Slider = ({ label, value, min, max, step, unit, onChange }) => (
+    const Slider = ({ label, value, min, max, step, unit, onChange }) => {
+        const percentage = ((Number(value) - min) / (max - min)) * 100
+        return (
         <div>
-            <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-[10px] font-bold uppercase tracking-widest opacity-50">{label}</span>
-                <span className="tabular-nums text-[11px] opacity-60">{value}{unit}</span>
+            <div className="mb-2 flex items-center justify-between">
+                <span className="text-[12px] font-semibold">{label}</span>
+                <span className="rounded-md bg-[#f1eadf] px-2 py-0.5 text-[11px] tabular-nums text-[#766854]">{value}{unit}</span>
             </div>
             <input
+                aria-label={label}
                 type="range"
                 min={min}
                 max={max}
@@ -146,12 +182,13 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                 onChange={e => onChange(parseFloat(e.target.value))}
                 className="h-1 w-full cursor-pointer rounded-full"
                 style={{
-                    background: `linear-gradient(90deg, var(--accent) 0%, ${SETTINGS_BORDER} 100%)`,
-                    accentColor: 'var(--accent)',
+                    background: `linear-gradient(90deg, #b7864b 0%, #b7864b ${percentage}%, #ded4c5 ${percentage}%, #ded4c5 100%)`,
+                    accentColor: '#b7864b',
                 }}
             />
         </div>
-    )
+        )
+    }
 
     const handleReset = () => {
         if (window.confirm(tt('resetConfirm'))) {
@@ -190,9 +227,24 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
         setFontMode('user')
     }
 
+    const handleTabKeyDown = (event, currentKey) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+        event.preventDefault()
+        const keys = ['reading', 'display', 'advanced']
+        const currentIndex = keys.indexOf(currentKey)
+        const nextKey = event.key === 'Home'
+            ? keys[0]
+            : event.key === 'End'
+                ? keys[keys.length - 1]
+                : keys[(currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length]
+        setActiveTab(nextKey)
+        requestAnimationFrame(() => document.getElementById(`settings-tab-${nextKey}`)?.focus())
+    }
+
     return (
         <div className="relative">
             <button
+                ref={triggerRef}
                 onClick={toggleSettings}
                 title={tt('settings')}
                 className="reader-toolbar-button flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:opacity-60"
@@ -204,339 +256,239 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
             </button>
 
             {settingsOpen && (
-                <>
-                    <div className="fixed inset-0 z-30" onClick={toggleSettings} />
-
-                    <div
-                        className="absolute right-0 top-full z-40 mt-2 w-80 overflow-hidden rounded-xl border shadow-2xl"
-                        style={{
-                            '--settings-bg': SETTINGS_BG,
-                            '--settings-fg': SETTINGS_TEXT,
-                            '--settings-border': SETTINGS_BORDER,
-                            '--settings-input-bg': SETTINGS_INPUT_BG,
-                            backgroundColor: 'var(--settings-bg)',
-                            borderColor: 'var(--settings-border)',
-                            color: 'var(--settings-fg)',
-                            fontFamily: SETTINGS_FONT_FAMILY,
-                        }}
+                <div
+                    className="fixed inset-0 z-40 bg-[#211c16]/35 backdrop-blur-[2px]"
+                    onMouseDown={(event) => event.target === event.currentTarget && toggleSettings()}
+                >
+                    <aside
+                        ref={panelRef}
+                        tabIndex={-1}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="reader-settings-title"
+                        className="absolute inset-y-0 right-0 flex w-full max-w-[420px] flex-col bg-[#faf7f1] text-[#3f392f] shadow-[-18px_0_55px_rgba(54,44,29,0.2)] outline-none"
+                        style={{ fontFamily: SETTINGS_FONT_FAMILY }}
                     >
-                        <div
-                            className="max-h-[70vh] space-y-5 overflow-y-auto p-4 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
-                            style={{ scrollbarColor: 'var(--settings-border) transparent' }}
-                        >
-                            {readerType === 'txt' && txtTransforms && (
-                                <div>
-                                    <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">TXT</span>
-                                    <div className="space-y-2">
-                                        <label className="flex items-center justify-between rounded-lg border px-3 py-2.5 text-[11px]" style={{ borderColor: 'var(--settings-border)' }}>
-                                            <span>{tt('trimSpaces')}</span>
-                                            <input
-                                                type="checkbox"
-                                                checked={txtTransforms.trimSpaces}
-                                                onChange={(event) => txtTransforms.onTrimSpacesChange(event.target.checked)}
-                                                style={{ accentColor: 'var(--accent)' }}
-                                            />
-                                        </label>
-                                        <label className="flex items-center justify-between rounded-lg border px-3 py-2.5 text-[11px]" style={{ borderColor: 'var(--settings-border)' }}>
-                                            <span>{tt('splitParagraphs')}</span>
-                                            <input
-                                                type="checkbox"
-                                                checked={txtTransforms.splitParagraphs}
-                                                onChange={(event) => txtTransforms.onSplitParagraphsChange(event.target.checked)}
-                                                style={{ accentColor: 'var(--accent)' }}
-                                            />
-                                        </label>
-                                    </div>
-                                </div>
-                            )}
+                        <header className="flex items-center justify-between border-b border-[#e5dccd] px-6 py-5">
                             <div>
-                                <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('language')}</span>
-                                <div className="flex gap-2">
-                                    <button
-                                        onClick={() => setLang('en')}
-                                        className={`flex-1 rounded-lg border-2 py-2 text-[11px] font-semibold transition-all ${lang === 'en' ? 'scale-105 shadow-md' : 'opacity-60 hover:opacity-100'}`}
-                                        style={{ borderColor: lang === 'en' ? 'var(--accent)' : 'var(--settings-border)' }}
-                                    >
-                                        {tt('langEnglish')}
-                                    </button>
-                                    <button
-                                        onClick={() => setLang('ko')}
-                                        className={`flex-1 rounded-lg border-2 py-2 text-[11px] font-semibold transition-all ${lang === 'ko' ? 'scale-105 shadow-md' : 'opacity-60 hover:opacity-100'}`}
-                                        style={{ borderColor: lang === 'ko' ? 'var(--accent)' : 'var(--settings-border)' }}
-                                    >
-                                        {tt('langKorean')}
-                                    </button>
-                                </div>
+                                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#9a8b72]">BOOK READER</p>
+                                <h2 id="reader-settings-title" className="mt-1 text-xl font-semibold">{tt('settings')}</h2>
                             </div>
-
-                            <div>
-                                <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('font')}</span>
-                                <select
-                                    value={selectedFontValue}
-                                    onChange={(e) => handleFontSelectChange(e.target.value)}
-                                    className="w-full rounded-lg border px-3 py-2 text-[12px]"
-                                    style={{
-                                        borderColor: 'var(--settings-border)',
-                                        backgroundColor: 'var(--settings-input-bg)',
-                                        color: 'var(--settings-fg)',
-                                        fontFamily: selectedFontPreviewFamily,
-                                    }}
-                                >
-                                    {BUILTIN_FONT_OPTIONS.map((item) => (
-                                        <option key={item.key} value={`__builtin:${item.key}`}>
-                                            {item.label}
-                                        </option>
-                                    ))}
-                                    {userFonts.map((fontItem) => (
-                                        <option key={fontItem.id} value={`UserFont_${fontItem.id}`}>
-                                            {fontItem.filename}
-                                        </option>
-                                    ))}
-                                    {hasDetachedFontValue && <option value={selectedFontValue}>{tt('customSelectedFont')}</option>}
-                                </select>
-
-                                <div className="mt-2 flex items-center gap-2">
-                                    <button
-                                        onClick={() => fileInputRef.current?.click()}
-                                        className="rounded-lg border px-2 py-1 text-[11px] font-semibold transition-all hover:opacity-80"
-                                        style={{ borderColor: 'var(--settings-border)' }}
-                                    >
-                                        {tt('addFont')}
-                                    </button>
-                                    <input
-                                        ref={fileInputRef}
-                                        type="file"
-                                        accept=".ttf,.otf,.woff,.woff2"
-                                        className="hidden"
-                                        onChange={handleUploadFont}
-                                    />
-                                    <span className="text-[10px] opacity-60">
-                                        {fontsLoading ? tt('loadingFonts') : `${userFonts.length} ${tt('uploadedCountSuffix')}`}
-                                    </span>
-                                </div>
-
-                                <label className="mt-3 flex items-center justify-between rounded-lg border px-2 py-2 text-[11px]" style={{ borderColor: 'var(--settings-border)' }}>
-                                    <span>{tt('useEpubEmbeddedFonts')}</span>
-                                    <input
-                                        type="checkbox"
-                                        checked={fontMode === 'embedded'}
-                                        onChange={(e) => setFontMode(e.target.checked ? 'embedded' : 'user')}
-                                        className="h-4 w-4"
-                                        style={{ accentColor: 'var(--accent)' }}
-                                    />
-                                </label>
-                                <p className="mt-1 text-[10px] opacity-60">{tt('embeddedFontsHint')}</p>
-                                {fontError && <p className="mt-1 text-[10px] text-red-400">{fontError}</p>}
-                            </div>
-
-                            <div>
-                                <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('weight')}</span>
-                                <div className="mb-3 grid grid-cols-2 gap-2">
-                                    <button
-                                        onClick={() => setFontWeight(400)}
-                                        className="rounded-lg border-2 py-2 text-[11px] font-semibold transition-all"
-                                        style={{ borderColor: fontWeight === 400 ? 'var(--accent)' : 'var(--settings-border)' }}
-                                    >
-                                        {tt('regularWeight')}
-                                    </button>
-                                    <button
-                                        onClick={() => setFontWeight(700)}
-                                        className="rounded-lg border-2 py-2 text-[11px] font-semibold transition-all"
-                                        style={{ borderColor: fontWeight === 700 ? 'var(--accent)' : 'var(--settings-border)' }}
-                                    >
-                                        {tt('boldWeight')}
-                                    </button>
-                                </div>
-                                <span className="mb-1 block text-[10px] uppercase tracking-widest opacity-50">{tt('custom')}</span>
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="range"
-                                        min={100}
-                                        max={900}
-                                        step={50}
-                                        value={fontWeight}
-                                        onChange={e => setFontWeight(parseInt(e.target.value, 10))}
-                                        className="h-1 flex-1 cursor-pointer rounded-full"
-                                        style={{
-                                            background: `linear-gradient(90deg, var(--accent) 0%, ${SETTINGS_BORDER} 100%)`,
-                                            accentColor: 'var(--accent)',
-                                        }}
-                                    />
-                                    <input
-                                        type="number"
-                                        min={100}
-                                        max={900}
-                                        step={50}
-                                        value={fontWeight}
-                                        onChange={e => setFontWeight(parseInt(e.target.value, 10))}
-                                        className="w-20 rounded border px-2 py-1 text-[11px]"
-                                        style={{
-                                            borderColor: 'var(--settings-border)',
-                                            backgroundColor: 'var(--settings-input-bg)',
-                                            color: 'var(--settings-fg)',
-                                        }}
-                                    />
-                                </div>
-                            </div>
-
-                            <div>
-                                <div className="mb-2">
-                                    <span className="block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('colors')}</span>
-                                    <div className="mt-1.5 flex justify-center">
-                                        <span className="inline-flex min-w-[11rem] items-center justify-center rounded-full border px-3 py-0.5 text-center text-[10px]" style={{ borderColor: 'var(--settings-border)' }}>
-                                            {matchedPreset ? `${tt('preset')}: ${matchedPreset.name}` : tt('custom')}
-                                        </span>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <label className="text-[10px] uppercase tracking-widest opacity-60">
-                                        {tt('bg')}
-                                        <input
-                                            type="color"
-                                            value={rgbToHex(bgColor)}
-                                            onChange={e => setBgColor(e.target.value)}
-                                            className="mt-1 h-8 w-full cursor-pointer rounded border bg-transparent p-0"
-                                            style={{ borderColor: 'var(--settings-border)' }}
-                                        />
-                                    </label>
-                                    <label className="text-[10px] uppercase tracking-widest opacity-60">
-                                        {tt('text')}
-                                        <input
-                                            type="color"
-                                            value={rgbToHex(textColor)}
-                                            onChange={e => setTextColor(e.target.value)}
-                                            className="mt-1 h-8 w-full cursor-pointer rounded border bg-transparent p-0"
-                                            style={{ borderColor: 'var(--settings-border)' }}
-                                        />
-                                    </label>
-                                </div>
-                            </div>
-
-                            <div>
-                                <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('themePresets')}</span>
-                                <div className="space-y-2">
-                                    {THEME_PRESETS.map((preset) => {
-                                        const selected = matchedPreset?.key === preset.key
-                                        return (
-                                            <button
-                                                key={preset.key}
-                                                onClick={() => applyPreset(preset)}
-                                                title={preset.note}
-                                                className="w-full rounded-lg border px-3 py-2 text-left transition-all hover:opacity-90"
-                                                style={{ borderColor: selected ? 'var(--accent)' : 'var(--settings-border)' }}
-                                            >
-                                                <div className="flex items-center justify-center gap-2">
-                                                    <div className="flex items-center gap-2 min-w-0">
-                                                        <span className="h-4 w-4 rounded border" style={{ backgroundColor: preset.bg, borderColor: 'var(--settings-border)' }} />
-                                                        <span className="h-4 w-4 rounded border" style={{ backgroundColor: preset.fg, borderColor: 'var(--settings-border)' }} />
-                                                        <span className="text-[12px] font-semibold">{preset.name}</span>
-                                                    </div>
-                                                </div>
-                                                {selected && <div className="mt-1 text-center text-[10px] font-semibold">{tt('selected')}</div>}
-                                                <div className="mt-1 text-center text-[10px] opacity-55">{preset.note}</div>
-                                            </button>
-                                        )
-                                    })}
-                                </div>
-                            </div>
-
-                            <div>
-                                <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('size')}</span>
-                                <div className="flex items-center gap-3">
-                                    <button
-                                        onClick={decFont}
-                                        className="flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-bold transition-all hover:opacity-80"
-                                        style={{ borderColor: 'var(--settings-border)' }}
-                                    >
-                                        -
-                                    </button>
-                                    <span className="flex-1 text-center text-[12px] tabular-nums">{fontSize}px</span>
-                                    <button
-                                        onClick={incFont}
-                                        className="flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-bold transition-all hover:opacity-80"
-                                        style={{ borderColor: 'var(--settings-border)' }}
-                                    >
-                                        +
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div>
-                                <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('layout')}</span>
-                                <div className="flex gap-2">
-                                    <button
-                                        onClick={() => setLayout('single')}
-                                        className={`flex-1 rounded-lg border-2 py-2 text-[11px] font-semibold transition-all ${layout === 'single' ? 'scale-105 shadow-md' : 'opacity-60 hover:opacity-100'}`}
-                                        style={{ borderColor: layout === 'single' ? 'var(--accent)' : 'var(--settings-border)' }}
-                                    >
-                                        {tt('single')}
-                                    </button>
-                                    <button
-                                        onClick={() => setLayout('dual')}
-                                        className={`flex-1 rounded-lg border-2 py-2 text-[11px] font-semibold transition-all ${layout === 'dual' ? 'scale-105 shadow-md' : 'opacity-60 hover:opacity-100'}`}
-                                        style={{ borderColor: layout === 'dual' ? 'var(--accent)' : 'var(--settings-border)' }}
-                                    >
-                                        {tt('dual')}
-                                    </button>
-                                </div>
-                            </div>
-
-                            {readerType === 'zip' && (
-                                <div>
-                                    <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">ZIP Image Scale</span>
-                                    <Slider
-                                        label="Zoom"
-                                        value={Number((zipImageScale || 1).toFixed(1))}
-                                        min={0.5}
-                                        max={2.5}
-                                        step={0.1}
-                                        unit="x"
-                                        onChange={setZipImageScale}
-                                    />
-                                </div>
-                            )}
-
-                            <div>
-                                <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('titleBar')}</span>
+                            <div className="flex items-center gap-2">
+                                <span className="rounded-full border border-[#ded4c5] px-2.5 py-1 text-[10px] font-semibold text-[#766854]">
+                                    {lang === 'ko' ? tt('langKorean') : tt('langEnglish')}
+                                </span>
                                 <button
-                                    onClick={toggleTitleBar}
-                                    className="w-full rounded-lg border-2 py-2 text-[11px] font-semibold transition-all"
-                                    style={{ borderColor: showTitleBar ? 'var(--accent)' : 'var(--settings-border)' }}
+                                    type="button"
+                                    onClick={toggleSettings}
+                                    aria-label={tt('closeSettings')}
+                                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#ded4c5] text-xl transition-colors hover:bg-[#f1eadf] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#b7864b]"
                                 >
-                                    {showTitleBar ? tt('hideTitleBar') : tt('showTitleBar')}
+                                    ×
                                 </button>
-                                <p className="mt-2 text-[10px] opacity-60">ESC</p>
                             </div>
+                        </header>
 
-                            <div className="border-t pt-1" style={{ borderColor: 'var(--settings-border)' }}>
-                                <span className="block text-[10px] font-bold uppercase tracking-widest opacity-30">{tt('typography')}</span>
-                            </div>
-
-                            <Slider label={tt('lineHeight')} value={lineHeight} min={1.0} max={2.5} step={0.1} unit="" onChange={setLineHeight} />
-                            <Slider label={tt('letterSpacing')} value={letterSpacing} min={-0.05} max={0.2} step={0.01} unit="em" onChange={setLetterSpacing} />
-
-                            <div className="border-t pt-1" style={{ borderColor: 'var(--settings-border)' }}>
-                                <span className="block text-[10px] font-bold uppercase tracking-widest opacity-30">{tt('margins')}</span>
-                            </div>
-
-                            <Slider label={tt('hMargin')} value={hMargin} min={16} max={120} step={4} unit="px" onChange={setHMargin} />
-                            <Slider label={tt('vMargin')} value={vMargin} min={8} max={80} step={4} unit="px" onChange={setVMargin} />
-                            <Slider label={tt('splitMargin')} value={columnGap} min={16} max={120} step={4} unit="px" onChange={setColumnGap} />
-
-                            <div className="border-t pt-2 opacity-30" style={{ borderColor: 'var(--settings-border)' }}>
-                                <p className="text-[10px] leading-snug">{tt('keyboardHint')}</p>
-                            </div>
-
-                            <button
-                                onClick={handleReset}
-                                className="w-full rounded-lg border-2 py-2.5 text-[12px] font-semibold transition-all hover:border-red-400/50 hover:bg-red-500/10 active:scale-[0.98]"
-                                style={{ borderColor: 'var(--settings-border)', color: 'var(--settings-fg)', backgroundColor: 'var(--settings-input-bg)' }}
-                            >
-                                {tt('resetDefaults')}
-                            </button>
+                        <div role="tablist" aria-label={tt('settingsSections')} className="mx-6 mt-4 grid grid-cols-3 rounded-xl border border-[#ded4c5] bg-[#f4eee5] p-1">
+                            {[
+                                ['reading', tt('settingsReadTab')],
+                                ['display', tt('settingsDisplayTab')],
+                                ['advanced', tt('settingsAdvancedTab')],
+                            ].map(([key, label]) => (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    role="tab"
+                                    id={`settings-tab-${key}`}
+                                    aria-selected={activeTab === key}
+                                    aria-controls={`settings-panel-${key}`}
+                                    tabIndex={activeTab === key ? 0 : -1}
+                                    onClick={() => setActiveTab(key)}
+                                    onKeyDown={(event) => handleTabKeyDown(event, key)}
+                                    className={`rounded-lg py-2 text-[12px] font-semibold transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#b7864b] ${activeTab === key ? 'bg-white text-[#6e4d27] shadow-sm' : 'text-[#8a7c66] hover:text-[#3f392f]'}`}
+                                >
+                                    {label}
+                                </button>
+                            ))}
                         </div>
-                    </div>
-                </>
+
+                        <div className="flex-1 overflow-y-auto px-6 py-5 [scrollbar-color:#d8cdbd_transparent]">
+                            {activeTab === 'reading' && (
+                                <div id="settings-panel-reading" role="tabpanel" aria-labelledby="settings-tab-reading" className="space-y-4">
+                                    <div className="rounded-2xl border border-[#ded4c5] bg-[#f4ecd8] p-4 shadow-inner">
+                                        <p className="mb-3 text-[9px] font-bold uppercase tracking-[0.18em] text-[#9a8060]">{tt('livePreview')}</p>
+                                        <div className={`grid min-h-24 ${layout === 'dual' ? 'grid-cols-2 divide-x divide-[#ccbda7]' : 'grid-cols-1'} rounded-lg bg-[#fffaf0] px-5 py-4 shadow-sm`} style={{ color: textColor, fontFamily: selectedFontPreviewFamily, fontWeight, fontSize: `${Math.max(11, fontSize * 0.65)}px`, lineHeight, letterSpacing: `${letterSpacing}em` }}>
+                                            <p className="pr-3">{tt('previewText')}</p>
+                                            {layout === 'dual' && <p className="pl-3">{tt('previewTextAlt')}</p>}
+                                        </div>
+                                    </div>
+
+                                    <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                        <label className="mb-2 block text-[12px] font-semibold" htmlFor="reader-font-select">{tt('font')}</label>
+                                        <select
+                                            id="reader-font-select"
+                                            value={selectedFontValue}
+                                            onChange={(event) => handleFontSelectChange(event.target.value)}
+                                            className="w-full rounded-xl border border-[#ded4c5] bg-[#fffdf9] px-3 py-2.5 text-[12px] outline-none focus:border-[#b7864b]"
+                                            style={{ fontFamily: selectedFontPreviewFamily }}
+                                        >
+                                            {BUILTIN_FONT_OPTIONS.map((item) => <option key={item.key} value={`__builtin:${item.key}`}>{item.label}</option>)}
+                                            {userFonts.map((fontItem) => <option key={fontItem.id} value={`UserFont_${fontItem.id}`}>{fontItem.filename}</option>)}
+                                            {hasDetachedFontValue && <option value={selectedFontValue}>{tt('customSelectedFont')}</option>}
+                                        </select>
+
+                                        <div className="mt-4 flex items-center justify-between">
+                                            <span className="text-[12px] font-semibold">{tt('size')}</span>
+                                            <div className="flex items-center overflow-hidden rounded-xl border border-[#ded4c5] bg-[#fffdf9]">
+                                                <button type="button" aria-label={tt('decreaseFontSize')} onClick={decFont} className="h-9 w-10 text-lg hover:bg-[#f1eadf]">−</button>
+                                                <span className="min-w-16 border-x border-[#ded4c5] px-3 text-center text-[12px] tabular-nums">{fontSize} px</span>
+                                                <button type="button" aria-label={tt('increaseFontSize')} onClick={incFont} className="h-9 w-10 text-lg hover:bg-[#f1eadf]">+</button>
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-4">
+                                            <span className="mb-2 block text-[12px] font-semibold">{tt('weight')}</span>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                {[400, 700].map((value) => (
+                                                    <button key={value} type="button" onClick={() => setFontWeight(value)} aria-pressed={fontWeight === value} className={`rounded-xl border py-2 text-[11px] font-semibold ${fontWeight === value ? 'border-[#b7864b] bg-[#f5eadc] text-[#765022]' : 'border-[#ded4c5] bg-[#fffdf9]'}`}>
+                                                        {value === 400 ? tt('regularWeight') : tt('boldWeight')}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                    <section className="space-y-5 rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                        <Slider label={tt('lineHeight')} value={lineHeight} min={1} max={2.5} step={0.1} unit="" onChange={setLineHeight} />
+                                        <Slider label={tt('letterSpacing')} value={letterSpacing} min={-0.05} max={0.2} step={0.01} unit=" em" onChange={setLetterSpacing} />
+                                    </section>
+
+                                    <section>
+                                        <h3 className="mb-2 text-[12px] font-semibold">{tt('layout')}</h3>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            {[
+                                                ['single', tt('single'), false],
+                                                ['dual', tt('dual'), true],
+                                            ].map(([value, label, dual]) => (
+                                                <button key={value} type="button" onClick={() => setLayout(value)} aria-pressed={layout === value} className={`flex items-center justify-center gap-3 rounded-2xl border p-3 text-[12px] font-semibold ${layout === value ? 'border-[#b7864b] bg-[#f5eadc] text-[#765022]' : 'border-[#ded4c5] bg-white/70'}`}>
+                                                    <span className={`grid h-8 w-9 ${dual ? 'grid-cols-2' : 'grid-cols-1'} gap-px rounded border border-[#cbbda9] bg-white p-1`}>
+                                                        <i className="bg-[#e6dccd]" />{dual && <i className="bg-[#e6dccd]" />}
+                                                    </span>
+                                                    {label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </section>
+                                </div>
+                            )}
+
+                            {activeTab === 'display' && (
+                                <div id="settings-panel-display" role="tabpanel" aria-labelledby="settings-tab-display" className="space-y-5">
+                                    <section>
+                                        <div className="mb-3 flex items-center justify-between">
+                                            <h3 className="text-[12px] font-semibold">{tt('themePresets')}</h3>
+                                            <span className="text-[10px] text-[#8a7c66]">{matchedPreset?.name || tt('custom')}</span>
+                                        </div>
+                                        <div className="grid grid-cols-3 gap-2">
+                                            {THEME_PRESETS.map((preset) => {
+                                                const selected = matchedPreset?.key === preset.key
+                                                return (
+                                                    <button key={preset.key} type="button" onClick={() => applyPreset(preset)} aria-pressed={selected} title={preset.note} className={`rounded-2xl border p-2.5 text-center ${selected ? 'border-[#b7864b] bg-[#f5eadc]' : 'border-[#ded4c5] bg-white/70'}`}>
+                                                        <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border shadow-sm" style={{ backgroundColor: preset.bg, borderColor: selected ? '#b7864b' : '#ded4c5' }}>
+                                                            <i className="h-4 w-1 rounded-full" style={{ backgroundColor: preset.fg }} />
+                                                        </span>
+                                                        <span className="mt-2 block truncate text-[10px] font-semibold">{preset.name}</span>
+                                                    </button>
+                                                )
+                                            })}
+                                        </div>
+                                    </section>
+
+                                    <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                        <h3 className="mb-3 text-[12px] font-semibold">{tt('colors')}</h3>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            {[[tt('bg'), bgColor, setBgColor], [tt('text'), textColor, setTextColor]].map(([label, value, setter]) => (
+                                                <label key={label} className="flex items-center justify-between rounded-xl border border-[#ded4c5] bg-[#fffdf9] px-3 py-2 text-[11px] font-semibold">
+                                                    {label}
+                                                    <input aria-label={label} type="color" value={rgbToHex(value)} onChange={(event) => setter(event.target.value)} className="h-8 w-10 cursor-pointer rounded border-0 bg-transparent p-0" />
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </section>
+
+                                    <section className="space-y-5 rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                        <Slider label={tt('hMargin')} value={hMargin} min={16} max={120} step={4} unit=" px" onChange={setHMargin} />
+                                        <Slider label={tt('vMargin')} value={vMargin} min={8} max={80} step={4} unit=" px" onChange={setVMargin} />
+                                        <Slider label={tt('splitMargin')} value={columnGap} min={16} max={120} step={4} unit=" px" onChange={setColumnGap} />
+                                    </section>
+
+                                    {readerType === 'zip' && (
+                                        <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                            <Slider label={tt('zipImageScale')} value={Number((zipImageScale || 1).toFixed(1))} min={0.5} max={2.5} step={0.1} unit="x" onChange={setZipImageScale} />
+                                        </section>
+                                    )}
+
+                                    <button type="button" onClick={toggleTitleBar} aria-pressed={showTitleBar} className="flex w-full items-center justify-between rounded-2xl border border-[#e2d9cb] bg-white/70 px-4 py-3 text-[12px] font-semibold">
+                                        <span>{tt('titleBar')}</span>
+                                        <span className={`relative h-6 w-11 rounded-full transition-colors ${showTitleBar ? 'bg-[#b7864b]' : 'bg-[#d5cabb]'}`}><i className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-transform ${showTitleBar ? 'translate-x-6' : 'translate-x-1'}`} /></span>
+                                    </button>
+                                </div>
+                            )}
+
+                            {activeTab === 'advanced' && (
+                                <div id="settings-panel-advanced" role="tabpanel" aria-labelledby="settings-tab-advanced" className="space-y-5">
+                                    <section>
+                                        <h3 className="mb-2 text-[12px] font-semibold">{tt('language')}</h3>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {[['en', tt('langEnglish')], ['ko', tt('langKorean')]].map(([value, label]) => (
+                                                <button key={value} type="button" onClick={() => setLang(value)} aria-pressed={lang === value} className={`rounded-xl border py-2.5 text-[11px] font-semibold ${lang === value ? 'border-[#b7864b] bg-[#f5eadc] text-[#765022]' : 'border-[#ded4c5] bg-white/70'}`}>{label}</button>
+                                            ))}
+                                        </div>
+                                    </section>
+
+                                    <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                        <div className="flex items-center justify-between">
+                                            <div><h3 className="text-[12px] font-semibold">{tt('fontManagement')}</h3><p className="mt-1 text-[10px] text-[#8a7c66]">{fontsLoading ? tt('loadingFonts') : `${userFonts.length} ${tt('uploadedCountSuffix')}`}</p></div>
+                                            <button type="button" onClick={() => fileInputRef.current?.click()} className="rounded-xl border border-[#b7864b] bg-[#f5eadc] px-3 py-2 text-[11px] font-semibold text-[#765022]">{tt('addFont')}</button>
+                                            <input ref={fileInputRef} type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={handleUploadFont} />
+                                        </div>
+                                        {fontError && <p role="alert" className="mt-2 text-[10px] text-red-600">{fontError}</p>}
+                                    </section>
+
+                                    {readerType === 'epub' && (
+                                        <label className="flex items-center justify-between rounded-2xl border border-[#e2d9cb] bg-white/70 px-4 py-3 text-[12px] font-semibold">
+                                            <span><b className="block font-semibold">{tt('useEpubEmbeddedFonts')}</b><small className="mt-1 block font-normal text-[#8a7c66]">{tt('embeddedFontsHint')}</small></span>
+                                            <input type="checkbox" checked={fontMode === 'embedded'} onChange={(event) => setFontMode(event.target.checked ? 'embedded' : 'user')} className="h-4 w-4 accent-[#b7864b]" />
+                                        </label>
+                                    )}
+
+                                    {readerType === 'txt' && txtTransforms && (
+                                        <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                            <h3 className="mb-3 text-[12px] font-semibold">TXT</h3>
+                                            <div className="space-y-3">
+                                                {[
+                                                    [tt('trimSpaces'), txtTransforms.trimSpaces, txtTransforms.onTrimSpacesChange],
+                                                    [tt('splitParagraphs'), txtTransforms.splitParagraphs, txtTransforms.onSplitParagraphsChange],
+                                                ].map(([label, checked, setter]) => (
+                                                    <label key={label} className="flex items-center justify-between text-[11px]"><span>{label}</span><input type="checkbox" checked={checked} onChange={(event) => setter(event.target.checked)} className="h-4 w-4 accent-[#b7864b]" /></label>
+                                                ))}
+                                            </div>
+                                        </section>
+                                    )}
+
+                                    <div className="rounded-2xl border border-dashed border-[#d7cbbb] bg-[#f4eee5] px-4 py-3 text-[10px] leading-relaxed text-[#766854]">
+                                        {tt('keyboardHint')}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <footer className="grid grid-cols-[1fr_1.25fr] gap-3 border-t border-[#e5dccd] bg-[#faf7f1] px-6 py-4">
+                            <button type="button" onClick={handleReset} className="rounded-xl px-3 py-3 text-[11px] font-semibold text-[#9a6c36] transition-colors hover:bg-[#f1eadf]">{tt('resetDefaults')}</button>
+                            <button type="button" onClick={toggleSettings} className="rounded-xl bg-[#b7864b] px-3 py-3 text-[12px] font-bold text-white shadow-sm transition-colors hover:bg-[#a4763f] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8a5d2b]">{tt('done')}</button>
+                        </footer>
+                    </aside>
+                </div>
             )}
 
             {resetToast && (
