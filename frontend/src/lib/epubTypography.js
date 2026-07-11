@@ -12,16 +12,25 @@ function normalizeFontFamily(fontFamily) {
 }
 
 export function buildEpubTypographyCss({ useEmbeddedFonts, fontFamily, fontWeight }) {
-  if (useEmbeddedFonts) return ''
-
-  const safeFamily = normalizeFontFamily(fontFamily)
   const safeWeight = normalizeFontWeight(fontWeight)
+  const familyDeclaration = useEmbeddedFonts
+    ? ''
+    : ` font-family: ${normalizeFontFamily(fontFamily)} !important;`
+  const inheritedFamily = useEmbeddedFonts
+    ? ''
+    : '  font-family: inherit !important;\n'
+  const weightDeclarations = [
+    `  font-weight: ${safeWeight} !important;`,
+    `  font-variation-settings: "wght" ${safeWeight} !important;`,
+  ].join('\n')
 
   return [
-    `.epub-content { font-family: ${safeFamily} !important; font-weight: ${safeWeight} !important; }`,
-    '.epub-content :where(p, div, span, a, li, blockquote, dt, dd, h1, h2, h3, h4, h5, h6, em, i, font, small, sub, sup) {',
-    '  font-family: inherit !important;',
-    '  font-weight: inherit !important;',
+    `.epub-content.epub-content.epub-content {${familyDeclaration}`,
+    weightDeclarations,
     '}',
-  ].join('\n')
+    '.epub-content.epub-content.epub-content * {',
+    inheritedFamily,
+    weightDeclarations,
+    '}',
+  ].filter(Boolean).join('\n')
 }

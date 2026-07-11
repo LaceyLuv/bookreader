@@ -2,6 +2,18 @@ import { expect, test } from 'vitest'
 
 import { sanitizeEpubHtml } from './epubSanitizer'
 
+test('removes inline font weight declarations so reader typography can override them', () => {
+  const html = sanitizeEpubHtml(`
+    <p style="font-weight: 400 !important; font-variation-settings: 'wght' 400; color: red">
+      chapter text
+    </p>
+  `)
+
+  expect(html).not.toContain('font-weight')
+  expect(html).not.toContain('font-variation-settings')
+  expect(html).toContain('color: red')
+})
+
 test('sanitizeEpubHtml removes executable elements and event handlers', () => {
   const html = sanitizeEpubHtml(`
     <p onclick="alert(1)">Hello</p>

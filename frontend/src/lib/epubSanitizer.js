@@ -245,6 +245,14 @@ function sanitizeElement(element) {
     }
   }
 
+  // Reader typography settings own the weight. EPUB inline declarations,
+  // especially ones using !important, otherwise outrank the reader override.
+  if (element.hasAttribute('style')) {
+    element.style.removeProperty('font-weight')
+    element.style.removeProperty('font-variation-settings')
+    if (!element.getAttribute('style')?.trim()) element.removeAttribute('style')
+  }
+
   if (element.hasAttribute('srcset')) {
     const sanitized = sanitizeSrcset(element.getAttribute('srcset'))
     if (sanitized) {

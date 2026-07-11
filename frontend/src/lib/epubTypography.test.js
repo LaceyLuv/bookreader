@@ -12,11 +12,9 @@ test('buildEpubTypographyCss forces user font family and weight onto chapter des
   expect(css).toContain('.epub-content')
   expect(css).toContain('font-family: "UserFont_123" !important;')
   expect(css).toContain('font-weight: 550 !important;')
-  expect(css).toContain('.epub-content :where(')
+  expect(css).toContain('font-variation-settings: "wght" 550 !important;')
+  expect(css).toContain('.epub-content.epub-content.epub-content *')
   expect(css).toContain('font-family: inherit !important;')
-  expect(css).toContain('font-weight: inherit !important;')
-  expect(css).not.toContain('strong')
-  expect(css).not.toContain(' b,')
 })
 
 test('buildEpubTypographyCss preserves preset font stacks as fallback lists', () => {
@@ -32,10 +30,15 @@ test('buildEpubTypographyCss preserves preset font stacks as fallback lists', ()
   expect(css).not.toContain(`font-family: "${fontStack}" !important;`)
 })
 
-test('buildEpubTypographyCss skips overrides when embedded fonts are enabled', () => {
-  expect(buildEpubTypographyCss({
+test('buildEpubTypographyCss preserves embedded font families while forcing the user weight', () => {
+  const css = buildEpubTypographyCss({
     useEmbeddedFonts: true,
     fontFamily: 'UserFont_123',
     fontWeight: 550,
-  })).toBe('')
+  })
+
+  expect(css).toContain('font-weight: 550 !important;')
+  expect(css).toContain('font-variation-settings: "wght" 550 !important;')
+  expect(css).not.toContain('font-family:')
+  expect(css).not.toContain('UserFont_123')
 })
