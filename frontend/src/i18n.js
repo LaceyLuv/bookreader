@@ -100,6 +100,8 @@ const dict = {
     previewTextAlt: { en: 'Adjust the page until it feels just right.', ko: '나에게 맞는 호흡으로 지면을 조절해 보세요.' },
     decreaseFontSize: { en: 'Decrease font size', ko: '글자 크기 줄이기' },
     increaseFontSize: { en: 'Increase font size', ko: '글자 크기 늘리기' },
+    fontWeightDetail: { en: 'Detailed font weight', ko: '글꼴 굵기 세부 조절' },
+    fontWeightValue: { en: 'Font weight value', ko: '글꼴 굵기 값' },
     zipImageScale: { en: 'Image scale', ko: '이미지 확대' },
     theme: { en: 'Theme', ko: '테마' },
     dark: { en: 'Dark', ko: '다크' },

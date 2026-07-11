@@ -37,8 +37,6 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
         setBgColor,
         textColor,
         setTextColor,
-        showTitleBar,
-        toggleTitleBar,
         lang,
         setLang,
         resetDefaults,
@@ -312,17 +310,33 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                             ))}
                         </div>
 
+                        <div
+                            data-testid="reader-settings-preview"
+                            className="mx-6 mt-4 overflow-hidden rounded-2xl border border-[#d9cdbd] p-3 shadow-inner transition-colors"
+                            style={{ backgroundColor: bgColor, color: textColor }}
+                        >
+                            <p className="mb-2 text-[8px] font-bold uppercase tracking-[0.18em] opacity-55">{tt('livePreview')}</p>
+                            <div
+                                data-testid="reader-settings-preview-page"
+                                className={`grid min-h-16 ${layout === 'dual' ? 'grid-cols-2' : 'grid-cols-1'} overflow-hidden rounded-lg bg-white/20 shadow-sm`}
+                                style={{
+                                    columnGap: `${Math.max(4, columnGap * 0.12)}px`,
+                                    padding: `${Math.max(6, vMargin * 0.18)}px ${Math.max(8, hMargin * 0.16)}px`,
+                                    fontFamily: selectedFontPreviewFamily,
+                                    fontWeight,
+                                    fontSize: `${Math.max(10, fontSize * 0.58)}px`,
+                                    lineHeight,
+                                    letterSpacing: `${letterSpacing}em`,
+                                }}
+                            >
+                                <p className={layout === 'dual' ? 'border-r border-current/20 pr-2' : ''}>{tt('previewText')}</p>
+                                {layout === 'dual' && <p className="pl-2">{tt('previewTextAlt')}</p>}
+                            </div>
+                        </div>
+
                         <div className="flex-1 overflow-y-auto px-6 py-5 [scrollbar-color:#d8cdbd_transparent]">
                             {activeTab === 'reading' && (
                                 <div id="settings-panel-reading" role="tabpanel" aria-labelledby="settings-tab-reading" className="space-y-4">
-                                    <div className="rounded-2xl border border-[#ded4c5] bg-[#f4ecd8] p-4 shadow-inner">
-                                        <p className="mb-3 text-[9px] font-bold uppercase tracking-[0.18em] text-[#9a8060]">{tt('livePreview')}</p>
-                                        <div className={`grid min-h-24 ${layout === 'dual' ? 'grid-cols-2 divide-x divide-[#ccbda7]' : 'grid-cols-1'} rounded-lg bg-[#fffaf0] px-5 py-4 shadow-sm`} style={{ color: textColor, fontFamily: selectedFontPreviewFamily, fontWeight, fontSize: `${Math.max(11, fontSize * 0.65)}px`, lineHeight, letterSpacing: `${letterSpacing}em` }}>
-                                            <p className="pr-3">{tt('previewText')}</p>
-                                            {layout === 'dual' && <p className="pl-3">{tt('previewTextAlt')}</p>}
-                                        </div>
-                                    </div>
-
                                     <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
                                         <label className="mb-2 block text-[12px] font-semibold" htmlFor="reader-font-select">{tt('font')}</label>
                                         <select
@@ -355,14 +369,43 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                                     </button>
                                                 ))}
                                             </div>
+                                            <div className="mt-3 flex items-center gap-3">
+                                                <input
+                                                    aria-label={tt('fontWeightDetail')}
+                                                    type="range"
+                                                    min={100}
+                                                    max={900}
+                                                    step={50}
+                                                    value={fontWeight}
+                                                    onChange={(event) => setFontWeight(parseInt(event.target.value, 10))}
+                                                    className="h-1 flex-1 cursor-pointer accent-[#b7864b]"
+                                                />
+                                                <input
+                                                    aria-label={tt('fontWeightValue')}
+                                                    type="number"
+                                                    min={100}
+                                                    max={900}
+                                                    step={50}
+                                                    value={fontWeight}
+                                                    onChange={(event) => setFontWeight(parseInt(event.target.value, 10))}
+                                                    className="w-20 rounded-lg border border-[#ded4c5] bg-[#fffdf9] px-2 py-1.5 text-center text-[11px] tabular-nums outline-none focus:border-[#b7864b]"
+                                                />
+                                            </div>
                                         </div>
                                     </section>
 
                                     <section className="space-y-5 rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
                                         <Slider label={tt('lineHeight')} value={lineHeight} min={1} max={2.5} step={0.1} unit="" onChange={setLineHeight} />
                                         <Slider label={tt('letterSpacing')} value={letterSpacing} min={-0.05} max={0.2} step={0.01} unit=" em" onChange={setLetterSpacing} />
+                                        <Slider label={tt('hMargin')} value={hMargin} min={16} max={120} step={4} unit=" px" onChange={setHMargin} />
+                                        <Slider label={tt('vMargin')} value={vMargin} min={8} max={80} step={4} unit=" px" onChange={setVMargin} />
+                                        <Slider label={tt('splitMargin')} value={columnGap} min={16} max={120} step={4} unit=" px" onChange={setColumnGap} />
                                     </section>
+                                </div>
+                            )}
 
+                            {activeTab === 'display' && (
+                                <div id="settings-panel-display" role="tabpanel" aria-labelledby="settings-tab-display" className="space-y-5">
                                     <section>
                                         <h3 className="mb-2 text-[12px] font-semibold">{tt('layout')}</h3>
                                         <div className="grid grid-cols-2 gap-3">
@@ -379,11 +422,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                             ))}
                                         </div>
                                     </section>
-                                </div>
-                            )}
 
-                            {activeTab === 'display' && (
-                                <div id="settings-panel-display" role="tabpanel" aria-labelledby="settings-tab-display" className="space-y-5">
                                     <section>
                                         <div className="mb-3 flex items-center justify-between">
                                             <h3 className="text-[12px] font-semibold">{tt('themePresets')}</h3>
@@ -416,22 +455,12 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                         </div>
                                     </section>
 
-                                    <section className="space-y-5 rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
-                                        <Slider label={tt('hMargin')} value={hMargin} min={16} max={120} step={4} unit=" px" onChange={setHMargin} />
-                                        <Slider label={tt('vMargin')} value={vMargin} min={8} max={80} step={4} unit=" px" onChange={setVMargin} />
-                                        <Slider label={tt('splitMargin')} value={columnGap} min={16} max={120} step={4} unit=" px" onChange={setColumnGap} />
-                                    </section>
-
                                     {readerType === 'zip' && (
                                         <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
                                             <Slider label={tt('zipImageScale')} value={Number((zipImageScale || 1).toFixed(1))} min={0.5} max={2.5} step={0.1} unit="x" onChange={setZipImageScale} />
                                         </section>
                                     )}
 
-                                    <button type="button" onClick={toggleTitleBar} aria-pressed={showTitleBar} className="flex w-full items-center justify-between rounded-2xl border border-[#e2d9cb] bg-white/70 px-4 py-3 text-[12px] font-semibold">
-                                        <span>{tt('titleBar')}</span>
-                                        <span className={`relative h-6 w-11 rounded-full transition-colors ${showTitleBar ? 'bg-[#b7864b]' : 'bg-[#d5cabb]'}`}><i className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-transform ${showTitleBar ? 'translate-x-6' : 'translate-x-1'}`} /></span>
-                                    </button>
                                 </div>
                             )}
 

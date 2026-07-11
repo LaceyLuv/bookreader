@@ -32,37 +32,56 @@ afterEach(() => {
     vi.restoreAllMocks()
 })
 
-test('reading tab keeps typography and layout controls connected to existing setters', async () => {
+test('reading tab keeps typography, detailed weight, and margin controls connected', async () => {
     const user = userEvent.setup()
     const settings = renderToolbar()
 
     expect(screen.getByRole('tab', { name: 'settingsReadTab' }).getAttribute('aria-selected')).toBe('true')
     await user.click(screen.getByRole('button', { name: 'increaseFontSize' }))
     await user.click(screen.getByRole('button', { name: 'boldWeight' }))
-    await user.click(screen.getByRole('button', { name: 'single' }))
     fireEvent.change(screen.getByRole('slider', { name: 'lineHeight' }), { target: { value: '2' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'fontWeightDetail' }), { target: { value: '550' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'hMargin' }), { target: { value: '64' } })
 
     expect(settings.incFont).toHaveBeenCalledOnce()
     expect(settings.setFontWeight).toHaveBeenCalledWith(700)
-    expect(settings.setLayout).toHaveBeenCalledWith('single')
+    expect(settings.setFontWeight).toHaveBeenCalledWith(550)
     expect(settings.setLineHeight).toHaveBeenCalledWith(2)
+    expect(settings.setHMargin).toHaveBeenCalledWith(64)
 
     fireEvent.keyDown(screen.getByRole('tab', { name: 'settingsReadTab' }), { key: 'ArrowRight' })
     expect(screen.getByRole('tab', { name: 'settingsDisplayTab' }).getAttribute('aria-selected')).toBe('true')
 })
 
-test('display tab exposes colors, margins, title bar, and ZIP scale only for ZIP readers', async () => {
+test('display tab groups layout, themes, colors, and ZIP scale without title bar controls', async () => {
     const user = userEvent.setup()
     const settings = renderToolbar({ readerType: 'zip' })
     await user.click(screen.getByRole('tab', { name: 'settingsDisplayTab' }))
 
-    fireEvent.change(screen.getByRole('slider', { name: 'hMargin' }), { target: { value: '64' } })
+    await user.click(screen.getByRole('button', { name: 'single' }))
     fireEvent.change(screen.getByRole('slider', { name: 'zipImageScale' }), { target: { value: '1.5' } })
-    await user.click(screen.getByRole('button', { name: 'titleBar' }))
 
-    expect(settings.setHMargin).toHaveBeenCalledWith(64)
+    expect(settings.setLayout).toHaveBeenCalledWith('single')
     expect(settings.setZipImageScale).toHaveBeenCalledWith(1.5)
-    expect(settings.toggleTitleBar).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'titleBar' })).toBeNull()
+})
+
+test('shared preview reflects reading and display values', () => {
+    const settings = createSettings({
+        bgColor: '#112233', textColor: '#f0e0d0', fontWeight: 650, fontSize: 22,
+        lineHeight: 2.1, letterSpacing: 0.08, hMargin: 80, vMargin: 40, columnGap: 72,
+    })
+    global.fetch = vi.fn(() => new Promise(() => {}))
+    render(<ReaderToolbar settings={settings} readerType="epub" />)
+
+    const preview = screen.getByTestId('reader-settings-preview')
+    const page = screen.getByTestId('reader-settings-preview-page')
+    expect(preview.style.backgroundColor).toBe('rgb(17, 34, 51)')
+    expect(preview.style.color).toBe('rgb(240, 224, 208)')
+    expect(page.style.fontWeight).toBe('650')
+    expect(page.style.lineHeight).toBe('2.1')
+    expect(page.style.letterSpacing).toBe('0.08em')
+    expect(page.style.columnGap).toBe('8.64px')
 })
 
 test('TXT transforms live in the advanced tab and call their existing setters', async () => {
