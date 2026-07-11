@@ -5,6 +5,17 @@ import {
     recoverSourceRangeFromDisplaySelection,
 } from './txtDisplayMapper'
 
+test('mapping runs count non-BMP characters as one persisted code point', () => {
+    const fragments = [{ segment_id: 0, display_text: 'A😀BC', source_start_offset: 10,
+        source_end_offset: 14, display_to_source_runs: [[0, 10, 4]] }]
+    expect(findDisplayRangeForSourceLocator(fragments, 0, 11, 12)).toEqual({
+        fragmentIndex: 0, displayStart: 1, displayEnd: 2,
+    })
+    expect(recoverSourceRangeFromDisplaySelection(fragments, 0, 0, 1, 0, 2)).toMatchObject({
+        sourceStart: 11, sourceEnd: 12,
+    })
+})
+
 test('findDisplayRangeForSourceLocator maps a source offset into transformed display positions', () => {
     const fragments = [
         {
@@ -46,6 +57,27 @@ test('findDisplayRangeForSourceLocator preserves cross-fragment display ranges f
         endFragmentIndex: 1,
         displayStart: 8,
         displayEnd: 5,
+    })
+})
+
+test('compressed mapping runs preserve exact offsets across removed source characters', () => {
+    const fragments = [{
+        segment_id: 9,
+        display_text: 'AlphaBeta',
+        source_start_offset: 100,
+        source_end_offset: 110,
+        display_to_source_runs: [[0, 100, 5], [5, 106, 4]],
+    }]
+
+    expect(findDisplayRangeForSourceLocator(fragments, 9, 106, 109)).toEqual({
+        fragmentIndex: 0,
+        displayStart: 5,
+        displayEnd: 8,
+    })
+    expect(recoverSourceRangeFromDisplaySelection(fragments, 9, 0, 4, 7)).toEqual({
+        fragmentIndex: 0,
+        sourceStart: 104,
+        sourceEnd: 108,
     })
 })
 

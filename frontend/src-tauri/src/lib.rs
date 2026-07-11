@@ -1,6 +1,7 @@
+use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Manager;
@@ -11,7 +12,6 @@ use tauri_plugin_shell::ShellExt;
 #[allow(dead_code)]
 const BACKEND_HOST: &str = "127.0.0.1";
 #[allow(dead_code)]
-const BACKEND_PORT: u16 = 8000;
 #[allow(dead_code)]
 const BACKEND_HEALTH_ATTEMPTS: usize = 50;
 #[allow(dead_code)]
@@ -28,15 +28,6 @@ struct BackendStatus {
 }
 
 impl BackendStatus {
-    fn external_ready(message: impl Into<String>) -> Self {
-        Self {
-            state: "ready".to_string(),
-            message: Some(message.into()),
-            pid: None,
-            owned: false,
-        }
-    }
-
     #[allow(dead_code)]
     fn starting(pid: Option<u32>) -> Self {
         Self {
@@ -79,6 +70,17 @@ impl BackendStatus {
 struct BackendRuntime {
     child: Option<tauri_plugin_shell::process::CommandChild>,
     status: BackendStatus,
+    api_base: String,
+    nonce: Option<String>,
+    asset_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendConnection {
+    api_base: String,
+    nonce: Option<String>,
+    asset_token: Option<String>,
 }
 
 struct BackendState(Arc<Mutex<BackendRuntime>>);
@@ -112,7 +114,12 @@ fn set_backend_status(backend_state: &Arc<Mutex<BackendRuntime>>, status: Backen
 }
 
 #[allow(dead_code)]
-fn probe_backend_health(host: &str, port: u16, timeout: Duration) -> Result<(), String> {
+fn probe_backend_health(
+    host: &str,
+    port: u16,
+    nonce: Option<&str>,
+    timeout: Duration,
+) -> Result<(), String> {
     let address = format!("{host}:{port}")
         .to_socket_addrs()
         .map_err(|err| format!("failed to resolve backend address: {err}"))?
@@ -124,8 +131,12 @@ fn probe_backend_health(host: &str, port: u16, timeout: Duration) -> Result<(), 
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
 
-    let request =
-        format!("GET /api/health HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+    let auth_header = nonce
+        .map(|value| format!("X-BookReader-Nonce: {value}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "GET /api/health HTTP/1.1\r\nHost: {host}:{port}\r\n{auth_header}Connection: close\r\n\r\n"
+    );
     stream
         .write_all(request.as_bytes())
         .map_err(|err| format!("backend health request failed: {err}"))?;
@@ -137,7 +148,8 @@ fn probe_backend_health(host: &str, port: u16, timeout: Duration) -> Result<(), 
 
     if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
         let compact = response.replace(char::is_whitespace, "");
-        if compact.contains("\"ok\":true") {
+        let authenticated = nonce.is_none() || compact.contains("\"authenticated\":true");
+        if compact.contains("\"ok\":true") && authenticated {
             return Ok(());
         }
     }
@@ -149,12 +161,13 @@ fn probe_backend_health(host: &str, port: u16, timeout: Duration) -> Result<(), 
 fn wait_for_backend_health(
     host: &str,
     port: u16,
+    nonce: Option<&str>,
     attempts: usize,
     interval: Duration,
 ) -> Result<(), String> {
     let mut last_error = "backend health check did not run".to_string();
     for attempt in 1..=attempts {
-        match probe_backend_health(host, port, BACKEND_HEALTH_TIMEOUT) {
+        match probe_backend_health(host, port, nonce, BACKEND_HEALTH_TIMEOUT) {
             Ok(()) => return Ok(()),
             Err(err) => last_error = err,
         }
@@ -176,6 +189,38 @@ fn backend_status(state: tauri::State<'_, BackendState>) -> BackendStatus {
         .unwrap_or_else(|_| BackendStatus::failed("Backend status lock is unavailable."))
 }
 
+#[tauri::command]
+fn backend_connection(state: tauri::State<'_, BackendState>) -> BackendConnection {
+    state
+        .0
+        .lock()
+        .map(|runtime| BackendConnection {
+            api_base: runtime.api_base.clone(),
+            nonce: runtime.nonce.clone(),
+            asset_token: runtime.asset_token.clone(),
+        })
+        .unwrap_or(BackendConnection {
+            api_base: String::new(),
+            nonce: None,
+            asset_token: None,
+        })
+}
+
+#[allow(dead_code)]
+fn reserve_loopback_port() -> Result<u16, String> {
+    TcpListener::bind((BACKEND_HOST, 0))
+        .and_then(|listener| listener.local_addr())
+        .map(|address| address.port())
+        .map_err(|err| format!("failed to reserve a loopback port: {err}"))
+}
+
+#[allow(dead_code)]
+fn generate_nonce() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -183,8 +228,11 @@ pub fn run() {
         .manage(BackendState(Arc::new(Mutex::new(BackendRuntime {
             child: None,
             status: BackendStatus::failed("Backend has not been initialized."),
+            api_base: "http://127.0.0.1:8000".to_string(),
+            nonce: None,
+            asset_token: None,
         }))))
-        .invoke_handler(tauri::generate_handler![backend_status])
+        .invoke_handler(tauri::generate_handler![backend_status, backend_connection])
         .setup(|app| {
             #[cfg(debug_assertions)]
             {
@@ -221,27 +269,27 @@ pub fn run() {
             {
                 let app_handle = app.handle();
                 let backend_state = app.state::<BackendState>().0.clone();
-
-                if probe_backend_health(BACKEND_HOST, BACKEND_PORT, Duration::from_millis(200))
-                    .is_ok()
-                {
-                    eprintln!(
-                        "[tauri] backend already healthy at {BACKEND_HOST}:{BACKEND_PORT}; using existing process"
-                    );
-                    set_backend_status(
-                        &backend_state,
-                        BackendStatus::external_ready(format!(
-                            "Backend is already running at {BACKEND_HOST}:{BACKEND_PORT}."
-                        )),
-                    );
-                    return Ok(());
+                let backend_port = reserve_loopback_port().map_err(|err| {
+                    std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, err)
+                })?;
+                let nonce = generate_nonce();
+                let asset_token = generate_nonce();
+                if let Ok(mut runtime) = backend_state.lock() {
+                    runtime.api_base = format!("http://{BACKEND_HOST}:{backend_port}");
+                    runtime.nonce = Some(nonce.clone());
+                    runtime.asset_token = Some(asset_token.clone());
                 }
+                let port_arg = backend_port.to_string();
 
                 match app_handle
                     .shell()
                     .sidecar("bookreader-backend")
-                    .and_then(|c| c.args(["--host", BACKEND_HOST, "--port", "8000"]).spawn())
-                {
+                    .and_then(|c| {
+                        c.env("BOOKREADER_SIDECAR_NONCE", &nonce)
+                            .env("BOOKREADER_SIDECAR_ASSET_TOKEN", &asset_token)
+                            .args(["--host", BACKEND_HOST, "--port", &port_arg])
+                            .spawn()
+                    }) {
                     Ok((mut rx, child)) => {
                         let pid = child.pid();
                         std::thread::spawn(move || {
@@ -273,10 +321,12 @@ pub fn run() {
                         }
 
                         let readiness_state = backend_state.clone();
+                        let readiness_nonce = nonce.clone();
                         std::thread::spawn(move || {
                             match wait_for_backend_health(
                                 BACKEND_HOST,
-                                BACKEND_PORT,
+                                backend_port,
+                                Some(&readiness_nonce),
                                 BACKEND_HEALTH_ATTEMPTS,
                                 BACKEND_HEALTH_INTERVAL,
                             ) {
@@ -355,7 +405,7 @@ mod tests {
                 .expect("write health response");
         });
 
-        let result = wait_for_backend_health("127.0.0.1", port, 2, Duration::from_millis(1));
+        let result = wait_for_backend_health("127.0.0.1", port, None, 2, Duration::from_millis(1));
 
         assert!(result.is_ok());
     }
@@ -366,7 +416,7 @@ mod tests {
         let port = listener.local_addr().expect("listener address").port();
         drop(listener);
 
-        let result = wait_for_backend_health("127.0.0.1", port, 1, Duration::from_millis(1));
+        let result = wait_for_backend_health("127.0.0.1", port, None, 1, Duration::from_millis(1));
 
         assert!(result.is_err());
     }
@@ -376,6 +426,9 @@ mod tests {
         let mut runtime = BackendRuntime {
             child: None,
             status: BackendStatus::starting(Some(42)),
+            api_base: "http://127.0.0.1:12345".to_string(),
+            nonce: Some("test".to_string()),
+            asset_token: Some("asset-test".to_string()),
         };
 
         cleanup_backend_runtime(&mut runtime);

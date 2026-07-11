@@ -13,6 +13,7 @@ from paths import ANNOTATIONS_DATA_PATH
 
 ANNOTATIONS_VERSION = 1
 ANNOTATION_KINDS = {"highlight", "note"}
+LEGACY_OFFSET_UNIT = "legacy-unknown-v0"
 STORE_WRITE_ENCODING = "utf-8"
 _STORE_LOCK = threading.Lock()
 
@@ -173,6 +174,7 @@ def _normalize_annotation(raw: dict[str, Any]) -> dict[str, Any]:
         "segment_local_end": segment_local_end,
         "start_offset": start_offset,
         "end_offset": end_offset,
+        "offset_unit": _normalize_optional_text(raw.get("offset_unit")) or LEGACY_OFFSET_UNIT,
         "selected_text": selected_text,
         "note_text": note_text,
         "color": _normalize_color(raw.get("color")),

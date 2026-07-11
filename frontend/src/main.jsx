@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import App from './App.jsx'
+import { configureDesktopBackend, detectTauriRuntime, installDesktopFetchAuthentication } from './lib/apiBase.js'
 import './styles.css'
 
 // ─── Error Boundary ───
@@ -47,11 +47,24 @@ function GlobalErrorOverlay() {
 
 // ─── Boot ───
 
-ReactDOM.createRoot(document.getElementById('root')).render(
+async function boot() {
+    if (detectTauriRuntime()) {
+        const connection = await window.__TAURI_INTERNALS__.invoke('backend_connection')
+        configureDesktopBackend(connection)
+        installDesktopFetchAuthentication()
+    }
+    const { default: App } = await import('./App.jsx')
+    ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
         <ErrorBoundary>
             <App />
             <GlobalErrorOverlay />
         </ErrorBoundary>
     </React.StrictMode>,
-)
+    )
+}
+
+boot().catch((error) => {
+    console.error('[boot]', error)
+    document.getElementById('root').textContent = `BookReader failed to initialize: ${error?.message || error}`
+})

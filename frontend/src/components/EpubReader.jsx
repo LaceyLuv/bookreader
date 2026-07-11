@@ -9,7 +9,7 @@ import ResumeToast from './ResumeToast'
 import ReaderSearchPanel from './ReaderSearchPanel'
 import ReaderAnnotationsPanel from './ReaderAnnotationsPanel'
 import ReaderSelectionMenu from './ReaderSelectionMenu'
-import { API_BOOKS_BASE } from '../lib/apiBase'
+import { API_BOOKS_BASE, authenticateAssetUrl } from '../lib/apiBase'
 import { clearSearchHighlights, highlightSearchMatchInElement, scrollSearchMarkIntoView } from '../lib/searchHighlighter'
 import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
@@ -21,6 +21,7 @@ const API = API_BOOKS_BASE
 const API_ROOT = API.replace(/\/books$/, '')
 const PAGE_COUNT_START_DELAY_MS = 2200
 const PAGE_COUNT_IDLE_TIMEOUT_MS = 1500
+const EPUB_CONTENT_CLASS_NAME = 'select-text epub-content [&_p]:mb-4 [&_h1]:text-2xl [&_h1]:mb-5 [&_h1]:break-after-avoid [&_h2]:text-xl [&_h2]:mb-4 [&_h2]:break-after-avoid [&_h3]:text-lg [&_h3]:mb-3 [&_h3]:break-after-avoid [&_img]:max-w-full [&_img]:max-h-full [&_img]:rounded-lg [&_img]:mx-auto [&_img]:my-4 [&_img]:break-inside-avoid [&_img]:cursor-zoom-in [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:opacity-80 [&_blockquote]:break-inside-avoid'
 
 function normalizeEpubHrefPath(href) {
     if (!href || href.startsWith('#')) return ''
@@ -151,7 +152,20 @@ function EpubReader() {
     const scheduledMeasureCleanupRef = useRef(null)
 
     const [totalChapters, setTotalChapters] = useState(1)
-    const progress = useReadingProgress(id, { totalPages: totalChapters, type: 'epub', legacyId })
+    const progress = useReadingProgress(id, {
+        totalPages: totalChapters,
+        type: 'epub',
+        legacyId,
+        paginationReady: !loading && totalChapters > 0,
+        locator: () => ({
+            kind: 'epub',
+            chapterHref: toc.find((item) => item.index === chapterIndex)?.href || null,
+            chapterIndex,
+            chapterPage,
+        }),
+        locatorToPosition: (saved) => toc.find((item) => item.href && item.href === saved?.chapterHref)?.index
+            ?? saved?.chapterIndex,
+    })
     const { currentPosition: chapterIndex, setCurrentPosition: setChapterIndex,
         bookmarks, addBookmark, removeBookmark, goToBookmark,
         resumePrompt, resumeReading, dismissResume } = progress
@@ -164,7 +178,10 @@ function EpubReader() {
         fontFamily: contentStyle.fontFamily,
         fontWeight: contentStyle.fontWeight,
     }), [contentStyle.fontFamily, contentStyle.fontWeight, useEmbeddedFonts])
-    const sanitizedChapterHtml = useMemo(() => sanitizeEpubHtml(chapter?.html || ''), [chapter?.html])
+    const sanitizedChapterHtml = useMemo(
+        () => sanitizeEpubHtml(chapter?.html || '', { assetBooksBase: API, assetUrlTransform: authenticateAssetUrl }),
+        [chapter?.html],
+    )
 
     const handleSearchQueryChange = useCallback((value) => {
         const trimmedValue = value.trim()
@@ -451,7 +468,7 @@ function EpubReader() {
         scroller.style.scrollbarGutter = 'stable'
 
         const contentEl = document.createElement('div')
-        contentEl.className = 'select-text epub-content'
+        contentEl.className = EPUB_CONTENT_CLASS_NAME
         contentEl.style.height = '100%'
         contentEl.style.boxSizing = 'border-box'
         contentEl.style.display = 'block'
@@ -478,7 +495,7 @@ function EpubReader() {
             styleEl.textContent = epubTypographyCss
             scroller.appendChild(styleEl)
         }
-        contentEl.innerHTML = sanitizeEpubHtml(html)
+        contentEl.innerHTML = sanitizeEpubHtml(html, { assetBooksBase: API, assetUrlTransform: authenticateAssetUrl })
 
         scroller.appendChild(contentEl)
         host.appendChild(scroller)
@@ -792,32 +809,34 @@ function EpubReader() {
         }
     }, [chapter?.html, loading, fontMode, scheduleMeasure])
 
-    useEffect(() => {
+    const handleEpubContentClick = useCallback((event) => {
         const contentEl = contentRef.current
-        if (!contentEl) return
+        const target = event.target
+        if (!contentEl || typeof target?.closest !== 'function') return
 
-        const onClick = (event) => {
-            const target = event.target
-            if (!(target instanceof Element)) return
-            const imgEl = target.closest('img')
-            if (imgEl && contentEl.contains(imgEl)) {
-                event.preventDefault()
-                event.stopPropagation()
-                openEpubImageInWindow(imgEl)
-                return
-            }
-
-            const linkEl = target.closest('a[href]')
-            if (!linkEl || !contentEl.contains(linkEl)) return
-            if (goToInternalHref(linkEl.getAttribute('href'))) {
-                event.preventDefault()
-                event.stopPropagation()
-            }
+        const imgEl = target.closest('img')
+        if (imgEl && contentEl.contains(imgEl)) {
+            event.preventDefault()
+            event.stopPropagation()
+            openEpubImageInWindow(imgEl)
+            return
         }
 
-        contentEl.addEventListener('click', onClick)
-        return () => contentEl.removeEventListener('click', onClick)
-    }, [chapter?.index, goToInternalHref, openEpubImageInWindow])
+        const linkEl = target.closest('a[href]')
+        if (!linkEl || !contentEl.contains(linkEl)) return
+        // EPUB markup is untrusted. Never let a book navigate the WebView;
+        // the explicit resolver below is the sole allowed link action.
+        event.preventDefault()
+        event.stopPropagation()
+        goToInternalHref(linkEl.getAttribute('href'))
+    }, [goToInternalHref, openEpubImageInWindow])
+
+    const bindContentRef = useCallback((node) => {
+        const previous = contentRef.current
+        if (previous) previous.removeEventListener('click', handleEpubContentClick)
+        contentRef.current = node
+        if (node) node.addEventListener('click', handleEpubContentClick)
+    }, [handleEpubContentClick])
 
     useEffect(() => {
         if (loading) return
@@ -1059,7 +1078,7 @@ function EpubReader() {
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}><div className="text-sm opacity-60">{tt('loading')}</div></div>
                         ) : chapter ? (
                             <div key={chapter?.index ?? 0} ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
-                                <div ref={contentRef} className="select-text epub-content [&_p]:mb-4 [&_p]:break-inside-avoid [&_h1]:text-2xl [&_h1]:mb-5 [&_h1]:break-after-avoid [&_h2]:text-xl [&_h2]:mb-4 [&_h2]:break-after-avoid [&_h3]:text-lg [&_h3]:mb-3 [&_h3]:break-after-avoid [&_img]:max-w-full [&_img]:max-h-[50vh] [&_img]:rounded-lg [&_img]:mx-auto [&_img]:my-4 [&_img]:break-inside-avoid [&_img]:cursor-zoom-in [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:opacity-80 [&_blockquote]:break-inside-avoid"
+                                <div ref={bindContentRef} className={EPUB_CONTENT_CLASS_NAME}
                                     style={{ height: '100%', boxSizing: 'border-box', display: 'block', backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${columnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
                                     dangerouslySetInnerHTML={{ __html: sanitizedChapterHtml }}
                                 />

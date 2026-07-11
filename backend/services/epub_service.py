@@ -1,6 +1,8 @@
 import mimetypes
+import os
 import posixpath
 import re
+import zipfile
 from functools import lru_cache
 from urllib.parse import quote, unquote, urlsplit
 
@@ -20,12 +22,79 @@ FONT_MEDIA_TYPES = {
     '.woff': 'font/woff',
     '.woff2': 'font/woff2',
 }
+MAX_EPUB_ENTRIES = int(os.getenv("BOOKREADER_MAX_EPUB_ENTRIES", "10000"))
+MAX_EPUB_NAME_LENGTH = int(os.getenv("BOOKREADER_MAX_EPUB_NAME_LENGTH", "512"))
+MAX_EPUB_MEMBER_BYTES = int(os.getenv("BOOKREADER_MAX_EPUB_MEMBER_BYTES", str(64 * 1024 * 1024)))
+MAX_EPUB_TOTAL_UNCOMPRESSED_BYTES = int(os.getenv("BOOKREADER_MAX_EPUB_TOTAL_UNCOMPRESSED_BYTES", str(512 * 1024 * 1024)))
+MAX_EPUB_COMPRESSION_RATIO = int(os.getenv("BOOKREADER_MAX_EPUB_COMPRESSION_RATIO", "100"))
+MAX_EPUB_CHAPTERS = int(os.getenv("BOOKREADER_MAX_EPUB_CHAPTERS", "5000"))
+MAX_EPUB_CHAPTER_BYTES = int(os.getenv("BOOKREADER_MAX_EPUB_CHAPTER_BYTES", str(16 * 1024 * 1024)))
+MAX_EPUB_CSS_BYTES = int(os.getenv("BOOKREADER_MAX_EPUB_CSS_BYTES", str(8 * 1024 * 1024)))
+MAX_EPUB_TOTAL_CSS_BYTES = int(os.getenv("BOOKREADER_MAX_EPUB_TOTAL_CSS_BYTES", str(32 * 1024 * 1024)))
+
+
+class EpubSafetyError(ValueError):
+    """Raised when an EPUB is invalid or exceeds safe resource limits."""
+
+
+def _preflight_epub(file_path: str) -> None:
+    """Validate ZIP metadata without decompressing members for ebooklib."""
+    try:
+        with zipfile.ZipFile(file_path, "r") as archive:
+            infos = archive.infolist()
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise EpubSafetyError("Invalid or unsupported EPUB file") from exc
+
+    if len(infos) > MAX_EPUB_ENTRIES:
+        raise EpubSafetyError("EPUB file has too many entries")
+
+    total_size = 0
+    for info in infos:
+        if len(info.filename) > MAX_EPUB_NAME_LENGTH:
+            raise EpubSafetyError("EPUB entry name is too long")
+        if info.is_dir():
+            continue
+        if info.file_size > MAX_EPUB_MEMBER_BYTES:
+            raise EpubSafetyError("EPUB entry is too large")
+        total_size += info.file_size
+        if total_size > MAX_EPUB_TOTAL_UNCOMPRESSED_BYTES:
+            raise EpubSafetyError("EPUB file is too large when decompressed")
+        compressed_size = max(info.compress_size, 1)
+        if info.file_size and info.file_size / compressed_size > MAX_EPUB_COMPRESSION_RATIO:
+            raise EpubSafetyError("EPUB compression ratio is too high")
 
 
 @lru_cache(maxsize=8)
 def _read_epub_cached(file_path: str):
     """Cache parsed EPUB books to avoid re-parsing on repeated access."""
-    return epub.read_epub(file_path)
+    _preflight_epub(file_path)
+    try:
+        book = epub.read_epub(file_path)
+    except EpubSafetyError:
+        raise
+    except Exception as exc:
+        raise EpubSafetyError("Invalid or unsupported EPUB file") from exc
+    _validate_parsed_epub(book)
+    return book
+
+
+def _validate_parsed_epub(book) -> None:
+    spine_items = _get_spine_items(book)
+    if len(spine_items) > MAX_EPUB_CHAPTERS:
+        raise EpubSafetyError("EPUB file has too many chapters")
+
+    for item in spine_items:
+        if len(item.get_content()) > MAX_EPUB_CHAPTER_BYTES:
+            raise EpubSafetyError("EPUB chapter is too large")
+
+    total_css_size = 0
+    for item in book.get_items_of_type(ebooklib.ITEM_STYLE):
+        size = len(item.get_content())
+        if size > MAX_EPUB_CSS_BYTES:
+            raise EpubSafetyError("EPUB stylesheet is too large")
+        total_css_size += size
+        if total_css_size > MAX_EPUB_TOTAL_CSS_BYTES:
+            raise EpubSafetyError("EPUB stylesheets are too large")
 
 
 def clear_epub_caches() -> None:
@@ -109,6 +178,10 @@ def get_epub_asset(file_path: str, asset_path: str) -> tuple[bytes, str]:
     if not item:
         raise FileNotFoundError("Asset not found")
 
+    content = item.get_content()
+    if len(content) > MAX_EPUB_MEMBER_BYTES:
+        raise EpubSafetyError("EPUB asset is too large")
+
     suffix = posixpath.splitext(normalized)[1].lower()
     media_type = (
         FONT_MEDIA_TYPES.get(suffix)
@@ -116,7 +189,7 @@ def get_epub_asset(file_path: str, asset_path: str) -> tuple[bytes, str]:
         or mimetypes.guess_type(normalized)[0]
         or "application/octet-stream"
     )
-    return item.get_content(), media_type
+    return content, media_type
 
 
 def _get_spine_items(book) -> list:

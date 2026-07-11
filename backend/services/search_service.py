@@ -83,6 +83,15 @@ def _get_source_offset_for_display_index(fragment: dict, display_index: int) -> 
         value = mapping[display_index]
         return value if isinstance(value, int) else None
 
+    runs = fragment.get('display_to_source_runs')
+    if isinstance(runs, list):
+        for run in runs:
+            if not isinstance(run, list) or len(run) != 3:
+                continue
+            display_start, source_start, length = run
+            if all(isinstance(value, int) for value in run) and display_start <= display_index < display_start + length:
+                return source_start + display_index - display_start
+
     source_start = _get_fragment_source_start(fragment)
     source_end = _get_fragment_source_end(fragment)
     if source_start is None or source_end is None or source_end <= source_start:

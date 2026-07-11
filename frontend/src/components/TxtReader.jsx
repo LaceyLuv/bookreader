@@ -21,6 +21,7 @@ import {
     findNearestDisplayFragmentForSourceOffset,
     recoverSourceRangeFromDisplaySelection,
 } from '../lib/txtDisplayMapper'
+import { TXT_OFFSET_UNIT, reanchorLegacyTxtAnnotation, utf16IndexToCodePoint } from '../lib/txtUnicodeOffsets'
 import { buildMeasuredPages } from '../lib/txtMeasuredPagination'
 import { createTxtMeasuredPaginationOptions, getTxtViewportMetrics, measureAverageCharacterWidth } from '../lib/txtPageMetrics'
 import { createTxtTransformOptions, toTxtTransformQuery } from '../lib/txtTransformOptions'
@@ -41,10 +42,10 @@ const DEFAULT_TXT_RENDER_PAGE_SIZE = 24
 const TXT_PAGE_PADDING_PX = 20
 const TXT_PAGE_VERTICAL_SAFETY_PX = 2
 const TXT_PARAGRAPH_GAP = '0.65em'
-const TXT_PARAGRAPH_GAP_LINES = 1
-const TXT_BOTTOM_WHITESPACE_RECLAIM_LINES = 0
+const TXT_PARAGRAPH_GAP_LINES = 0.35
+const TXT_BOTTOM_WHITESPACE_RECLAIM_LINES = -1
 const TXT_MIN_LINES_PER_PAGE = 2
-const TXT_MIN_TRAILING_SLICE_LINES = 2
+const TXT_MIN_TRAILING_SLICE_LINES = 0
 
 function getMeasuredSliceLength(slice) {
     if (typeof slice?.displayText === 'string') return slice.displayText.length
@@ -308,7 +309,23 @@ function TxtReader() {
             ? globalRenderPageStartSegments.length
             : localRenderPageStartSegments.length,
     )
-    const progress = useReadingProgress(id, { totalPages: totalViewportPages, type: 'txt', legacyId })
+    const progress = useReadingProgress(id, {
+        totalPages: totalViewportPages,
+        type: 'txt',
+        legacyId,
+        paginationReady: !loading && !error && renderPages.length > 0,
+        locator: () => ({
+            kind: 'txt',
+            segmentId: getSegmentIdForLocator(currentViewportStartSegment),
+            sourceOffset: getSegmentStartOffset(visibleSegments, getSegmentIdForLocator(currentViewportStartSegment)),
+            page: currentViewportPage,
+        }),
+        locatorToPosition: (saved) => findRenderPageForLocator(hasGlobalRenderPageMap ? globalRenderPages : renderPages, {
+            segmentId: saved?.segmentId,
+            offset: saved?.sourceOffset,
+            page: saved?.page,
+        }),
+    })
     const {
         currentPosition: currentViewportPage,
         setCurrentPosition: setCurrentViewportPage,
@@ -468,12 +485,13 @@ function TxtReader() {
 
         return {
             fragmentIndex,
-            displayOffset: measurementRange.toString().length,
+            displayOffset: utf16IndexToCodePoint(fragmentElement.textContent || '', measurementRange.toString().length),
             segmentId: Number(fragmentElement.dataset.segmentId),
         }
     }, [])
 
-    const mappedCurrentPageAnnotations = useMemo(() => currentPageAnnotations.flatMap((annotation) => {
+    const mappedCurrentPageAnnotations = useMemo(() => currentPageAnnotations.flatMap((storedAnnotation) => {
+        const annotation = reanchorLegacyTxtAnnotation(storedAnnotation, visibleSegments)
         if (!Number.isFinite(annotation?.segment_id)) return annotation
 
         const segmentStartOffset = getSegmentStartOffset(visibleSegments, annotation.segment_id)
@@ -984,13 +1002,6 @@ function TxtReader() {
         setCurrentViewportPage,
     ])
 
-    useEffect(() => {
-        if (loading || error || renderPages.length === 0 || hasGlobalRenderPageMap) return
-        void loadGlobalRenderPages().catch((err) => {
-            console.error('Failed to preload TXT render pages', err)
-        })
-    }, [error, hasGlobalRenderPageMap, loadGlobalRenderPages, loading, renderPages.length])
-
     const goNext = useCallback(() => {
         const basePage = Number.isFinite(requestedViewportPageRef.current)
             ? requestedViewportPageRef.current
@@ -1199,6 +1210,7 @@ function TxtReader() {
                     segment_local_end: segmentLocalEnd,
                     start_offset: sourceStart,
                     end_offset: sourceEnd,
+                    offset_unit: TXT_OFFSET_UNIT,
                     selected_text: selectionSnapshot.selectedText,
                     note_text: noteText,
                     color: getDefaultAnnotationColor(kind),

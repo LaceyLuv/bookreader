@@ -25,6 +25,7 @@ const FONTS = {
 }
 
 const STORAGE_KEY = 'bookreader_settings'
+const SETTINGS_SCHEMA_VERSION = 2
 
 function persistSettings(value) {
     try {
@@ -35,9 +36,10 @@ function persistSettings(value) {
 }
 
 const DEFAULTS = {
+    settingsVersion: SETTINGS_SCHEMA_VERSION,
     theme: 'dark',
     font: 'system',
-    fontMode: 'user',
+    fontMode: 'embedded',
     fontFamily: '',
     fontWeight: 400,
     fontSize: 18,
@@ -59,7 +61,12 @@ function loadSaved() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY)
         if (raw) {
-            const merged = { ...DEFAULTS, ...JSON.parse(raw) }
+            const parsed = JSON.parse(raw)
+            const merged = { ...DEFAULTS, ...parsed }
+            if (parsed.settingsVersion !== SETTINGS_SCHEMA_VERSION) {
+                merged.settingsVersion = SETTINGS_SCHEMA_VERSION
+                merged.fontMode = DEFAULTS.fontMode
+            }
             merged.fontMode = merged.fontMode === 'embedded' ? 'embedded' : 'user'
             merged.fontFamily = typeof merged.fontFamily === 'string' ? merged.fontFamily : ''
             const parsedWeight = Number(merged.fontWeight)

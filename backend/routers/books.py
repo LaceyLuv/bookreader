@@ -13,11 +13,12 @@ from fastapi.responses import Response
 from models import BookInfo, BookMeta, BookMetaUpdate, BookSearchResponse, EpubChapter, EpubToc, TxtContent, TxtManifest, TxtSegmentWindow, ZipImageList
 from paths import BOOKS_DIR
 from services.annotation_store import delete_book_annotations, get_annotation_counts_by_book
-from services.epub_service import clear_epub_caches, get_epub_asset, get_epub_chapter, get_epub_toc
+from services.epub_service import EpubSafetyError, clear_epub_caches, get_epub_asset, get_epub_chapter, get_epub_toc
 from services.library_store import add_book_record, delete_book_record, get_book_path, get_book_record, list_book_records, prepare_upload, restore_book_record, touch_book, update_book_record
 from services.search_service import clear_search_caches, prewarm_search_cache, search_epub_file, search_txt_file
 from services.txt_service import clear_txt_caches, read_txt_file, read_txt_manifest, read_txt_segment_window
 from services.zip_service import ZipSafetyError, get_zip_image, list_zip_images
+from services.delete_recovery import begin_delete, finish_delete, mark_delete_phase
 
 router = APIRouter(prefix='/api/books', tags=['books'])
 
@@ -30,6 +31,10 @@ MAX_BOOK_UPLOAD_REQUEST_BYTES = int(os.getenv('BOOKREADER_MAX_BOOK_UPLOAD_REQUES
 EPUB_DEBUG_LOG_PATH = Path(tempfile.gettempdir()) / 'bookreader_epub_debug.log'
 HTML_IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
 HTML_FONT_URL_RE = re.compile(r'url\((?:["\']?)([^)"\']+)(?:["\']?)\)', re.IGNORECASE)
+
+
+def _delete_journal_path() -> Path:
+    return BOOKS_DIR.parent / 'delete-journal.json'
 
 
 def _append_epub_debug(event: str, **fields):
@@ -248,17 +253,36 @@ async def delete_book(book_id: str):
     file_type = record['file_type']
     trash_path = None
     removed_record = None
+    journal_started = False
+    trash_path = _trash_path_for(path)
+    journal_path = _delete_journal_path()
+    try:
+        begin_delete(record, trash_path.name, journal_path=journal_path)
+        journal_started = True
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail='Failed to journal book deletion') from exc
     if path.exists():
-        trash_path = _trash_path_for(path)
         try:
             path.replace(trash_path)
             _fsync_directory(path.parent)
             _fsync_directory(trash_path.parent)
-        except OSError as exc:
+            mark_delete_phase(record['id'], 'file_staged', journal_path=journal_path)
+        except Exception as exc:
+            restored = True
+            if trash_path.exists() and not path.exists():
+                try:
+                    trash_path.replace(path)
+                    _fsync_directory(path.parent)
+                except OSError:
+                    restored = False
+            if journal_started and restored:
+                finish_delete(record['id'], journal_path=journal_path)
             raise HTTPException(status_code=500, detail='Failed to stage book file for deletion') from exc
     try:
         removed_record = delete_book_record(record['id'])
+        mark_delete_phase(record['id'], 'metadata_deleted', journal_path=journal_path)
         delete_book_annotations(record['id'])
+        mark_delete_phase(record['id'], 'annotations_deleted', journal_path=journal_path)
     except Exception as exc:
         rollback_errors = []
         if trash_path is not None and trash_path.exists() and not path.exists():
@@ -272,6 +296,11 @@ async def delete_book(book_id: str):
                 restore_book_record(removed_record)
             except Exception as rollback_exc:
                 rollback_errors.append(f'library rollback failed: {rollback_exc}')
+        if not rollback_errors:
+            try:
+                finish_delete(record['id'], journal_path=journal_path)
+            except Exception as rollback_exc:
+                rollback_errors.append(f'journal cleanup failed: {rollback_exc}')
         detail = 'Failed to delete book'
         if rollback_errors:
             detail = f"{detail}; {'; '.join(rollback_errors)}"
@@ -282,6 +311,7 @@ async def delete_book(book_id: str):
             _fsync_directory(trash_path.parent)
         except OSError as exc:
             raise HTTPException(status_code=500, detail='Book metadata deleted, but trash cleanup failed') from exc
+    finish_delete(record['id'], journal_path=journal_path)
     _clear_related_caches(file_type)
     return {'detail': 'Book deleted'}
 
@@ -356,7 +386,10 @@ async def get_toc(book_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail='Not an EPUB file')
     _touch_book_open(record)
     _schedule_search_prewarm(background_tasks, path, record['file_type'])
-    result = get_epub_toc(str(path))
+    try:
+        result = get_epub_toc(str(path))
+    except EpubSafetyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return EpubToc(**result)
 
 
@@ -368,7 +401,7 @@ async def get_chapter(book_id: str, chapter_index: int, request: Request, backgr
 
     _touch_book_open(record)
     _schedule_search_prewarm(background_tasks, path, record['file_type'])
-    asset_base_url = f"{str(request.base_url).rstrip('/')}/api/books/{record['id']}/asset"
+    asset_base_url = f"/api/books/{record['id']}/asset"
     if EPUB_DEBUG_ENABLED:
         _append_epub_debug(
             'chapter_request',
@@ -379,7 +412,10 @@ async def get_chapter(book_id: str, chapter_index: int, request: Request, backgr
             referer=request.headers.get('referer'),
         )
 
-    result = get_epub_chapter(str(path), chapter_index, record['id'], asset_base_url=asset_base_url)
+    try:
+        result = get_epub_chapter(str(path), chapter_index, record['id'], asset_base_url=asset_base_url)
+    except EpubSafetyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if EPUB_DEBUG_ENABLED:
         _append_epub_debug(
             'chapter_response',
@@ -411,6 +447,8 @@ async def get_epub_asset_file(book_id: str, asset_path: str, request: Request):
                 referer=request.headers.get('referer'),
             )
         raise HTTPException(status_code=404, detail='Asset not found') from None
+    except EpubSafetyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if EPUB_DEBUG_ENABLED:
         _append_epub_debug(
@@ -425,7 +463,11 @@ async def get_epub_asset_file(book_id: str, asset_path: str, request: Request):
     return Response(
         content=data,
         media_type=media_type,
-        headers={'Cache-Control': 'public, max-age=3600'},
+        headers={
+            'Cache-Control': 'private, max-age=3600',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "default-src 'none'; sandbox",
+        },
     )
 
 
@@ -454,7 +496,10 @@ async def search_book(
             },
         )
     elif record['file_type'] == 'epub':
-        result = search_epub_file(str(path), query)
+        try:
+            result = search_epub_file(str(path), query)
+        except EpubSafetyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     else:
         raise HTTPException(status_code=400, detail='Search is only supported for TXT and EPUB')
     return BookSearchResponse(**result)

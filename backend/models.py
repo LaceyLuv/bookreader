@@ -116,6 +116,7 @@ class Annotation(BaseModel):
     segment_local_end: int | None = None
     start_offset: int | None = None
     end_offset: int | None = None
+    offset_unit: str | None = None
     selected_text: str
     note_text: str | None = None
     color: str | None = None
@@ -135,6 +136,7 @@ class AnnotationCreate(BaseModel):
     segment_local_end: int | None = None
     start_offset: int | None = None
     end_offset: int | None = None
+    offset_unit: str | None = None
     selected_text: str
     note_text: str | None = None
     color: str | None = None
@@ -144,6 +146,17 @@ class AnnotationCreate(BaseModel):
 class AnnotationUpdate(BaseModel):
     note_text: str | None = None
     color: str | None = None
+
+
+class ReadingProgressUpdate(BaseModel):
+    version: int = 1
+    position: int = Field(ge=0)
+    totalPages: int = Field(ge=1)
+    type: Literal['txt', 'epub', 'zip']
+    percent: int = Field(default=0, ge=0, le=100)
+    bookmarks: List[dict] = Field(default_factory=list)
+    locator: dict | None = None
+    updatedAt: str | None = None
 
 
 class FontMeta(BaseModel):

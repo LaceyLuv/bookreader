@@ -167,12 +167,24 @@ def _build_fragment(
         return None
 
     absolute_display_to_source = [segment_start_offset + offset for offset in display_to_source]
+    runs: list[list[int]] = []
+    run_display_start = 0
+    run_source_start = absolute_display_to_source[0]
+    for display_index in range(1, len(absolute_display_to_source)):
+        if absolute_display_to_source[display_index] == absolute_display_to_source[display_index - 1] + 1:
+            continue
+        runs.append([run_display_start, run_source_start, display_index - run_display_start])
+        run_display_start = display_index
+        run_source_start = absolute_display_to_source[display_index]
+    runs.append([run_display_start, run_source_start, len(absolute_display_to_source) - run_display_start])
     return {
         "segment_id": segment_id,
         "display_text": display_text,
         "source_start_offset": absolute_display_to_source[0],
         "source_end_offset": absolute_display_to_source[-1] + 1,
-        "display_to_source": absolute_display_to_source,
+        # Piecewise identity runs avoid serializing one Python/JSON integer per
+        # displayed character while preserving exact mappings across trims.
+        "display_to_source_runs": runs,
     }
 
 

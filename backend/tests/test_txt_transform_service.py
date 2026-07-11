@@ -1,6 +1,14 @@
 from services.txt_transform_service import transform_txt_segments
 
 
+def _expand_mapping(fragment):
+    mapping = []
+    for display_start, source_start, length in fragment["display_to_source_runs"]:
+        assert display_start == len(mapping)
+        mapping.extend(range(source_start, source_start + length))
+    return mapping
+
+
 def test_trim_spaces_and_remove_extra_blank_lines_preserves_source_offsets():
     segments = [
         {
@@ -23,8 +31,9 @@ def test_trim_spaces_and_remove_extra_blank_lines_preserves_source_offsets():
     ]
     assert result["fragments"][0]["source_start_offset"] == 0
     assert result["fragments"][0]["source_end_offset"] == 31
-    assert result["fragments"][0]["display_to_source"][0] == 0
-    assert result["fragments"][0]["display_to_source"][-1] == 30
+    mapping = _expand_mapping(result["fragments"][0])
+    assert mapping[0] == 0
+    assert mapping[-1] == 30
 
 
 def test_split_paragraphs_breaks_dense_single_line_block_without_losing_locator_range():
@@ -53,10 +62,8 @@ def test_split_paragraphs_breaks_dense_single_line_block_without_losing_locator_
     assert result["fragments"][0]["source_end_offset"] == 139
     assert result["fragments"][1]["source_start_offset"] == 140
     assert result["fragments"][1]["source_end_offset"] == 182
-    assert result["fragments"][0]["display_to_source"][0] == 100
-    assert result["fragments"][0]["display_to_source"][-1] == 138
-    assert result["fragments"][1]["display_to_source"][0] == 140
-    assert result["fragments"][1]["display_to_source"][-1] == 181
+    assert _expand_mapping(result["fragments"][0]) == list(range(100, 139))
+    assert _expand_mapping(result["fragments"][1]) == list(range(140, 182))
 
 
 def test_transform_keeps_empty_output_segments_out_of_render_payload():
@@ -101,4 +108,4 @@ def test_crlf_and_cr_newlines_preserve_source_offsets():
     assert fragment["display_text"] == "Alpha\nBeta"
     assert fragment["source_start_offset"] == 10
     assert fragment["source_end_offset"] == 21
-    assert fragment["display_to_source"] == [10, 11, 12, 13, 14, 16, 17, 18, 19, 20]
+    assert _expand_mapping(fragment) == [10, 11, 12, 13, 14, 16, 17, 18, 19, 20]

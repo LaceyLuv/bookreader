@@ -1,3 +1,5 @@
+import { codePointIndexToUtf16, codePointLength } from './txtUnicodeOffsets'
+
 export function clearSegmentMarks(root) {
     if (!root) return
     const marks = Array.from(root.querySelectorAll('mark[data-bookreader-search="true"]'))
@@ -60,13 +62,16 @@ export function resolveSegmentTarget(root, {
         return absoluteStart < end && effectiveEnd > start
     }) ?? ranges[0] ?? { element: segmentElements[0], start: null, end: null }
 
-    const textLength = resolvedEntry.element.textContent?.length ?? 0
-    const localStart = Number.isFinite(absoluteStart) && Number.isFinite(resolvedEntry.start)
+    const textLength = codePointLength(resolvedEntry.element.textContent || '')
+    const localStartCodePoints = Number.isFinite(absoluteStart) && Number.isFinite(resolvedEntry.start)
         ? Math.max(0, Math.min(textLength, absoluteStart - resolvedEntry.start))
         : (Number.isFinite(segmentLocalStart) ? Math.max(0, Math.min(textLength, segmentLocalStart)) : 0)
-    const localEnd = Number.isFinite(absoluteEnd) && Number.isFinite(resolvedEntry.start)
-        ? Math.max(localStart, Math.min(textLength, absoluteEnd - resolvedEntry.start))
-        : (Number.isFinite(segmentLocalEnd) ? Math.max(localStart, Math.min(textLength, segmentLocalEnd)) : localStart)
+    const localEndCodePoints = Number.isFinite(absoluteEnd) && Number.isFinite(resolvedEntry.start)
+        ? Math.max(localStartCodePoints, Math.min(textLength, absoluteEnd - resolvedEntry.start))
+        : (Number.isFinite(segmentLocalEnd) ? Math.max(localStartCodePoints, Math.min(textLength, segmentLocalEnd)) : localStartCodePoints)
+    const elementText = resolvedEntry.element.textContent || ''
+    const localStart = codePointIndexToUtf16(elementText, localStartCodePoints)
+    const localEnd = codePointIndexToUtf16(elementText, localEndCodePoints)
 
     return {
         element: resolvedEntry.element,

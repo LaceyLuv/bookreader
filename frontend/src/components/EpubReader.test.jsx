@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
 
@@ -94,6 +94,7 @@ function renderReader() {
 }
 
 beforeEach(() => {
+    vi.useRealTimers()
     mockUseReaderSettings.mockReturnValue(createSettings())
     mockUseReadingProgress.mockReturnValue(createProgress())
     mockUseKeyboardNav.mockReturnValue(undefined)
@@ -112,7 +113,7 @@ beforeEach(() => {
         if (requestUrl.endsWith('/api/books/epub-1/chapter/0')) {
             return jsonResponse({
                 title: 'Chapter One',
-                html: '<main><h1>Chapter One</h1><p>Hello <strong>reader</strong>.</p><a href="chapter2.xhtml#target">Next chapter</a><img src="/api/books/epub-1/asset/cover.jpg" onerror="window.bad=true"><script>window.bad=true</script></main>',
+                html: '<main><h1>Chapter One</h1><p>Hello <strong>reader</strong>.</p><a href="chapter2.xhtml#target">Next chapter</a><a href="https://evil.example/leave">External link</a><img src="/api/books/epub-1/asset/cover.jpg" onerror="window.bad=true"><script>window.bad=true</script></main>',
                 index: 0,
                 total: 2,
             })
@@ -157,8 +158,29 @@ test('loads toc and renders sanitized chapter html', async () => {
 test('clicking an internal chapter link loads the mapped chapter', async () => {
     renderReader()
 
-    fireEvent.click(await screen.findByText('Next chapter'))
+    await screen.findByText('Next chapter')
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    fireEvent.click(screen.getByText('Next chapter'))
 
+    await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1')
+    })
+    expect(await screen.findByText('Second body.')).toBeTruthy()
+})
+
+test('EPUB links cannot trigger the WebView default navigation', async () => {
+    renderReader()
+
+    const externalLink = await screen.findByText('External link')
+    // The sanitizer strips external hrefs, so the text remains readable without
+    // retaining a browser navigation target.
+    expect(externalLink.closest('a').hasAttribute('href')).toBe(false)
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const internalLink = screen.getByText('Next chapter').closest('a')
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+    fireEvent(internalLink, click)
+    expect(click.defaultPrevented).toBe(true)
     await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1')
     })

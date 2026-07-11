@@ -1,5 +1,7 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react'
 
+import { API_BOOKS_BASE } from '../lib/apiBase'
+
 const STORAGE_KEY = 'bookreader_progress'
 
 function getAllProgress() {
@@ -26,7 +28,7 @@ function clampPosition(position, totalPages) {
     return Math.max(0, Math.min(safePosition, maxPosition))
 }
 
-function buildProgressEntry(currentPosition, totalPages, type, bookmarks) {
+function buildProgressEntry(currentPosition, totalPages, type, bookmarks, locator = null) {
     const position = clampPosition(currentPosition, totalPages)
     return {
         position,
@@ -34,6 +36,7 @@ function buildProgressEntry(currentPosition, totalPages, type, bookmarks) {
         type,
         percent: calculatePercent(position, totalPages),
         bookmarks,
+        locator,
         updatedAt: new Date().toISOString(),
     }
 }
@@ -50,6 +53,7 @@ function normalizeProgressEntry(entry, fallbackType = 'txt', currentTotalPages =
         type,
         percent: calculatePercent(position, effectiveTotalPages),
         bookmarks,
+        locator: entry?.locator && typeof entry.locator === 'object' ? entry.locator : null,
         updatedAt: entry?.updatedAt || new Date().toISOString(),
     }
 }
@@ -84,30 +88,88 @@ export function removeBookProgress(bookId, legacyId = null) {
     } catch {
         // Ignore storage failures; deletion already succeeded server-side.
     }
+    if (bookId && typeof fetch === 'function') {
+        void fetch(`${API_BOOKS_BASE}/${encodeURIComponent(bookId)}/progress`, { method: 'DELETE' }).catch(() => {})
+    }
+}
+
+function isNewer(candidate, current) {
+    const candidateTime = Date.parse(candidate?.updatedAt || '')
+    const currentTime = Date.parse(current?.updatedAt || '')
+    if (!Number.isFinite(candidateTime)) return false
+    if (!Number.isFinite(currentTime)) return true
+    return candidateTime > currentTime
+}
+
+async function readRemoteProgress(bookId) {
+    const response = await fetch(`${API_BOOKS_BASE}/${encodeURIComponent(bookId)}/progress`)
+    if (response.status === 204) return null
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return response.json()
+}
+
+async function writeRemoteProgress(bookId, entry) {
+    const response = await fetch(`${API_BOOKS_BASE}/${encodeURIComponent(bookId)}/progress`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(entry),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
 }
 
 /**
  * Hook for managing reading progress for a specific book.
  */
-export function useReadingProgress(bookId, { totalPages = 1, type = 'txt', legacyId = null } = {}) {
+export function useReadingProgress(bookId, {
+    totalPages = 1,
+    type = 'txt',
+    legacyId = null,
+    paginationReady = true,
+    locator = null,
+    locatorToPosition = null,
+} = {}) {
     const [currentPosition, setCurrentPosition] = useState(0)
     const [bookmarks, setBookmarks] = useState([])
     const [resumePrompt, setResumePrompt] = useState(null)
+    const [hydratedBookId, setHydratedBookId] = useState(null)
+    const [remoteHydratedBookId, setRemoteHydratedBookId] = useState(null)
     const latestEntryRef = useRef(buildProgressEntry(0, totalPages, type, []))
+    const locatorToPositionRef = useRef(locatorToPosition)
+    const appliedLocatorKeyRef = useRef(null)
+    locatorToPositionRef.current = locatorToPosition
+    const canPersist = hydratedBookId === bookId && paginationReady
+    const canPersistRemote = remoteHydratedBookId === bookId
+    const canAdjustPagination = hydratedBookId === bookId && paginationReady
+    const resolveLocator = useCallback(() => {
+        const value = typeof locator === 'function' ? locator() : locator
+        return value && typeof value === 'object' ? { version: 1, ...value } : null
+    }, [locator])
 
     useEffect(() => {
         setCurrentPosition(0)
         setBookmarks([])
         setResumePrompt(null)
+        setHydratedBookId(null)
+        setRemoteHydratedBookId(null)
         latestEntryRef.current = buildProgressEntry(0, totalPages, type, [])
+        appliedLocatorKeyRef.current = null
 
-        if (!bookId) return
+        if (!bookId) {
+            setHydratedBookId(bookId)
+            return
+        }
         const all = getAllProgress()
         const { entry, sourceKey } = resolveStoredEntry(all, bookId, legacyId)
-        if (!entry) return
+        if (!entry) {
+            setHydratedBookId(bookId)
+            return
+        }
 
-        const normalized = normalizeProgressEntry(entry, type, totalPages)
+        // Restore against the saved page count first. The live page count may still
+        // be a loading placeholder and must not destroy a valid saved location.
+        const normalized = normalizeProgressEntry(entry, type)
         latestEntryRef.current = normalized
+        setCurrentPosition(normalized.position)
         setBookmarks(normalized.bookmarks)
         if (normalized.position > 0) {
             setResumePrompt({
@@ -119,11 +181,56 @@ export function useReadingProgress(bookId, { totalPages = 1, type = 'txt', legac
         if (sourceKey && sourceKey !== bookId) {
             persistProgressEntry(bookId, legacyId, normalized)
         }
+        setHydratedBookId(bookId)
     }, [bookId, legacyId])
 
     useEffect(() => {
+        let cancelled = false
+        if (!bookId) {
+            setRemoteHydratedBookId(bookId)
+            return () => { cancelled = true }
+        }
+        if (typeof fetch !== 'function') {
+            setRemoteHydratedBookId(bookId)
+            return () => { cancelled = true }
+        }
+        const localAtRequestStart = resolveStoredEntry(getAllProgress(), bookId, legacyId).entry
+        ;(async () => {
+            try {
+                const remote = await readRemoteProgress(bookId)
+                if (cancelled) return
+                if (remote && (!localAtRequestStart || isNewer(remote, localAtRequestStart))) {
+                    const normalized = normalizeProgressEntry(remote, type)
+                    persistProgressEntry(bookId, legacyId, normalized)
+                    latestEntryRef.current = normalized
+                    appliedLocatorKeyRef.current = null
+                    setCurrentPosition(normalized.position)
+                    setBookmarks(normalized.bookmarks)
+                    if (normalized.position > 0) {
+                        setResumePrompt({ position: normalized.position, percent: normalized.percent })
+                    }
+                } else if (localAtRequestStart) {
+                    void writeRemoteProgress(bookId, normalizeProgressEntry(localAtRequestStart, type)).catch(() => {})
+                }
+            } catch {
+                // Offline and browser-only use continue safely with local storage.
+            } finally {
+                if (!cancelled) setRemoteHydratedBookId(bookId)
+            }
+        })()
+        return () => { cancelled = true }
+    }, [bookId, legacyId, type])
+
+    useEffect(() => {
+        if (!canAdjustPagination) return
         const maxPosition = Math.max(0, totalPages - 1)
-        setCurrentPosition((position) => clampPosition(position, totalPages))
+        const savedLocator = latestEntryRef.current?.locator
+        const locatorKey = savedLocator ? `${bookId}:${JSON.stringify(savedLocator)}:${totalPages}` : null
+        const resolvedPosition = locatorKey && locatorKey !== appliedLocatorKeyRef.current && typeof locatorToPositionRef.current === 'function'
+            ? locatorToPositionRef.current(savedLocator)
+            : null
+        if (locatorKey) appliedLocatorKeyRef.current = locatorKey
+        setCurrentPosition((position) => clampPosition(Number.isFinite(resolvedPosition) ? resolvedPosition : position, totalPages))
         setResumePrompt((prompt) => {
             if (!prompt) return prompt
             const nextPosition = clampPosition(prompt.position, totalPages)
@@ -133,36 +240,39 @@ export function useReadingProgress(bookId, { totalPages = 1, type = 'txt', legac
                 percent: calculatePercent(nextPosition, totalPages),
             }
         })
-        setBookmarks((items) => items.filter((bookmark) => (
-            Number.isFinite(bookmark?.position)
-            && bookmark.position >= 0
-            && bookmark.position <= maxPosition
-        )))
-    }, [totalPages])
+        setBookmarks((items) => items.map((bookmark) => {
+            const anchored = typeof locatorToPositionRef.current === 'function' && bookmark?.locator
+                ? locatorToPositionRef.current(bookmark.locator)
+                : null
+            return Number.isFinite(anchored) ? { ...bookmark, position: clampPosition(anchored, totalPages) } : bookmark
+        }).filter((bookmark) => Number.isFinite(bookmark?.position) && bookmark.position >= 0 && bookmark.position <= maxPosition))
+    }, [bookId, canAdjustPagination, remoteHydratedBookId, totalPages])
 
     useEffect(() => {
-        latestEntryRef.current = buildProgressEntry(currentPosition, totalPages, type, bookmarks)
-    }, [currentPosition, totalPages, type, bookmarks])
+        latestEntryRef.current = buildProgressEntry(currentPosition, totalPages, type, bookmarks, resolveLocator())
+    }, [currentPosition, totalPages, type, bookmarks, resolveLocator])
 
     useEffect(() => {
-        if (!bookId) return
+        if (!bookId || !canPersist) return
         const timer = window.setTimeout(() => {
             persistProgressEntry(bookId, legacyId, latestEntryRef.current)
+            if (canPersistRemote) void writeRemoteProgress(bookId, latestEntryRef.current).catch(() => {})
         }, 180)
         return () => window.clearTimeout(timer)
-    }, [bookId, legacyId, currentPosition, totalPages, type, bookmarks])
+    }, [bookId, legacyId, currentPosition, totalPages, type, bookmarks, canPersist, canPersistRemote])
 
     useEffect(() => {
-        if (!bookId) return
+        if (!bookId || !canPersist) return
         const flush = () => {
             persistProgressEntry(bookId, legacyId, latestEntryRef.current)
+            if (canPersistRemote) void writeRemoteProgress(bookId, latestEntryRef.current).catch(() => {})
         }
         window.addEventListener('pagehide', flush)
         return () => {
             window.removeEventListener('pagehide', flush)
             flush()
         }
-    }, [bookId, legacyId])
+    }, [bookId, legacyId, canPersist, canPersistRemote])
 
     const resumeReading = useCallback(() => {
         if (resumePrompt) {
@@ -180,9 +290,9 @@ export function useReadingProgress(bookId, { totalPages = 1, type = 'txt', legac
         const ts = new Date().toISOString()
         setBookmarks(prev => {
             if (prev.some(b => b.position === currentPosition)) return prev
-            return [...prev, { position: currentPosition, label, savedAt: ts }]
+            return [...prev, { position: currentPosition, label, savedAt: ts, locator: resolveLocator() }]
         })
-    }, [currentPosition])
+    }, [currentPosition, resolveLocator])
 
     const removeBookmark = useCallback((position) => {
         setBookmarks(prev => prev.filter(b => b.position !== position))

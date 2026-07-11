@@ -15,6 +15,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="BookReader backend launcher")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8000, type=int)
+    parser.add_argument("--nonce")
     return parser.parse_args()
 
 
@@ -29,7 +30,10 @@ def is_port_available(host: str, port: int) -> bool:
     return True
 
 
-def run_backend(host: str, port: int) -> int:
+def run_backend(host: str, port: int, nonce: str | None = None) -> int:
+    if nonce:
+        import main
+        main.SIDECAR_NONCE = nonce
     if not is_port_available(host, port):
         print(
             f"BookReader backend cannot start because {host}:{port} is already in use.",
@@ -43,4 +47,4 @@ def run_backend(host: str, port: int) -> int:
 
 if __name__ == "__main__":
     args = parse_args()
-    raise SystemExit(run_backend(args.host, args.port))
+    raise SystemExit(run_backend(args.host, args.port, args.nonce))

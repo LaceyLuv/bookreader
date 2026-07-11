@@ -44,7 +44,17 @@ function ZipReader() {
         }
     }, [id])
 
-    const progress = useReadingProgress(id, { totalPages: images.length, type: 'zip', legacyId })
+    const progress = useReadingProgress(id, {
+        totalPages: images.length,
+        type: 'zip',
+        legacyId,
+        paginationReady: !loading && images.length > 0,
+        locator: () => ({ kind: 'zip', memberName: images[currentPage] || null, page: currentPage }),
+        locatorToPosition: (saved) => {
+            const memberIndex = saved?.memberName ? images.indexOf(saved.memberName) : -1
+            return memberIndex >= 0 ? memberIndex : saved?.page
+        },
+    })
     const {
         currentPosition: currentPage,
         setCurrentPosition: setCurrentPage,

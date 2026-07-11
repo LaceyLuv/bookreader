@@ -1,3 +1,5 @@
+import { codePointLength } from './txtUnicodeOffsets'
+
 function getSegmentId(fragment) {
     return fragment?.segment_id ?? fragment?.segmentId ?? null
 }
@@ -11,15 +13,31 @@ function getSourceEnd(fragment) {
 }
 
 function getDisplayTextLength(fragment) {
-    if (typeof fragment?.display_text === 'string') return fragment.display_text.length
-    if (typeof fragment?.displayText === 'string') return fragment.displayText.length
-    if (typeof fragment?.text === 'string') return fragment.text.length
+    if (typeof fragment?.display_text === 'string') return codePointLength(fragment.display_text)
+    if (typeof fragment?.displayText === 'string') return codePointLength(fragment.displayText)
+    if (typeof fragment?.text === 'string') return codePointLength(fragment.text)
     return 0
+}
+
+function getMappingRuns(fragment) {
+    return Array.isArray(fragment?.display_to_source_runs) ? fragment.display_to_source_runs : null
 }
 
 function findDisplayIndexForSourceOffset(fragment, sourceOffset) {
     const mapping = Array.isArray(fragment?.display_to_source) ? fragment.display_to_source : null
     if (mapping?.length) return mapping.indexOf(sourceOffset)
+
+    const runs = getMappingRuns(fragment)
+    if (runs?.length) {
+        for (const run of runs) {
+            if (!Array.isArray(run) || run.length !== 3) continue
+            const [displayStart, sourceStart, length] = run
+            if (sourceOffset >= sourceStart && sourceOffset < sourceStart + length) {
+                return displayStart + sourceOffset - sourceStart
+            }
+        }
+        return -1
+    }
 
     const start = getSourceStart(fragment)
     const end = getSourceEnd(fragment)
@@ -36,6 +54,18 @@ function getSourceOffsetForDisplayIndex(fragment, displayIndex) {
     const mapping = Array.isArray(fragment?.display_to_source) ? fragment.display_to_source : null
     if (mapping?.length) {
         return mapping[displayIndex] ?? null
+    }
+
+    const runs = getMappingRuns(fragment)
+    if (runs?.length) {
+        for (const run of runs) {
+            if (!Array.isArray(run) || run.length !== 3) continue
+            const [displayStart, sourceStart, length] = run
+            if (displayIndex >= displayStart && displayIndex < displayStart + length) {
+                return sourceStart + displayIndex - displayStart
+            }
+        }
+        return null
     }
 
     const start = getSourceStart(fragment)

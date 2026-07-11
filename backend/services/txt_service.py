@@ -100,7 +100,7 @@ def _segments_to_display_fragments(segments: list[dict]) -> list[dict]:
                 "display_text": segment["text"],
                 "source_start_offset": start_offset,
                 "source_end_offset": end_offset,
-                "display_to_source": list(range(start_offset, end_offset)),
+                "display_to_source_runs": [[0, start_offset, end_offset - start_offset]],
             }
         )
     return fragments
@@ -207,15 +207,25 @@ def read_txt_segment_window(
         fragments = _segments_to_display_fragments(manifest["segments"][safe_start:safe_start + safe_limit])
         total = len(manifest["segments"])
     else:
-        transformed = transform_txt_segments(
-            manifest["segments"],
-            trim_spaces=options["trim_spaces"],
-            remove_empty_lines=options["remove_empty_lines"],
-            split_paragraphs=options["split_paragraphs"],
-        )
-        all_fragments = transformed["fragments"]
-        fragments = all_fragments[safe_start:safe_start + safe_limit]
-        total = len(all_fragments)
+        # Transform a segment at a time. This still computes the exact total,
+        # but does not build and retain every transformed fragment just to
+        # return one small window.
+        fragments = []
+        total = 0
+        window_end = safe_start + safe_limit
+        for segment in manifest["segments"]:
+            segment_fragments = transform_txt_segments(
+                [segment],
+                trim_spaces=options["trim_spaces"],
+                remove_empty_lines=options["remove_empty_lines"],
+                split_paragraphs=options["split_paragraphs"],
+            )["fragments"]
+            next_total = total + len(segment_fragments)
+            if next_total > safe_start and total < window_end:
+                local_start = max(0, safe_start - total)
+                local_end = min(len(segment_fragments), window_end - total)
+                fragments.extend(segment_fragments[local_start:local_end])
+            total = next_total
 
     return {
         "start": safe_start,

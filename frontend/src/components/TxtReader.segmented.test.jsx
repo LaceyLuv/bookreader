@@ -238,7 +238,11 @@ function createMockSelection(range, { anchorNode = range.endContainer, anchorOff
 beforeEach(() => {
     mockUseKeyboardNav.mockReset()
     mockUseReaderSettings.mockImplementation(() => createSettings())
-    mockUseReadingProgress.mockImplementation((_bookId, { totalPages = 1 } = {}) => {
+    mockUseReadingProgress.mockImplementation((_bookId, options = {}) => {
+        const { totalPages = 1 } = options
+        // The real hook resolves a persisted locator during initial hydration,
+        // before the optional global page map has been built.
+        options.locatorToPosition?.({ page: 0 })
         const [currentPosition, setCurrentPosition] = React.useState(0)
         return {
             currentPosition,
@@ -293,8 +297,8 @@ test('TXT reader fills one visible render page with multiple short segments on f
     expect(within(pageSurfaces[0]).queryByText('overflow block')).toBeNull()
     expect(screen.queryByText('overflow block')).toBeNull()
     expect(screen.queryByTestId('txt-segment-card')).toBeNull()
-    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/txt-manifest'))
-    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/txt-segments?start=0&limit=40'))
+    expect(countFetchCalls(fetchSpy, '/txt-manifest')).toBe(1)
+    expect(countFetchCalls(fetchSpy, '/txt-segments?start=0&limit=40')).toBe(1)
     expect(fetchSpy).not.toHaveBeenCalledWith(expect.stringContaining('/content'))
 })
 
@@ -415,6 +419,80 @@ test('TXT reader renders oversized content as measured slices instead of one cli
     expect(pageSurface.textContent).toContain('A'.repeat(24))
     expect(pageSurface.textContent).not.toContain('B'.repeat(24))
     expect(pageSurface.textContent).not.toContain('C'.repeat(12))
+})
+
+test('TXT reader reserves one bottom line so the last line is not clipped', async () => {
+    mockUseReaderSettings.mockImplementation(() => createSettings({
+        contentStyle: {
+            fontFamily: 'serif',
+            fontWeight: 400,
+            fontSize: '10px',
+        },
+        lineHeight: 1,
+    }))
+    const originalResizeObserver = globalThis.ResizeObserver
+    vi.stubGlobal('ResizeObserver', undefined)
+    const clientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+        configurable: true,
+        get() {
+            return this.dataset?.testid === 'txt-reader-scroller' ? 400 : 0
+        },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+        configurable: true,
+        get() {
+            return this.dataset?.testid === 'txt-reader-scroller' ? 104 : 0
+        },
+    })
+    const segments = [
+        { segment_id: 0, text: 'A\nA\nA\nA', start_offset: 0, end_offset: 7 },
+        { segment_id: 1, text: 'B\nB\nB', start_offset: 8, end_offset: 13 },
+    ]
+    const fetchSpy = vi.fn(async (url) => {
+        if (String(url).includes('/txt-manifest')) {
+            return new Response(JSON.stringify({ encoding: 'utf-8', total_chars: 13, segment_count: 2 }), { status: 200 })
+        }
+        if (String(url).includes('/txt-segments?start=0&limit=40')) {
+            return new Response(JSON.stringify({
+                start: 0,
+                limit: 40,
+                total: 2,
+                segments,
+            }), { status: 200 })
+        }
+        if (String(url).includes('/annotations')) {
+            return new Response(JSON.stringify([]), { status: 200 })
+        }
+        if (String(url).includes('/search')) {
+            return new Response(JSON.stringify({ query: '', total: 0, results: [] }), { status: 200 })
+        }
+        return new Response('{}', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+        renderReader()
+
+        await waitFor(() => {
+            const pageSurface = screen.getByTestId('txt-page-surface')
+            expect(pageSurface.textContent).toContain('A\nA\nA\nA')
+            expect(pageSurface.textContent).not.toContain('B')
+        })
+    } finally {
+        if (clientWidthDescriptor) {
+            Object.defineProperty(HTMLElement.prototype, 'clientWidth', clientWidthDescriptor)
+        } else {
+            delete HTMLElement.prototype.clientWidth
+        }
+        if (clientHeightDescriptor) {
+            Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor)
+        } else {
+            delete HTMLElement.prototype.clientHeight
+        }
+        vi.stubGlobal('ResizeObserver', originalResizeObserver)
+    }
 })
 
 test('TXT reader recalculates measured pages when vertical margin changes', async () => {
@@ -669,7 +747,7 @@ test('TXT reader uses measured pages as the visible source of truth instead of w
     expect(screen.getByTestId('txt-page-surface').textContent).toBe('B'.repeat(12))
 })
 
-test('TXT reader keeps the first-load measured total stable while a later full-book page map hydrates', async () => {
+test('TXT reader keeps the first-load measured total stable without preloading a full-book page map', async () => {
     const oversizedText = `${'A'.repeat(24)}${'B'.repeat(24)}${'C'.repeat(12)}`
     const deferredWindow = createDeferred()
     const fetchSpy = vi.fn((url) => {
@@ -708,26 +786,13 @@ test('TXT reader keeps the first-load measured total stable while a later full-b
     await userEvent.click(screen.getByRole('button', { name: 'seek-to-page-2' }))
 
     await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/txt-segments?start=40&limit=40'))
-        expect(screen.getByTestId('progress-total-pages').textContent).toBe('3')
-    })
-
-    deferredWindow.resolve(new Response(JSON.stringify({
-        start: 40,
-        limit: 40,
-        total: 41,
-        segments: [
-            { segment_id: 40, text: '', start_offset: oversizedText.length, end_offset: oversizedText.length },
-        ],
-    }), { status: 200 }))
-
-    await waitFor(() => {
         expect(screen.getByTestId('progress-total-pages').textContent).toBe('3')
         expect(screen.getByTestId('progress-current-page').textContent).toBe('2')
     })
+    expect(countFetchCalls(fetchSpy, '/txt-segments?start=40&limit=40')).toBe(0)
 })
 
-test('TXT reader hydrates the full-book page map on first open without requiring a progress seek', async () => {
+test('TXT reader does not preload the full-book page map on first open', async () => {
     const fetchSpy = vi.fn(async (url) => {
         if (String(url).includes('/txt-manifest')) {
             return new Response(JSON.stringify({ encoding: 'utf-8', total_chars: 240, segment_count: 80 }), { status: 200 })
@@ -764,13 +829,8 @@ test('TXT reader hydrates the full-book page map on first open without requiring
         expect(screen.getByTestId('progress-total-pages').textContent).toBe('29')
     })
 
-    await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/txt-segments?start=40&limit=40'))
-    })
-
-    await waitFor(() => {
-        expect(Number(screen.getByTestId('progress-total-pages').textContent)).toBeGreaterThan(29)
-    })
+    expect(countFetchCalls(fetchSpy, '/txt-segments?start=40&limit=40')).toBe(0)
+    expect(screen.getByTestId('progress-total-pages').textContent).toBe('29')
 })
 
 test('TXT next navigation uses the local measured pages immediately while the full-book page map is still hydrating', async () => {
@@ -818,7 +878,7 @@ test('TXT next navigation uses the local measured pages immediately while the fu
         expect(screen.getByTestId('progress-current-page').textContent).toBe('2')
     })
     expect(screen.getByTestId('txt-reader-content').textContent).toContain('B'.repeat(24))
-    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/txt-segments?start=40&limit=40'))
+    expect(countFetchCalls(fetchSpy, '/txt-segments?start=40&limit=40')).toBe(0)
 
     await act(async () => {
         deferredWindow.resolve(new Response(JSON.stringify({
@@ -831,7 +891,7 @@ test('TXT next navigation uses the local measured pages immediately while the fu
     })
 })
 
-test('TXT reader keeps the current page after the full-book page map finishes hydrating', async () => {
+test('TXT reader keeps the current page without background full-book hydration', async () => {
     const oversizedText = `${'A'.repeat(24)}${'B'.repeat(24)}${'C'.repeat(24)}${'D'.repeat(24)}`
     const deferredWindow = createDeferred()
     const fetchSpy = vi.fn((url) => {
@@ -878,20 +938,9 @@ test('TXT reader keeps the current page after the full-book page map finishes hy
         expect(screen.getByTestId('txt-reader-content').textContent).not.toContain('A'.repeat(24))
     })
 
-    await act(async () => {
-        deferredWindow.resolve(new Response(JSON.stringify({
-            start: 40,
-            limit: 40,
-            total: 41,
-            segments: [{ segment_id: 40, text: 'E'.repeat(24), start_offset: oversizedText.length, end_offset: oversizedText.length + 24 }],
-        }), { status: 200 }))
-        await Promise.resolve()
-    })
-
-    await waitFor(() => {
-        expect(Number(screen.getByTestId('progress-total-pages').textContent)).toBeGreaterThan(4)
-        expect(screen.getByTestId('progress-current-page').textContent).toBe('2')
-    })
+    expect(screen.getByTestId('progress-total-pages').textContent).toBe('4')
+    expect(screen.getByTestId('progress-current-page').textContent).toBe('2')
+    expect(countFetchCalls(fetchSpy, '/txt-segments?start=40&limit=40')).toBe(0)
     expect(screen.getByTestId('txt-reader-content').textContent).toContain('B'.repeat(24))
     expect(screen.getByTestId('txt-reader-content').textContent).not.toContain('A'.repeat(24))
 })
@@ -944,7 +993,7 @@ test('TXT reader keyboard next advances one visible spread at a time in dual lay
     expect(screen.getByTestId('txt-reader-content').textContent).not.toContain('A'.repeat(24))
 })
 
-test('TXT reader advances by exactly one page after the full-book page map hydrates', async () => {
+test('TXT reader advances by exactly one page without background full-book hydration', async () => {
     const oversizedText = `${'A'.repeat(24)}${'B'.repeat(24)}${'C'.repeat(24)}${'D'.repeat(24)}`
     const deferredWindow = createDeferred()
     const fetchSpy = vi.fn((url) => {
@@ -989,20 +1038,9 @@ test('TXT reader advances by exactly one page after the full-book page map hydra
         expect(screen.getByTestId('progress-current-page').textContent).toBe('2')
     })
 
-    await act(async () => {
-        deferredWindow.resolve(new Response(JSON.stringify({
-            start: 40,
-            limit: 40,
-            total: 41,
-            segments: [{ segment_id: 40, text: 'E'.repeat(24), start_offset: oversizedText.length, end_offset: oversizedText.length + 24 }],
-        }), { status: 200 }))
-        await Promise.resolve()
-    })
-
-    await waitFor(() => {
-        expect(Number(screen.getByTestId('progress-total-pages').textContent)).toBeGreaterThan(4)
-        expect(screen.getByTestId('progress-current-page').textContent).toBe('2')
-    })
+    expect(screen.getByTestId('progress-total-pages').textContent).toBe('4')
+    expect(screen.getByTestId('progress-current-page').textContent).toBe('2')
+    expect(countFetchCalls(fetchSpy, '/txt-segments?start=40&limit=40')).toBe(0)
 
     await act(async () => {
         mockUseKeyboardNav.mock.lastCall[0].onNext()
@@ -1913,7 +1951,7 @@ test('changing TXT transform options refetches the manifest with compatibility p
     await user.click(screen.getByRole('button', { name: 'trimSpaces' }))
 
     await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/txt-manifest?trim_spaces=true'))
+        expect(countFetchCalls(fetchSpy, '/txt-manifest?trim_spaces=true')).toBe(1)
     })
 })
 
@@ -2659,7 +2697,7 @@ test('stale lazy global render-page loads do not apply after the reader switches
 
         await user.click(screen.getByRole('button', { name: 'seek-to-page-2' }))
         await waitFor(() => {
-            expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/txt-1/txt-segments?start=40&limit=40'))
+            expect(countFetchCalls(fetchSpy, '/txt-1/txt-segments?start=40&limit=40')).toBe(1)
         })
 
         await user.click(screen.getByRole('button', { name: 'open-book-2' }))
@@ -2729,7 +2767,7 @@ test('stale TXT segment-window responses are ignored after a transform toggle re
     renderReader()
 
     await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/txt-segments?start=0&limit=40&trim_spaces=false'))
+        expect(countFetchCalls(fetchSpy, '/txt-segments?start=0&limit=40&trim_spaces=false')).toBe(1)
     })
 
     await user.click(screen.getByRole('button', { name: 'trimSpaces' }))

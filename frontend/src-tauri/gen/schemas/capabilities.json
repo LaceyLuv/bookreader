@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"enables the default permissions","local":true,"windows":["main"],"permissions":["core:default","core:window:default","core:window:allow-start-dragging","core:window:allow-minimize","core:window:allow-toggle-maximize","core:window:allow-close","shell:allow-spawn"]}}
+{"default":{"identifier":"default","description":"Allows the main WebView to invoke application commands without exposing plugin or core permissions.","local":true,"windows":["main"],"permissions":[]}}

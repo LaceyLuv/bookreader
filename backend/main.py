@@ -1,15 +1,21 @@
 ﻿from contextlib import asynccontextmanager
 
+import hmac
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from paths import BOOKS_DIR, FONTS_DIR
+from paths import BOOKS_DIR, DELETE_JOURNAL_PATH, FONTS_DIR
 from routers.annotations import router as annotations_router
 from routers import books as books_router_module
 from routers.fonts import router as fonts_router
 from routers.library_folders import router as library_folders_router
+from routers.reading_progress import router as reading_progress_router
 from services.annotation_store import ensure_annotation_store
 from services.library_store import ensure_library_store
+from services.reading_progress_store import ensure_reading_progress_store
+from services.delete_recovery import recover_pending_deletes
 
 
 @asynccontextmanager
@@ -18,10 +24,36 @@ async def lifespan(app: FastAPI):
     FONTS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_library_store()
     ensure_annotation_store()
+    ensure_reading_progress_store()
+    recover_pending_deletes(books_dir=BOOKS_DIR, journal_path=DELETE_JOURNAL_PATH)
     yield
 
 
 app = FastAPI(title='Universal Book Reader API', version='1.0.0', lifespan=lifespan)
+
+SIDECAR_NONCE = os.environ.get('BOOKREADER_SIDECAR_NONCE')
+SIDECAR_ASSET_TOKEN = os.environ.get('BOOKREADER_SIDECAR_ASSET_TOKEN')
+
+
+@app.middleware('http')
+async def authenticate_sidecar_requests(request: Request, call_next):
+    """Require a per-launch secret only in the packaged sidecar process."""
+    if SIDECAR_NONCE and request.method != 'OPTIONS' and request.url.path.startswith('/api/'):
+        supplied = request.headers.get('x-bookreader-nonce', '')
+        asset_path = (
+            request.method == 'GET'
+            and request.url.path.startswith('/api/books/')
+            and '/asset/' in request.url.path
+        )
+        supplied_asset_token = request.query_params.get('asset_token', '') if asset_path else ''
+        asset_authorized = bool(
+            asset_path
+            and SIDECAR_ASSET_TOKEN
+            and hmac.compare_digest(supplied_asset_token, SIDECAR_ASSET_TOKEN)
+        )
+        if not hmac.compare_digest(supplied, SIDECAR_NONCE) and not asset_authorized:
+            return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
+    return await call_next(request)
 
 
 @app.middleware('http')
@@ -50,18 +82,19 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=['*'],
-    allow_headers=['*'],
+    allow_headers=['Content-Type', 'X-BookReader-Nonce'],
 )
 
 app.include_router(books_router_module.router)
 app.include_router(fonts_router)
 app.include_router(annotations_router)
 app.include_router(library_folders_router)
+app.include_router(reading_progress_router)
 
 
 @app.get('/api/health')
 async def health():
-    return {'ok': True}
+    return {'ok': True, 'authenticated': bool(SIDECAR_NONCE)}
 
 
 @app.get('/')
