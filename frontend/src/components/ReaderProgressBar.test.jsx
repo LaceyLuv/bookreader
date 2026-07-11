@@ -60,7 +60,7 @@ test('Space does not activate the last clicked progress-bar control after pointe
     expect(onNext).toHaveBeenCalledTimes(1)
 })
 
-test('page number input does not retain pointer focus after a mouse click', async () => {
+test('clicking the centered page number opens the page input in place', async () => {
     const user = userEvent.setup()
     const readerRootRef = { current: null }
 
@@ -77,9 +77,9 @@ test('page number input does not retain pointer focus after a mouse click', asyn
         </>,
     )
 
-    await user.click(screen.getByRole('spinbutton'))
+    await user.click(screen.getByRole('button', { name: /edit page number/i }))
 
-    expect(document.activeElement).toBe(readerRootRef.current)
+    expect(screen.getByRole('spinbutton', { name: /page number/i })).toBe(document.activeElement)
 })
 
 test('hide and show buttons release their own focus after pointer clicks', async () => {
@@ -101,7 +101,10 @@ test('hide and show buttons release their own focus after pointer clicks', async
     await user.click(screen.getByRole('button', { name: /hide progress bar/i }))
     expect(document.activeElement).toBe(readerRootRef.current)
 
-    await user.click(screen.getByRole('button', { name: /show progress bar/i }))
+    const showButton = screen.getByRole('button', { name: /show progress bar/i })
+    expect(showButton.className).toContain('left-4')
+    expect(showButton.className).toContain('bottom-0')
+    await user.click(showButton)
     expect(document.activeElement).toBe(readerRootRef.current)
 })
 
@@ -141,8 +144,54 @@ test('TXT progress seek callback is wired to viewport pages', () => {
         />,
     )
 
-    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '6' } })
-    fireEvent.blur(screen.getByRole('spinbutton'))
+    fireEvent.click(screen.getByRole('button', { name: /edit page number/i }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: /page number/i }), { target: { value: '6' } })
+    fireEvent.blur(screen.getByRole('spinbutton', { name: /page number/i }))
 
     expect(onSeekPage).toHaveBeenCalledWith(6)
+})
+
+test('side page information is removed while percent stays on the right', () => {
+    render(
+        <ReaderProgressBar
+            currentPage={3}
+            totalPages={10}
+            progress={2 / 9}
+            extraInfo="TXT 3/10"
+            onSeekPage={vi.fn()}
+        />,
+    )
+
+    expect(screen.queryByText('TXT 3/10')).toBeNull()
+    expect(screen.getByRole('button', { name: /edit page number/i }).textContent).toContain('3 / 10')
+    expect(screen.getByText('22%')).toBeTruthy()
+})
+
+test('Ctrl+H and Ctrl+ㅗ toggle the progress bar without browser history', () => {
+    const onVisibilityChange = vi.fn()
+    render(<ReaderProgressBar currentPage={3} totalPages={10} progress={0.2} onVisibilityChange={onVisibilityChange} />)
+
+    const hideEvent = new KeyboardEvent('keydown', { key: 'h', code: 'KeyH', ctrlKey: true, bubbles: true, cancelable: true })
+    fireEvent(window, hideEvent)
+    expect(hideEvent.defaultPrevented).toBe(true)
+    expect(screen.getByRole('button', { name: /show progress bar/i })).toBeTruthy()
+    expect(onVisibilityChange).toHaveBeenLastCalledWith(false)
+
+    const showEvent = new KeyboardEvent('keydown', { key: 'ㅗ', ctrlKey: true, bubbles: true, cancelable: true })
+    fireEvent(window, showEvent)
+    expect(showEvent.defaultPrevented).toBe(true)
+    expect(screen.getByRole('button', { name: /hide progress bar/i })).toBeTruthy()
+    expect(onVisibilityChange).toHaveBeenLastCalledWith(true)
+})
+
+test('Ctrl+H does not toggle the progress bar while editing a page number', async () => {
+    const user = userEvent.setup()
+    render(<ReaderProgressBar currentPage={3} totalPages={10} progress={0.2} onSeekPage={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: /edit page number/i }))
+    const input = screen.getByRole('spinbutton', { name: /page number/i })
+    fireEvent.keyDown(input, { key: 'h', code: 'KeyH', ctrlKey: true })
+
+    expect(screen.queryByRole('button', { name: /show progress bar/i })).toBeNull()
+    expect(input).toBe(document.activeElement)
 })

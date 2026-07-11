@@ -7,7 +7,11 @@ import { useReaderSettings } from './useReaderSettings'
 function SettingsProbe() {
     const settings = useReaderSettings()
     return (
-        <output data-testid="font-mode">{settings.fontMode}</output>
+        <>
+            <output data-testid="font-mode">{settings.fontMode}</output>
+            <output data-testid="background-color">{settings.bgColor}</output>
+            <output data-testid="text-color">{settings.textColor}</output>
+        </>
     )
 }
 
@@ -20,6 +24,8 @@ test('reader settings default to EPUB embedded font mode', () => {
     render(<SettingsProbe />)
 
     expect(screen.getByTestId('font-mode').textContent).toBe('embedded')
+    expect(screen.getByTestId('background-color').textContent).toBe('#fbfaf6')
+    expect(screen.getByTestId('text-color').textContent).toBe('#38342f')
 })
 
 test('legacy saved settings migrate to EPUB embedded font mode by default', () => {

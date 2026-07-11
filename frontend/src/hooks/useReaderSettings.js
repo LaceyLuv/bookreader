@@ -37,7 +37,7 @@ function persistSettings(value) {
 
 const DEFAULTS = {
     settingsVersion: SETTINGS_SCHEMA_VERSION,
-    theme: 'dark',
+    theme: 'light',
     font: 'system',
     fontMode: 'embedded',
     fontFamily: '',
@@ -50,8 +50,8 @@ const DEFAULTS = {
     vMargin: 32,
     columnGap: 64,
     zipImageScale: 1,
-    bgColor: '#1a1b1e',
-    textColor: '#d1d5db',
+    bgColor: '#fbfaf6',
+    textColor: '#38342f',
     showTitleBar: true,
     lang: 'en',
 }

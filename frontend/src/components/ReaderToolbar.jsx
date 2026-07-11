@@ -5,7 +5,7 @@ import { API_FONTS_BASE } from '../lib/apiBase'
 import { emitUserFontsUpdated } from './FontStyleInjector'
 import { readErrorDetail } from '../lib/readErrorDetail'
 
-export default function ReaderToolbar({ settings, readerType = '' }) {
+export default function ReaderToolbar({ settings, readerType = '', txtTransforms = null }) {
     const {
         theme,
         font,
@@ -195,7 +195,7 @@ export default function ReaderToolbar({ settings, readerType = '' }) {
             <button
                 onClick={toggleSettings}
                 title={tt('settings')}
-                className="flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:opacity-60"
+                className="reader-toolbar-button flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:opacity-60"
                 style={{ color: t.text }}
             >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -224,6 +224,31 @@ export default function ReaderToolbar({ settings, readerType = '' }) {
                             className="max-h-[70vh] space-y-5 overflow-y-auto p-4 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
                             style={{ scrollbarColor: 'var(--settings-border) transparent' }}
                         >
+                            {readerType === 'txt' && txtTransforms && (
+                                <div>
+                                    <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">TXT</span>
+                                    <div className="space-y-2">
+                                        <label className="flex items-center justify-between rounded-lg border px-3 py-2.5 text-[11px]" style={{ borderColor: 'var(--settings-border)' }}>
+                                            <span>{tt('trimSpaces')}</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={txtTransforms.trimSpaces}
+                                                onChange={(event) => txtTransforms.onTrimSpacesChange(event.target.checked)}
+                                                style={{ accentColor: 'var(--accent)' }}
+                                            />
+                                        </label>
+                                        <label className="flex items-center justify-between rounded-lg border px-3 py-2.5 text-[11px]" style={{ borderColor: 'var(--settings-border)' }}>
+                                            <span>{tt('splitParagraphs')}</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={txtTransforms.splitParagraphs}
+                                                onChange={(event) => txtTransforms.onSplitParagraphsChange(event.target.checked)}
+                                                style={{ accentColor: 'var(--accent)' }}
+                                            />
+                                        </label>
+                                    </div>
+                                </div>
+                            )}
                             <div>
                                 <span className="mb-2 block text-[10px] font-bold uppercase tracking-widest opacity-50">{tt('language')}</span>
                                 <div className="flex gap-2">

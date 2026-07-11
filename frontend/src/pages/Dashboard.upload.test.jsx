@@ -33,6 +33,7 @@ function createJsonResponse(body) {
 }
 
 beforeEach(() => {
+    mockNavigate.mockClear()
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
         const url = String(input)
         const book = {
@@ -73,6 +74,14 @@ beforeEach(() => {
     })
 })
 
+test('clicking a book cover opens the reader', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('button', { name: 'Clean Upload - read' }))
+    expect(mockNavigate).toHaveBeenCalledWith('/read/epub/book-1', expect.objectContaining({ state: expect.any(Object) }))
+})
+
 test('file info keeps the original filename visible and hides storage-only details', async () => {
     const user = userEvent.setup()
 
@@ -89,4 +98,20 @@ test('file info keeps the original filename visible and hides storage-only detai
     expect(screen.getByText('Clean Upload.epub')).toBeTruthy()
     expect(screen.queryByText('9f3c2a1b-Clean Upload.epub')).toBeNull()
     expect(screen.queryByText('/books/9f3c2a1b-Clean Upload.epub')).toBeNull()
+})
+
+test('library controls live in the settings panel and selection mode reveals book checkboxes', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+
+    await screen.findByText('Clean Upload')
+    expect(screen.getByRole('button', { name: 'librarySettings' })).toBeTruthy()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'librarySettings' }))
+    const selectionMode = await screen.findByRole('checkbox', { name: 'selectionMode' })
+    await user.click(selectionMode)
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
 })

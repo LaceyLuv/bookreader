@@ -23,7 +23,18 @@ vi.mock('../hooks/useReadingProgress', () => ({
     useReadingProgress: (...args) => mockUseReadingProgress(...args),
 }))
 
-vi.mock('./ReaderToolbar', () => ({ default: () => <div data-testid="reader-toolbar" /> }))
+vi.mock('./ReaderToolbar', () => ({
+    default: ({ txtTransforms }) => (
+        <div data-testid="reader-toolbar">
+            {txtTransforms && (
+                <>
+                    <button type="button" onClick={() => txtTransforms.onTrimSpacesChange(!txtTransforms.trimSpaces)}>trimSpaces</button>
+                    <button type="button" onClick={() => txtTransforms.onSplitParagraphsChange(!txtTransforms.splitParagraphs)}>splitParagraphs</button>
+                </>
+            )}
+        </div>
+    ),
+}))
 vi.mock('./ReaderProgressBar', () => ({
     default: ({ currentPage, totalPages, progress, onSeekPage, onSeekProgress }) => (
         <div data-testid="reader-progress-bar">

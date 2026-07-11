@@ -4,12 +4,29 @@ import { API_BOOKS_BASE } from '../lib/apiBase'
 import { getBookProgress, removeBookProgress } from '../hooks/useReadingProgress'
 import { createT } from '../i18n'
 import { readErrorDetail } from '../lib/readErrorDetail'
+import DashboardSettingsPanel from '../components/DashboardSettingsPanel'
 
 const API = API_BOOKS_BASE
 const FOLDER_API = API_BOOKS_BASE.replace(/\/books$/, '/library/folders')
 const STATUS_VALUES = ['unread', 'reading', 'completed', 'paused']
 const SORT_VALUES = ['recent_read', 'recent_added', 'title', 'author', 'completed']
 const FLAG_FILTER_VALUES = ['all', 'favorite', 'pinned', 'duplicates']
+const FOLDER_COLORS_KEY = 'bookreader_folder_colors'
+const FOLDER_COLOR_PALETTE = ['#b28b67', '#78938a', '#7e8fac', '#9a7fa0', '#b07c78', '#8b956c', '#648fa0', '#aa8d55']
+
+function getDefaultFolderColor(folderId) {
+    const hash = String(folderId || '').split('').reduce((total, char) => total + char.charCodeAt(0), 0)
+    return FOLDER_COLOR_PALETTE[hash % FOLDER_COLOR_PALETTE.length]
+}
+
+function loadFolderColors() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(FOLDER_COLORS_KEY) || '{}')
+        return saved && typeof saved === 'object' ? saved : {}
+    } catch {
+        return {}
+    }
+}
 
 function parseTimestamp(value) {
     const parsed = Date.parse(value || '')
@@ -336,7 +353,11 @@ function Dashboard() {
     const [selectedBookIds, setSelectedBookIds] = useState([])
     const [bulkFolderId, setBulkFolderId] = useState('')
     const [bulkMoving, setBulkMoving] = useState(false)
+    const [settingsOpen, setSettingsOpen] = useState(false)
+    const [selectionMode, setSelectionMode] = useState(false)
+    const [folderColors, setFolderColors] = useState(loadFolderColors)
     const fileInputRef = useRef(null)
+    const libraryRef = useRef(null)
 
     const savedLang = (() => {
         try {
@@ -395,6 +416,12 @@ function Dashboard() {
         fetchBooks()
         fetchFolders()
     }, [fetchBooks, fetchFolders])
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(FOLDER_COLORS_KEY, JSON.stringify(folderColors))
+        } catch { /* keep folder colors usable in memory */ }
+    }, [folderColors])
 
     useEffect(() => {
         const bookIdSet = new Set(books.map((book) => book.id))
@@ -738,8 +765,8 @@ function Dashboard() {
     const formatEditionLabel = (value) => (isKo ? `?? ${value}` : `Editions ${value}`)
     const formatVersionDetailLabel = (value) => (isKo ? `${tt('version')} ${value}` : `Version ${value}`)
     const formatFolderDetailLabel = (value) => (isKo ? `${tt('folder')} ${value}` : `Folder ${value}`)
-    const formatShownSummary = (shown, total) => (isKo ? `${shown}? ?? / ?? ${total}?` : `${shown} shown / ${total} total`)
-    const formatSelectedSummary = (count) => (isKo ? `?? ????? ???? ${count}? ???.` : `${count} selected across the current library view.`)
+    const formatShownSummary = (shown, total) => (isKo ? `${shown}권 표시 / 전체 ${total}권` : `${shown} shown / ${total} total`)
+    const formatSelectedSummary = (count) => (isKo ? `현재 라이브러리에서 ${count}권을 선택했습니다.` : `${count} selected across the current library view.`)
     const formatSeriesVolume = (index) => (isKo ? `? ${index}` : `Vol. ${index}`)
     const formatSeriesDisplay = (name, index) => {
         if (!name) return tt('none')
@@ -877,17 +904,18 @@ function Dashboard() {
         const folderLabel = String(book.library_folder_name || '').trim()
 
         return (
-            <div key={book.id} className={nested ? 'ml-4 border-l pl-4' : ''} style={nested ? { borderColor: 'color-mix(in srgb, var(--app-fg) 10%, var(--app-bg) 90%)' } : undefined}>
-                <div className="glass-card flex flex-col gap-3 px-5 py-4 md:flex-row md:items-start">
-                    <label className="flex items-start pt-1" onClick={(event) => event.stopPropagation()}>
+            <article key={book.id} className={`dashboard-book-card ${nested ? 'dashboard-book-card-nested' : ''}`} style={selectedFolderId !== 'all' && selectedFolderId !== 'none' && book.library_folder_id === selectedFolderId ? { '--folder-color': folderColors[book.library_folder_id] || getDefaultFolderColor(book.library_folder_id) } : undefined}>
+                <button type="button" className={`dashboard-book-cover dashboard-book-cover-${book.file_type}`} onClick={() => openBook(book)} aria-label={`${book.title} - ${tt('read')}`}><span>{book.file_type.toUpperCase()}</span><i aria-hidden="true" /></button>
+                <div className="dashboard-book-body">
+                    {selectionMode && <label className="dashboard-book-select" onClick={(event) => event.stopPropagation()}>
                         <input
                             type="checkbox"
                             checked={isSelected}
                             onChange={(event) => toggleBookSelection(book.id, event.target.checked)}
                             className="mt-1 h-4 w-4 rounded"
                         />
-                    </label>
-                    <button type="button" className="min-w-0 flex-1 text-left" onClick={() => openBook(book)}>
+                    </label>}
+                    <button type="button" className="dashboard-book-main" onClick={() => openBook(book)}>
                         <div className="mb-2 flex flex-wrap items-center gap-2">
                             <span className={typeBadgeClass(book.file_type)}>{book.file_type.toUpperCase()}</span>
                             <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: mutedTextColor }}>{getStatusLabel(book.reading_status, statusOptions, tt('statusUnread'))}</span>
@@ -930,7 +958,7 @@ function Dashboard() {
                             </div>
                         )}
                     </button>
-                    <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                    <div className="dashboard-book-actions">
                         <select
                             value={book.reading_status || 'unread'}
                             disabled={isUpdating}
@@ -979,23 +1007,29 @@ function Dashboard() {
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                         </button>
                     </div>
-                </div>
-            </div>
+                    </div>
+            </article>
         )
     }
 
     const hasUnassignedBooks = books.some((book) => !book.library_folder_id)
 
+    const goToLibrary = useCallback((closeSettings = false) => {
+        if (closeSettings) setSettingsOpen(false)
+        requestAnimationFrame(() => libraryRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }))
+    }, [])
+
     return (
-        <div className="min-h-screen" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)' }}>
-            <div className="mx-auto max-w-6xl px-6 py-12">
-                <div className="mb-10 text-center">
-                    <h1 className="mb-2 text-3xl font-bold tracking-tight">{tt('appTitle')}</h1>
-                    <p className="text-sm" style={{ color: mutedTextColor }}>{tt('appSubtitle')}</p>
-                </div>
+        <div className="dashboard-page min-h-screen">
+            <div className="dashboard-shell">
+                <header className="dashboard-hero">
+                    <div className="dashboard-brand-mark" aria-hidden="true"><span /><span /></div>
+                    <div className="dashboard-brand-copy"><h1>{isKo ? '유니버설 북 리더' : tt('appTitle')}</h1><p>{isKo ? 'TXT · EPUB · ZIP 만화' : 'TXT · EPUB · ZIP Comics'}</p></div>
+                    <button type="button" className="dashboard-settings-button" onClick={() => setSettingsOpen(true)} aria-label={tt('librarySettings')} title={tt('librarySettings')}>⚙</button>
+                </header>
 
                 <div
-                    className={`glass-card mb-8 flex cursor-pointer flex-col items-center justify-center px-6 py-10 transition-all ${dragOver ? 'scale-[1.01] ring-2 ring-[#5c7cfa]' : 'hover:shadow-sm'}`}
+                    className={`dashboard-upload ${dragOver ? 'dashboard-upload-active' : ''}`}
                     onDrop={handleDrop}
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
@@ -1018,14 +1052,14 @@ function Dashboard() {
                         </div>
                     ) : (
                         <>
-                            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3 opacity-30"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+                            <div className="dashboard-upload-book" aria-hidden="true"><span>+</span></div>
                             <p className="mb-1 text-sm" style={{ color: mutedTextColor }}>{tt('uploadPrompt')}</p>
                             <p className="text-[11px]" style={{ color: subtleTextColor }}>{tt('supportedFiles')}</p>
                         </>
                     )}
                 </div>
 
-                <div className="glass-card mb-8 px-5 py-4">
+                <div className="hidden">
                     <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                         <div>
                             <h2 className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('libraryFoldersTitle')}</h2>
@@ -1089,7 +1123,7 @@ function Dashboard() {
                 </div>
 
                 {recentBooks.length > 0 && (
-                    <div className="mb-8">
+                    <div className="hidden">
                         <h2 className="mb-4 text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('recentReads')}</h2>
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                             {recentBooks.map((book) => {
@@ -1123,7 +1157,7 @@ function Dashboard() {
                     </div>
                 )}
 
-                <div className="glass-card mb-6 px-5 py-4">
+                <div className="hidden">
                     <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
                         <input
                             value={searchQuery}
@@ -1194,7 +1228,7 @@ function Dashboard() {
                 </div>
 
                 {visibleBookIds.length > 0 && (
-                    <div className="glass-card mb-6 px-5 py-4">
+                    <div className="hidden">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                             <div>
                                 <h2 className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('selection')}</h2>
@@ -1225,7 +1259,13 @@ function Dashboard() {
                     </div>
                 )}
 
-                <div>
+                <section ref={libraryRef} className="dashboard-library">
+                    <div className="dashboard-library-heading"><span className="dashboard-folder-symbol" aria-hidden="true" /><h2>{tt('libraryFoldersTitle')}</h2></div>
+                    <nav className="dashboard-folder-chips" aria-label={tt('libraryFoldersTitle')}>
+                        <button type="button" className={selectedFolderId === 'all' ? 'active' : ''} onClick={() => setSelectedFolderId('all')}><span />{isKo ? '전체 책' : tt('flagAllBooks')}</button>
+                        {hasUnassignedBooks && <button type="button" className={selectedFolderId === 'none' ? 'active' : ''} onClick={() => setSelectedFolderId('none')}><span />{tt('unassigned')}</button>}
+                        {folders.map(folder => <button type="button" key={folder.id} style={{ '--folder-color': folderColors[folder.id] || getDefaultFolderColor(folder.id) }} className={`folder-colored ${selectedFolderId === folder.id ? 'active' : ''}`} onClick={() => setSelectedFolderId(folder.id)}><span />{folder.name}</button>)}
+                    </nav>
                     <div className="mb-4 flex items-center justify-between gap-3">
                         <h2 className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('library')}</h2>
                         <span className="text-[11px]" style={{ color: subtleTextColor }}>{formatShownSummary(filteredBooks.length, books.length)}</span>
@@ -1241,7 +1281,7 @@ function Dashboard() {
                             <p className="text-sm" style={{ color: subtleTextColor }}>{tt('widenLibraryView')}</p>
                         </div>
                     ) : (
-                        <div className="space-y-3">
+                        <div className="dashboard-book-grid">
                             {libraryEntries.map((entry) => {
                                 if (entry.type === 'duplicate') {
                                     const leadBook = entry.books.find((book) => book.duplicate_lead) || entry.books[0]
@@ -1290,8 +1330,15 @@ function Dashboard() {
                             })}
                         </div>
                     )}
-                </div>
+                </section>
             </div>
+
+            <DashboardSettingsPanel
+                open={settingsOpen} onClose={() => setSettingsOpen(false)} onGoToLibrary={goToLibrary} tt={tt}
+                filters={{ searchQuery, setSearchQuery, sortBy, setSortBy, statusFilter, setStatusFilter, flagFilter, setFlagFilter, sortOptions, statusOptions, flagFilterOptions, groupSeries, setGroupSeries, groupDuplicates, setGroupDuplicates, allTags, selectedTag, setSelectedTag, allCollections, selectedCollection, setSelectedCollection, clearFilters, activeFilterCount }}
+                folders={folders} folderColors={folderColors} getDefaultFolderColor={getDefaultFolderColor} onFolderColorChange={(folderId, color) => setFolderColors(prev => ({ ...prev, [folderId]: color }))} folderDraft={folderDraft} setFolderDraft={setFolderDraft} folderSaving={folderSaving} onAddFolder={handleAddFolder} onRenameFolder={handleRenameFolder} onRemoveFolder={handleRemoveFolder} folderStatsById={folderStatsById}
+                selection={{ selectionMode, setSelectionMode, summary: formatSelectedSummary(selectedBookIds.length), selectedCount: selectedBookIds.length, allVisibleSelected, toggleVisibleSelection, bulkFolderId, setBulkFolderId, bulkMoving, handleBulkMove, clearSelection }}
+            />
 
             {selectedInfo && (
                 <div className="fixed inset-0 z-50 overflow-y-auto bg-black/45 p-4" onClick={closeInfo}>

@@ -1,4 +1,12 @@
 const dict = {
+    librarySettings: { en: 'Library settings', ko: '라이브러리 설정' },
+    searchAndFilter: { en: 'Search and filters', ko: '검색 및 필터' },
+    selectionMode: { en: 'Selection mode', ko: '선택 모드' },
+    fontManagement: { en: 'Font management', ko: '글꼴 관리' },
+    noUploadedFonts: { en: 'No uploaded fonts', ko: '추가한 글꼴이 없습니다' },
+    fontDeleteFailed: { en: 'Failed to delete font', ko: '글꼴을 삭제하지 못했습니다' },
+    books: { en: 'books', ko: '권' },
+    folderColor: { en: 'Folder color', ko: '폴더 색상' },
     appTitle: { en: 'Universal Book Reader', ko: '유니버설 북 리더' },
     appSubtitle: { en: 'TXT · EPUB · ZIP Comics', ko: 'TXT · EPUB · ZIP 만화' },
     library: { en: 'Library', ko: '라이브러리' },
