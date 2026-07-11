@@ -255,7 +255,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
 
             {settingsOpen && (
                 <div
-                    className="fixed inset-0 z-40 bg-[#211c16]/35 backdrop-blur-[2px]"
+                    className="fixed inset-0 z-40 bg-[#211c16]/35"
                     onMouseDown={(event) => event.target === event.currentTarget && toggleSettings()}
                 >
                     <aside
