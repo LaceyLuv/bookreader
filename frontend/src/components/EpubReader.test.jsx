@@ -155,7 +155,7 @@ test('loads toc and renders sanitized chapter html', async () => {
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
 })
 
-test('dual EPUB layout applies horizontal margins symmetrically around one center gutter', async () => {
+test('dual EPUB layout converts horizontal margin into symmetric center distance', async () => {
     mockUseReaderSettings.mockReturnValue(createSettings({ layout: 'dual', hMargin: 20, columnGap: 32 }))
     renderReader()
 
@@ -165,8 +165,8 @@ test('dual EPUB layout applies horizontal margins symmetrically around one cente
 
     expect(stage.style.paddingLeft).toBe('0px')
     expect(stage.style.paddingRight).toBe('0px')
-    expect(content.style.paddingLeft).toBe('20px')
-    expect(content.style.paddingRight).toBe('20px')
+    expect(content.style.paddingLeft).toBe('0px')
+    expect(content.style.paddingRight).toBe('0px')
     expect(content.style.columnGap).toBe('72px')
 })
 

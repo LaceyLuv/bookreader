@@ -492,7 +492,7 @@ function EpubReader() {
         contentEl.style.overflowWrap = 'break-word'
         contentEl.style.columnCount = isDualLayout ? '2' : '1'
         contentEl.style.columnGap = `${effectiveColumnGap}px`
-        contentEl.style.padding = isDualLayout ? `0 ${hMargin}px` : '0'
+        contentEl.style.padding = '0'
         contentEl.style.columnFill = 'auto'
         contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
         contentEl.style.breakInside = 'avoid-column'
@@ -512,7 +512,7 @@ function EpubReader() {
         const rawGap = cs.columnGap
         const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const contentWidth = isDualLayout ? Math.max(1, W - (hMargin * 2)) : W
+        const contentWidth = W
         const colW = isDualLayout ? Math.max(1, Math.floor((contentWidth - gap) / 2)) : Math.max(1, Math.floor(contentWidth))
 
         contentEl.style.columnWidth = `${colW}px`
@@ -542,7 +542,7 @@ function EpubReader() {
         const W = scroller.clientWidth; const cs = getComputedStyle(contentEl)
         const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const contentWidth = isDualLayout ? Math.max(1, W - (hMargin * 2)) : W
+        const contentWidth = W
         const colW = isDualLayout ? Math.max(1, Math.floor((contentWidth - gap) / 2)) : Math.max(1, Math.floor(contentWidth))
         const H = Math.max(1, Math.floor(scroller.clientHeight))
         contentEl.style.columnWidth = `${colW}px`; contentEl.style.columnCount = isDualLayout ? '2' : '1'
@@ -1085,7 +1085,7 @@ function EpubReader() {
                         ) : chapter ? (
                             <div key={chapter?.index ?? 0} ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
                                 <div ref={bindContentRef} className={EPUB_CONTENT_CLASS_NAME}
-                                    style={{ height: '100%', boxSizing: 'border-box', display: 'block', padding: isDualLayout ? `0 ${hMargin}px` : 0, backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${effectiveColumnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
+                                    style={{ height: '100%', boxSizing: 'border-box', display: 'block', padding: 0, backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${effectiveColumnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
                                     dangerouslySetInnerHTML={{ __html: sanitizedChapterHtml }}
                                 />
                             </div>

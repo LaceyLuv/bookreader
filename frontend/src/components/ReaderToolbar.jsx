@@ -320,8 +320,8 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                 data-testid="reader-settings-preview-page"
                                 className={`grid min-h-16 ${layout === 'dual' ? 'grid-cols-2' : 'grid-cols-1'} overflow-hidden rounded-lg bg-white/20 shadow-sm`}
                                 style={{
-                                    columnGap: `${Math.max(4, columnGap * 0.12)}px`,
-                                    padding: `${Math.max(6, vMargin * 0.18)}px ${Math.max(8, hMargin * 0.16)}px`,
+                                    columnGap: `${Math.max(4, (layout === 'dual' ? columnGap + (hMargin * 2) : columnGap) * 0.12)}px`,
+                                    padding: `${Math.max(6, vMargin * 0.18)}px ${layout === 'dual' ? 8 : Math.max(8, hMargin * 0.16)}px`,
                                     fontFamily: selectedFontPreviewFamily,
                                     fontWeight,
                                     fontSize: `${Math.max(10, fontSize * 0.58)}px`,

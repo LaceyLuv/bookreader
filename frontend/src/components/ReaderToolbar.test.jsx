@@ -81,7 +81,7 @@ test('shared preview reflects reading and display values', () => {
     expect(page.style.fontWeight).toBe('650')
     expect(page.style.lineHeight).toBe('2.1')
     expect(page.style.letterSpacing).toBe('0.08em')
-    expect(page.style.columnGap).toBe('8.64px')
+    expect(page.style.columnGap).toBe('27.84px')
 })
 
 test('TXT transforms live in the advanced tab and call their existing setters', async () => {

@@ -413,6 +413,7 @@ test('TXT reader renders a shared dual spread with two page surfaces and no segm
     expect(screen.queryByTestId('txt-segment-card')).toBeNull()
     expect(stage.style.paddingLeft).toBe('0px')
     expect(stage.style.paddingRight).toBe('0px')
+    expect(spread.style.gap).toBe('72px')
     expect(pageSurfaces.every((surface) => surface.style.paddingLeft === '20px' && surface.style.paddingRight === '20px')).toBe(true)
     expect(pageSurfaces.every((surface) => !surface.style.borderRight || surface.style.borderRight === 'none')).toBe(true)
 })
