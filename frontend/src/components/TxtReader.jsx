@@ -164,7 +164,6 @@ function TxtReader() {
         letterSpacing,
         lang,
         tt,
-        toggleTitleBar,
     } = settings
 
     const [compactWhitespace, setCompactWhitespace] = useState(false)
@@ -1329,7 +1328,7 @@ function TxtReader() {
         })
     }, [captureAnchor, restoreAnchor])
 
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true, readerRootRef })
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: true, readerRootRef })
 
     const loadingLabel = error ? tt('loadContentFailed') : (manifest?.encoding || tt('loading'))
 

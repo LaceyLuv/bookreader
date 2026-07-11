@@ -18,7 +18,7 @@ function ZipReader() {
     const location = useLocation()
     const legacyId = location.state?.legacyId ?? null
     const settings = useReaderSettings()
-    const { themeStyle, layout: preferredLayout, hMargin, vMargin, zipImageScale, tt, toggleTitleBar } = settings
+    const { themeStyle, layout: preferredLayout, hMargin, vMargin, zipImageScale, tt } = settings
     const layout = useResponsiveReaderLayout(preferredLayout)
 
     const [images, setImages] = useState([])
@@ -94,7 +94,7 @@ function ZipReader() {
         seekToImage(Math.round(p * (images.length - 1)))
     }, [images.length, seekToImage])
 
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true, readerRootRef })
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: true, readerRootRef })
 
     const imageUrl = (name) => `${API}/${id}/image/${encodeURIComponent(name)}`
     const markImageFailed = useCallback((name) => {

@@ -1,9 +1,8 @@
 ﻿import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useEffect, lazy, Suspense } from 'react'
 import Dashboard from './pages/Dashboard'
-import TitleBar from './components/TitleBar'
 import FontStyleInjector from './components/FontStyleInjector'
-import { onTitleBarVisibilityChange, setTitleBarOffset, getInitialAppTheme, setAppThemeVars } from './lib/appChrome'
+import { setTitleBarOffset, getInitialAppTheme, setAppThemeVars } from './lib/appChrome'
 import { IS_TAURI_RUNTIME } from './lib/apiBase'
 import { useBackendStartup } from './hooks/useBackendStartup'
 import { createT } from './i18n'
@@ -22,20 +21,12 @@ function getSavedLang() {
 }
 
 function App() {
-    const [showTitleBar, setShowTitleBar] = useState(IS_TAURI_RUNTIME)
     const backendStartup = useBackendStartup()
     const tt = createT(getSavedLang())
 
     useEffect(() => {
         setAppThemeVars(getInitialAppTheme())
-    }, [])
-
-    useEffect(() => {
-        setTitleBarOffset(showTitleBar)
-    }, [showTitleBar])
-
-    useEffect(() => {
-        return onTitleBarVisibilityChange((visible) => setShowTitleBar(visible))
+        setTitleBarOffset(false)
     }, [])
 
     const backendBlocked = IS_TAURI_RUNTIME && !backendStartup.ready
@@ -46,8 +37,7 @@ function App() {
     return (
         <BrowserRouter>
             {!backendBlocked && <FontStyleInjector />}
-            {showTitleBar && <TitleBar visible={showTitleBar} />}
-            <div style={{ paddingTop: showTitleBar ? 'var(--titlebar-height, 0px)' : '0px' }}>
+            <div>
                 {backendBlocked ? (
                     <div style={{ display: 'flex', minHeight: '60vh', alignItems: 'center', justifyContent: 'center', padding: '24px', color: 'var(--app-fg)' }}>
                         <div style={{ maxWidth: '520px', textAlign: 'center' }}>

@@ -41,3 +41,12 @@ test('Space does not activate a focused button from the last mouse click', async
     expect(onNext).toHaveBeenCalledTimes(1)
     expect(onPrev).not.toHaveBeenCalled()
 })
+
+test('Escape is left available when the reader has no escape action', () => {
+    render(<Harness onNext={vi.fn()} onPrev={vi.fn()} />)
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+
+    window.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+})

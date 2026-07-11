@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { createT } from '../i18n'
 import { withThemeVars } from '../constants/themes'
 import {
-    emitTitleBarVisibility,
     isSafeModeEnabled,
     SAFE_APP_BG,
     SAFE_APP_FG,
@@ -52,7 +51,7 @@ const DEFAULTS = {
     zipImageScale: 1,
     bgColor: '#fbfaf6',
     textColor: '#38342f',
-    showTitleBar: true,
+    showTitleBar: false,
     lang: 'en',
 }
 
@@ -78,6 +77,7 @@ function loadSaved() {
                 ? Math.max(0.5, Math.min(2.5, parsedZipScale))
                 : DEFAULTS.zipImageScale
             merged.layout = merged.layout === 'dual' || merged.layout === 'spread' ? 'dual' : 'single'
+            merged.showTitleBar = false
             if (safeMode) {
                 return { ...merged, theme: 'light', bgColor: SAFE_APP_BG, textColor: SAFE_APP_FG }
             }
@@ -147,15 +147,9 @@ export function useReaderSettings() {
         }),
         [baseThemeStyle.accent, baseThemeStyle.name, bgColor, textColor],
     )
-    const showTitleBar = s.showTitleBar !== false
-
     useEffect(() => {
         setAppThemeVars(themeStyle)
     }, [themeStyle])
-
-    useEffect(() => {
-        emitTitleBarVisibility(showTitleBar)
-    }, [showTitleBar])
 
     const tt = createT(s.lang)
 
@@ -193,8 +187,7 @@ export function useReaderSettings() {
         },
         bgColor, setBgColor: v => set('bgColor', v),
         textColor, setTextColor: v => set('textColor', v),
-        showTitleBar, setShowTitleBar: v => set('showTitleBar', !!v),
-        toggleTitleBar: () => set('showTitleBar', !showTitleBar),
+        showTitleBar: false,
         lang: s.lang, setLang: v => set('lang', v),
         resetDefaults, resetToast,
         settingsOpen, toggleSettings,

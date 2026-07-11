@@ -25,8 +25,8 @@ function isPrevKey(e) {
     return e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp' || ((e.key === ' ' || e.code === 'Space') && e.shiftKey)
 }
 
-function isHandledKey(e) {
-    return isNextKey(e) || isPrevKey(e) || e.key === 'Escape'
+function isHandledKey(e, hasEscapeHandler) {
+    return isNextKey(e) || isPrevKey(e) || (hasEscapeHandler && e.key === 'Escape')
 }
 
 /**
@@ -50,7 +50,7 @@ export function useKeyboardNav({ onNext, onPrev, onEscape, enabled = true, reade
             e.preventDefault()
             e.stopPropagation()
             onNext?.()
-        } else if (e.key === 'Escape') {
+        } else if (e.key === 'Escape' && onEscape) {
             e.preventDefault()
             e.stopPropagation()
             onEscape?.()
@@ -60,10 +60,10 @@ export function useKeyboardNav({ onNext, onPrev, onEscape, enabled = true, reade
     const preventHandledKeyup = useCallback((e) => {
         if (!enabled) return
         if (isTextEntryTarget(e.target)) return
-        if (!isHandledKey(e)) return
+        if (!isHandledKey(e, !!onEscape)) return
         e.preventDefault()
         e.stopPropagation()
-    }, [enabled])
+    }, [enabled, onEscape])
 
     useEffect(() => {
         window.addEventListener('keydown', handler, true)

@@ -111,7 +111,7 @@ function EpubReader() {
     const legacyId = location.state?.legacyId ?? null
     const settings = useReaderSettings()
     const { contentStyle, themeStyle, layout: preferredLayout, columnGap, hMargin, vMargin,
-        lineHeight, letterSpacing, fontMode, lang, tt, toggleTitleBar } = settings
+        lineHeight, letterSpacing, fontMode, lang, tt } = settings
 
     const layout = useResponsiveReaderLayout(preferredLayout)
     const [toc, setToc] = useState([])
@@ -708,7 +708,7 @@ function EpubReader() {
 
     const goNext = useCallback(() => { if (chapterPage < chapterTotalPages - 1) goToPage(chapterPage + 1); else if (chapter && chapterIndex < chapter.total - 1) loadChapter(chapterIndex + 1, { page: 0 }) }, [chapterPage, chapterTotalPages, chapter, chapterIndex, goToPage])
     const goPrev = useCallback(() => { if (chapterPage > 0) goToPage(chapterPage - 1); else if (chapterIndex > 0) loadChapter(chapterIndex - 1, { page: 'last' }) }, [chapterPage, chapterIndex, goToPage])
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true, readerRootRef })
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: true, readerRootRef })
 
     const openEpubImageInWindow = useCallback((imgEl) => {
         if (!imgEl || typeof window === 'undefined') return
