@@ -25,9 +25,9 @@ export function hasActiveTxtTransformOptions(options) {
 
 export function normalizeTxtCompatibilitySegments(data, transformOptions = {}) {
     const displayFragments = Array.isArray(data?.display_fragments) ? data.display_fragments : []
-    if (!hasActiveTxtTransformOptions(transformOptions) || displayFragments.length === 0) {
-        return Array.isArray(data?.segments) ? data.segments : []
-    }
+    const segments = Array.isArray(data?.segments) ? data.segments : []
+    if (displayFragments.length === 0) return segments
+    if (!hasActiveTxtTransformOptions(transformOptions) && segments.length > 0) return segments
 
     const mergedBySegmentId = new Map()
     const orderedSegmentIds = []

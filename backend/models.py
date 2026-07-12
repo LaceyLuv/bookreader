@@ -190,6 +190,7 @@ class TxtDisplayFragment(BaseModel):
     source_start_offset: int
     source_end_offset: int
     display_to_source: List[int] = Field(default_factory=list)
+    display_to_source_runs: List[tuple[int, int, int]] = Field(default_factory=list)
 
 
 class TxtManifest(BaseModel):

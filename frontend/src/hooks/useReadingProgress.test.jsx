@@ -127,6 +127,36 @@ test('hydrates position and preserves saved data until pagination is ready', asy
     expect(JSON.parse(localStorage.getItem('bookreader_progress'))['txt-1'].position).toBe(4)
 })
 
+test('defers TXT restore until the user chooses and exposes the saved locator', async () => {
+    const savedLocator = { version: 1, kind: 'txt', segmentId: 4, sourceOffset: 120, page: 12 }
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        'txt-1': {
+            position: 12,
+            totalPages: 20,
+            type: 'txt',
+            percent: 65,
+            bookmarks: [],
+            locator: savedLocator,
+        },
+    }))
+
+    const { result } = renderHook(() => useReadingProgress('txt-1', {
+        totalPages: 20,
+        type: 'txt',
+        deferInitialPosition: true,
+        locatorToPosition: () => 14,
+    }))
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.currentPosition).toBe(0)
+    expect(result.current.resumePrompt).toMatchObject({ position: 14, locator: savedLocator })
+
+    act(() => result.current.startOver())
+
+    expect(result.current.currentPosition).toBe(0)
+    expect(result.current.resumePrompt).toBeNull()
+})
+
 test('removeBookProgress deletes current and legacy progress entries', () => {
     localStorage.setItem('bookreader_progress', JSON.stringify({
         'book-1': { position: 3, totalPages: 10, type: 'txt', bookmarks: [{ position: 3 }] },

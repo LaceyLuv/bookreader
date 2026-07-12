@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 
 from models import BookInfo, BookMeta, BookMetaUpdate, BookSearchResponse, EpubChapter, EpubToc, TxtContent, TxtManifest, TxtSegmentWindow, ZipImageList
 from paths import BOOKS_DIR
@@ -323,7 +324,7 @@ async def get_txt_content(book_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail='Not a TXT file')
     _touch_book_open(record)
     _schedule_search_prewarm(background_tasks, path, record['file_type'])
-    result = read_txt_file(str(path))
+    result = await run_in_threadpool(read_txt_file, str(path))
     return TxtContent(**result)
 
 
@@ -340,7 +341,8 @@ async def get_txt_manifest(
         raise HTTPException(status_code=400, detail='Not a TXT file')
     _touch_book_open(record)
     _schedule_search_prewarm(background_tasks, path, record['file_type'])
-    manifest = read_txt_manifest(
+    manifest = await run_in_threadpool(
+        read_txt_manifest,
         str(path),
         transform_options={
             'trim_spaces': trim_spaces,
@@ -366,7 +368,8 @@ async def get_txt_segments(
     if record['file_type'] != 'txt':
         raise HTTPException(status_code=400, detail='Not a TXT file')
 
-    window = read_txt_segment_window(
+    window = await run_in_threadpool(
+        read_txt_segment_window,
         str(path),
         start=start,
         limit=limit,

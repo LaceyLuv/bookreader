@@ -127,6 +127,7 @@ export function useReadingProgress(bookId, {
     paginationReady = true,
     locator = null,
     locatorToPosition = null,
+    deferInitialPosition = false,
 } = {}) {
     const [currentPosition, setCurrentPosition] = useState(0)
     const [bookmarks, setBookmarks] = useState([])
@@ -136,7 +137,9 @@ export function useReadingProgress(bookId, {
     const latestEntryRef = useRef(buildProgressEntry(0, totalPages, type, []))
     const locatorToPositionRef = useRef(locatorToPosition)
     const appliedLocatorKeyRef = useRef(null)
+    const resumePromptRef = useRef(resumePrompt)
     locatorToPositionRef.current = locatorToPosition
+    resumePromptRef.current = resumePrompt
     const canPersist = hydratedBookId === bookId && paginationReady
     const canPersistRemote = remoteHydratedBookId === bookId
     const canAdjustPagination = hydratedBookId === bookId && paginationReady
@@ -169,12 +172,13 @@ export function useReadingProgress(bookId, {
         // be a loading placeholder and must not destroy a valid saved location.
         const normalized = normalizeProgressEntry(entry, type)
         latestEntryRef.current = normalized
-        setCurrentPosition(normalized.position)
+        setCurrentPosition(deferInitialPosition ? 0 : normalized.position)
         setBookmarks(normalized.bookmarks)
         if (normalized.position > 0) {
             setResumePrompt({
                 position: normalized.position,
                 percent: calculatePercent(normalized.position, totalPages),
+                locator: normalized.locator,
             })
         }
 
@@ -182,7 +186,7 @@ export function useReadingProgress(bookId, {
             persistProgressEntry(bookId, legacyId, normalized)
         }
         setHydratedBookId(bookId)
-    }, [bookId, legacyId])
+    }, [bookId, deferInitialPosition, legacyId])
 
     useEffect(() => {
         let cancelled = false
@@ -204,10 +208,14 @@ export function useReadingProgress(bookId, {
                     persistProgressEntry(bookId, legacyId, normalized)
                     latestEntryRef.current = normalized
                     appliedLocatorKeyRef.current = null
-                    setCurrentPosition(normalized.position)
+                    setCurrentPosition(deferInitialPosition ? 0 : normalized.position)
                     setBookmarks(normalized.bookmarks)
                     if (normalized.position > 0) {
-                        setResumePrompt({ position: normalized.position, percent: normalized.percent })
+                        setResumePrompt({
+                            position: normalized.position,
+                            percent: normalized.percent,
+                            locator: normalized.locator,
+                        })
                     }
                 } else if (localAtRequestStart) {
                     void writeRemoteProgress(bookId, normalizeProgressEntry(localAtRequestStart, type)).catch(() => {})
@@ -219,7 +227,7 @@ export function useReadingProgress(bookId, {
             }
         })()
         return () => { cancelled = true }
-    }, [bookId, legacyId, type])
+    }, [bookId, deferInitialPosition, legacyId, type])
 
     useEffect(() => {
         if (!canAdjustPagination) return
@@ -230,10 +238,18 @@ export function useReadingProgress(bookId, {
             ? locatorToPositionRef.current(savedLocator)
             : null
         if (locatorKey) appliedLocatorKeyRef.current = locatorKey
-        setCurrentPosition((position) => clampPosition(Number.isFinite(resolvedPosition) ? resolvedPosition : position, totalPages))
+        setCurrentPosition((position) => clampPosition(
+            Number.isFinite(resolvedPosition) && !(deferInitialPosition && resumePromptRef.current)
+                ? resolvedPosition
+                : position,
+            totalPages,
+        ))
         setResumePrompt((prompt) => {
             if (!prompt) return prompt
-            const nextPosition = clampPosition(prompt.position, totalPages)
+            const nextPosition = clampPosition(
+                Number.isFinite(resolvedPosition) ? resolvedPosition : prompt.position,
+                totalPages,
+            )
             return {
                 ...prompt,
                 position: nextPosition,
@@ -246,11 +262,12 @@ export function useReadingProgress(bookId, {
                 : null
             return Number.isFinite(anchored) ? { ...bookmark, position: clampPosition(anchored, totalPages) } : bookmark
         }).filter((bookmark) => Number.isFinite(bookmark?.position) && bookmark.position >= 0 && bookmark.position <= maxPosition))
-    }, [bookId, canAdjustPagination, remoteHydratedBookId, totalPages])
+    }, [bookId, canAdjustPagination, deferInitialPosition, remoteHydratedBookId, totalPages])
 
     useEffect(() => {
+        if (!canPersist) return
         latestEntryRef.current = buildProgressEntry(currentPosition, totalPages, type, bookmarks, resolveLocator())
-    }, [currentPosition, totalPages, type, bookmarks, resolveLocator])
+    }, [bookmarks, canPersist, currentPosition, resolveLocator, totalPages, type])
 
     useEffect(() => {
         if (!bookId || !canPersist) return
@@ -285,6 +302,12 @@ export function useReadingProgress(bookId, {
         setResumePrompt(null)
     }, [])
 
+    const startOver = useCallback(() => {
+        setCurrentPosition(0)
+        setResumePrompt(null)
+        appliedLocatorKeyRef.current = null
+    }, [])
+
     const addBookmark = useCallback(() => {
         const label = `Page ${currentPosition + 1}`
         const ts = new Date().toISOString()
@@ -308,7 +331,7 @@ export function useReadingProgress(bookId, {
         currentPosition, setCurrentPosition,
         percent,
         bookmarks, addBookmark, removeBookmark, goToBookmark,
-        resumePrompt, resumeReading, dismissResume,
+        resumePrompt, resumeReading, dismissResume, startOver,
     }
 }
 

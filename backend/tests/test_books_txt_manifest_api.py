@@ -171,7 +171,7 @@ def test_transformed_manifest_and_segment_window_counts_stay_aligned(monkeypatch
                     "display_text": f"display {index}",
                     "source_start_offset": index * 10,
                     "source_end_offset": index * 10 + 9,
-                    "display_to_source": list(range(index * 10, index * 10 + 10)),
+                    "display_to_source_runs": [[0, index * 10, 10]],
                 }
                 for index in range(start, min(start + limit, 30))
             ],
@@ -219,7 +219,7 @@ def test_txt_segments_endpoint_returns_transform_aware_window(monkeypatch):
                     "display_text": f"display {index}",
                     "source_start_offset": index * 10,
                     "source_end_offset": index * 10 + 9,
-                    "display_to_source": list(range(index * 10, index * 10 + 10)),
+                    "display_to_source_runs": [[0, index * 10, 10]],
                 }
                 for index in range(start, start + limit)
             ],
@@ -245,6 +245,7 @@ def test_txt_segments_endpoint_returns_transform_aware_window(monkeypatch):
     assert len(payload["display_fragments"]) == 4
     assert payload["display_fragments"][0]["segment_id"] == 10
     assert payload["display_fragments"][0]["display_text"] == "display 10"
+    assert payload["display_fragments"][0]["display_to_source_runs"] == [[0, 100, 10]]
     assert "segments" not in payload
 
 

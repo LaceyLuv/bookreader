@@ -1,14 +1,47 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest'
-import { useTxtSegmentWindow } from './useTxtSegmentWindow'
+import { classifyTxtLoadError, useTxtSegmentWindow } from './useTxtSegmentWindow'
 
 const jsonResponse = (payload) => Promise.resolve({
     ok: true,
     json: () => Promise.resolve(payload),
 })
 
+const createDeferred = () => {
+    let resolve
+    const promise = new Promise((resolver) => { resolve = resolver })
+    return { promise, resolve }
+}
+
 afterEach(() => {
     vi.unstubAllGlobals()
+})
+
+test('classifies every terminal TXT content error state', () => {
+    const unsupported = new Error('unsupported')
+    unsupported.status = 415
+    const missing = new Error('missing')
+    missing.status = 404
+    const aborted = new DOMException('aborted', 'AbortError')
+
+    expect(classifyTxtLoadError(unsupported)).toBe('unsupported')
+    expect(classifyTxtLoadError(missing)).toBe('fatal_error')
+    expect(classifyTxtLoadError(aborted)).toBe('cancelled')
+    expect(classifyTxtLoadError(new Error('network'))).toBe('recoverable_error')
+})
+
+test('finishes an empty TXT load without treating it as an error', async () => {
+    const fetchMock = vi.fn((url) => {
+        if (url.includes('txt-manifest')) return jsonResponse({ segment_count: 0, total_chars: 0 })
+        return jsonResponse({ display_fragments: [] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useTxtSegmentWindow('empty-book'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    expect(result.current.contentStatus).toBe('empty')
+    expect(result.current.error).toBeNull()
 })
 
 test('deduplicates concurrent window requests and evicts least-recently-used windows', async () => {
@@ -61,4 +94,30 @@ test('aborts outstanding requests when the book changes', async () => {
     act(() => rerender({ bookId: 'book-2' }))
     expect(firstSignal.aborted).toBe(true)
     expect(result.current.visibleSegments).toEqual([])
+})
+
+test('ignores a stale manifest that resolves after a newer book is ready', async () => {
+    const staleManifest = createDeferred()
+    const fetchMock = vi.fn((url) => {
+        if (url.includes('book-1') && url.includes('txt-manifest')) return staleManifest.promise
+        if (url.includes('book-2') && url.includes('txt-manifest')) return jsonResponse({ segment_count: 0, total_chars: 0 })
+        if (url.includes('book-2') && url.includes('txt-segments')) return jsonResponse({ display_fragments: [] })
+        return jsonResponse({ display_fragments: [{ segment_id: 99, display_text: 'stale' }] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result, rerender } = renderHook(({ bookId }) => useTxtSegmentWindow(bookId), {
+        initialProps: { bookId: 'book-1' },
+    })
+    rerender({ bookId: 'book-2' })
+    await waitFor(() => expect(result.current.contentStatus).toBe('empty'))
+
+    await act(async () => {
+        staleManifest.resolve({ ok: true, json: () => Promise.resolve({ segment_count: 1, total_chars: 5 }) })
+        await Promise.resolve()
+    })
+
+    expect(result.current.manifest.segment_count).toBe(0)
+    expect(result.current.readyContentKey).toContain('book-2:')
+    expect(fetchMock.mock.calls.some(([url]) => url.includes('book-1') && url.includes('txt-segments'))).toBe(false)
 })

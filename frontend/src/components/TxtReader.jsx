@@ -12,6 +12,7 @@ import { useReadingProgress } from '../hooks/useReadingProgress'
 import { useReaderSettings } from '../hooks/useReaderSettings'
 import { useResponsiveReaderLayout } from '../hooks/useResponsiveReaderLayout'
 import { useTxtSegmentWindow } from '../hooks/useTxtSegmentWindow'
+import { emitTxtLoadEvent, getTxtLoadTimestamp } from '../lib/txtLoadTelemetry'
 import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annotationColors'
 import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
 import { API_BOOKS_BASE } from '../lib/apiBase'
@@ -40,6 +41,7 @@ import {
 const API = API_BOOKS_BASE
 const API_ROOT = API.replace(/\/books$/, '')
 const DEFAULT_TXT_RENDER_PAGE_SIZE = 24
+const GLOBAL_PAGINATION_CONCURRENCY = 2
 const TXT_PAGE_PADDING_PX = 20
 const TXT_PAGE_VERTICAL_SAFETY_PX = 2
 const TXT_PARAGRAPH_GAP = '0.65em'
@@ -115,6 +117,7 @@ function scheduleAfterPaint(callback) {
 }
 
 function getLocatorSegmentOffset(locator) {
+    if (Number.isFinite(locator?.sourceOffset)) return locator.sourceOffset
     if (Number.isFinite(locator?.offset)) return locator.offset
     if (Number.isFinite(locator?.segment_local_start)) return locator.segment_local_start
 
@@ -183,6 +186,9 @@ function TxtReader() {
     const [activeAnnotationId, setActiveAnnotationId] = useState(null)
     const [selectionSnapshot, setSelectionSnapshot] = useState(null)
     const [globalRenderPages, setGlobalRenderPages] = useState(null)
+    const [globalPaginationStatus, setGlobalPaginationStatus] = useState('idle')
+    const [globalPaginationError, setGlobalPaginationError] = useState(null)
+    const [globalPaginationRetryToken, setGlobalPaginationRetryToken] = useState(0)
     const [currentViewportStartSegment, setCurrentViewportStartSegment] = useState(null)
     const [currentViewportStartFragmentIndex, setCurrentViewportStartFragmentIndex] = useState(null)
     const [viewportMetrics, setViewportMetrics] = useState(null)
@@ -195,6 +201,7 @@ function TxtReader() {
     const globalRenderPageMapVersionRef = useRef(0)
     const navigationRequestIdRef = useRef(0)
     const requestedViewportPageRef = useRef(0)
+    const firstContentTelemetryKeyRef = useRef(null)
     const isPointerSelectingRef = useRef(false)
     const { captureAnchor, restoreAnchor, clearAnchor } = useReaderViewportAnchor()
     const transformOptions = useMemo(() => createTxtTransformOptions({
@@ -210,10 +217,14 @@ function TxtReader() {
         visibleDisplayFragments,
         setVisibleStart,
         loadWindow,
+        loadPaginationWindow,
         showWindowForSegment,
         windowSize,
         loading,
         error,
+        readyContentKey,
+        contentStatus,
+        retryContent,
     } = useTxtSegmentWindow(id, transformOptions)
 
     useEffect(() => {
@@ -255,6 +266,32 @@ function TxtReader() {
         [indexedDisplayFragments, viewportMetrics],
     )
 
+    useEffect(() => {
+        if (loading || error || renderPages.length === 0) return undefined
+        const contentKey = `${readyContentKey}:${viewportMetrics?.charsPerLine}:${viewportMetrics?.linesPerPage}`
+        if (!readyContentKey || firstContentTelemetryKeyRef.current === contentKey) return undefined
+        firstContentTelemetryKeyRef.current = contentKey
+        emitTxtLoadEvent('first_content:commit', {
+            bookId: id,
+            fragmentCount: visibleDisplayFragments.length,
+        })
+        return scheduleAfterPaint(() => {
+            emitTxtLoadEvent('first_content:visible', {
+                bookId: id,
+                fragmentCount: visibleDisplayFragments.length,
+            })
+        })
+    }, [
+        error,
+        id,
+        loading,
+        readyContentKey,
+        renderPages.length,
+        viewportMetrics?.charsPerLine,
+        viewportMetrics?.linesPerPage,
+        visibleDisplayFragments.length,
+    ])
+
     const localRenderPageStartSegments = useMemo(
         () => getRenderPageStartSegments(renderPages),
         [renderPages],
@@ -284,26 +321,45 @@ function TxtReader() {
                 return resolveRenderPages(renderPages)
             }
 
-            const segments = []
-            for (let start = 0; start < manifest.segment_count; start += windowSize) {
-                if (isStaleLoad()) return null
-                let windowDisplayFragments = null
-                if (start === 0 && visibleDisplayFragments.length > 0 && visibleWindowStartsAtZero) {
-                    windowDisplayFragments = visibleDisplayFragments.map((fragment, fragmentIndex) => ({
-                        ...fragment,
-                        fragmentIndex: start + fragmentIndex,
-                    }))
-                } else {
-                    const windowData = await loadWindow(start)
-                    if (!windowData) return null
-                    windowDisplayFragments = windowData.displayFragments.map((fragment, fragmentIndex) => ({
-                        ...fragment,
-                        fragmentIndex: start + fragmentIndex,
-                    }))
+            const paginationWindowSize = manifest.segment_count > 1000 ? 120 : windowSize
+            const starts = []
+            for (let start = 0; start < manifest.segment_count; start += paginationWindowSize) starts.push(start)
+            const windows = new Array(starts.length)
+            let nextWindowIndex = 0
+
+            const loadNextWindow = async () => {
+                while (nextWindowIndex < starts.length) {
+                    const windowIndex = nextWindowIndex
+                    nextWindowIndex += 1
+                    const start = starts[windowIndex]
+                    if (isStaleLoad()) return
+
+                    if (
+                        start === 0
+                        && paginationWindowSize === windowSize
+                        && visibleDisplayFragments.length > 0
+                        && visibleWindowStartsAtZero
+                    ) {
+                        windows[windowIndex] = visibleDisplayFragments
+                        continue
+                    }
+
+                    const windowData = await loadPaginationWindow(start, paginationWindowSize)
+                    if (!windowData || isStaleLoad()) return
+                    windows[windowIndex] = windowData.displayFragments
                 }
-                if (isStaleLoad()) return null
-                segments.push(...windowDisplayFragments)
             }
+
+            const workerCount = Math.min(GLOBAL_PAGINATION_CONCURRENCY, starts.length)
+            await Promise.all(Array.from({ length: workerCount }, () => loadNextWindow()))
+            if (isStaleLoad() || windows.some((windowFragments) => !Array.isArray(windowFragments))) return null
+
+            const segments = windows.flatMap((windowFragments, windowIndex) => (
+                windowFragments.map((fragment, fragmentIndex) => ({
+                    ...fragment,
+                    fragmentIndex: starts[windowIndex] + fragmentIndex,
+                }))
+            ))
 
             return resolveRenderPages(buildMeasuredRenderPages(segments, viewportMetrics))
         })().catch((err) => {
@@ -318,7 +374,7 @@ function TxtReader() {
     }, [
         globalRenderPages,
         manifest?.segment_count,
-        loadWindow,
+        loadPaginationWindow,
         renderPages,
         visibleDisplayFragments,
         visibleSegments,
@@ -329,19 +385,20 @@ function TxtReader() {
 
     const totalViewportPages = Math.max(
         1,
-        hasGlobalRenderPageMap
-            ? globalRenderPageStartSegments.length
-            : localRenderPageStartSegments.length,
+        hasGlobalRenderPageMap ? globalRenderPageStartSegments.length : 1,
     )
+    const globalPaginationReady = globalPaginationStatus === 'ready' && Array.isArray(globalRenderPages)
     const progress = useReadingProgress(id, {
         totalPages: totalViewportPages,
         type: 'txt',
         legacyId,
-        paginationReady: !loading && !error && renderPages.length > 0,
+        paginationReady: !loading && !error && globalPaginationReady,
+        deferInitialPosition: true,
         locator: () => ({
             kind: 'txt',
             segmentId: getSegmentIdForLocator(currentViewportStartSegment),
-            sourceOffset: getSegmentStartOffset(visibleSegments, getSegmentIdForLocator(currentViewportStartSegment)),
+            sourceOffset: getLocatorSegmentOffset(currentViewportStartSegment)
+                ?? getSegmentStartOffset(visibleSegments, getSegmentIdForLocator(currentViewportStartSegment)),
             page: currentViewportPage,
         }),
         locatorToPosition: (saved) => findRenderPageForLocator(hasGlobalRenderPageMap ? globalRenderPages : renderPages, {
@@ -358,6 +415,7 @@ function TxtReader() {
         removeBookmark,
         resumePrompt,
         dismissResume,
+        startOver,
     } = progress
     const currentRenderPageIndex = useMemo(() => {
         if (currentViewportStartSegment == null) {
@@ -571,6 +629,8 @@ function TxtReader() {
         globalRenderPageMapVersionRef.current += 1
         navigationRequestIdRef.current += 1
         setGlobalRenderPages(null)
+        setGlobalPaginationStatus('idle')
+        setGlobalPaginationError(null)
         setCurrentViewportStartSegment(null)
         setCurrentViewportStartFragmentIndex(null)
         globalRenderPageMapPromiseRef.current = null
@@ -585,8 +645,78 @@ function TxtReader() {
     useEffect(() => {
         globalRenderPageMapVersionRef.current += 1
         setGlobalRenderPages(null)
+        setGlobalPaginationStatus('idle')
+        setGlobalPaginationError(null)
         globalRenderPageMapPromiseRef.current = null
     }, [viewportMetrics?.charsPerLine, viewportMetrics?.linesPerPage])
+
+    useEffect(() => {
+        if (loading || error || !manifest) return
+        if (readyContentKey !== `${id}:${transformQuery}`) return
+        if (!manifest.segment_count) {
+            if (!Array.isArray(globalRenderPages)) setGlobalRenderPages([])
+            if (globalPaginationStatus !== 'ready') setGlobalPaginationStatus('ready')
+            setGlobalPaginationError(null)
+            return
+        }
+        if (renderPages.length === 0) return
+        if (globalPaginationStatus === 'loading' || globalPaginationStatus === 'recoverable_error' || globalPaginationStatus === 'cancelled') return
+        if (Array.isArray(globalRenderPages)) {
+            if (globalPaginationStatus !== 'ready') setGlobalPaginationStatus('ready')
+            return
+        }
+
+        setGlobalPaginationStatus('loading')
+        setGlobalPaginationError(null)
+        const paginationVersion = globalRenderPageMapVersionRef.current
+        const paginationStartedAt = getTxtLoadTimestamp()
+        emitTxtLoadEvent('full_pagination:start', {
+            bookId: id,
+            segmentCount: manifest.segment_count,
+        })
+        void loadGlobalRenderPages()
+            .then((pages) => {
+                if (globalRenderPageMapVersionRef.current !== paginationVersion) return
+                if (!Array.isArray(pages)) {
+                    emitTxtLoadEvent('full_pagination:cancelled', {
+                        bookId: id,
+                        durationMs: getTxtLoadTimestamp() - paginationStartedAt,
+                        reason: 'superseded',
+                    })
+                    setGlobalPaginationStatus('cancelled')
+                    return
+                }
+                emitTxtLoadEvent('full_pagination:ready', {
+                    bookId: id,
+                    durationMs: getTxtLoadTimestamp() - paginationStartedAt,
+                    fragmentCount: pages.length,
+                })
+                setGlobalPaginationStatus('ready')
+            })
+            .catch((paginationError) => {
+                if (globalRenderPageMapVersionRef.current !== paginationVersion) return
+                console.error('Failed to prepare TXT pagination', paginationError)
+                emitTxtLoadEvent('full_pagination:error', {
+                    bookId: id,
+                    durationMs: getTxtLoadTimestamp() - paginationStartedAt,
+                    reason: paginationError?.message || 'unknown',
+                })
+                setGlobalPaginationError(paginationError)
+                setGlobalPaginationStatus(paginationError?.name === 'AbortError' ? 'cancelled' : 'recoverable_error')
+            })
+    }, [
+        error,
+        globalPaginationRetryToken,
+        globalRenderPages,
+        loadGlobalRenderPages,
+        loading,
+        manifest,
+        id,
+        readyContentKey,
+        renderPages.length,
+        transformQuery,
+        viewportMetrics,
+    ])
 
     useEffect(() => {
         if (loading) return undefined
@@ -958,10 +1088,13 @@ function TxtReader() {
             )
                 ?? getMeasuredPageStartFragmentIndex(targetPages?.[resolvedViewportPage])
                 ?? targetWindowStart
+            const anchoredViewportPage = Array.isArray(targetPages) && targetPages.length > 0
+                ? findRenderPageForLocator(targetPages, resolvedStartSegment)
+                : resolvedViewportPage
             if (isStaleRequest()) return
             setCurrentViewportStartSegment(resolvedStartSegment)
             setCurrentViewportStartFragmentIndex(resolvedStartFragmentIndex)
-            setCurrentViewportPage(resolvedViewportPage)
+            setCurrentViewportPage(anchoredViewportPage)
             return {
                 displayFragments: indexedTargetDisplayFragments,
                 windowStart: targetWindowStart,
@@ -1313,9 +1446,30 @@ function TxtReader() {
 
     const handleResume = useCallback(() => {
         if (!Number.isFinite(resumePrompt?.position)) return
-        void goToViewportPage({ page: resumePrompt.position })
+        const target = resumePrompt.locator
+            ? {
+                ...resumePrompt.locator,
+                offset: resumePrompt.locator.sourceOffset ?? resumePrompt.locator.offset,
+            }
+            : { page: resumePrompt.position }
+        void goToViewportPage(target)
         dismissResume()
     }, [dismissResume, goToViewportPage, resumePrompt])
+
+    const handleStartOver = useCallback(() => {
+        startOver()
+        void goToViewportPage({ page: 0 })
+    }, [goToViewportPage, startOver])
+
+    const retryGlobalPagination = useCallback(() => {
+        globalRenderPageMapVersionRef.current += 1
+        navigationRequestIdRef.current += 1
+        globalRenderPageMapPromiseRef.current = null
+        setGlobalRenderPages(null)
+        setGlobalPaginationError(null)
+        setGlobalPaginationStatus('idle')
+        setGlobalPaginationRetryToken((value) => value + 1)
+    }, [])
 
     const handleProgressBarVisibilityChange = useCallback(() => {
         const root = contentRef.current
@@ -1328,9 +1482,12 @@ function TxtReader() {
         })
     }, [captureAnchor, restoreAnchor])
 
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: true, readerRootRef })
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: globalPaginationReady, readerRootRef })
 
-    const loadingLabel = error ? tt('loadContentFailed') : (manifest?.encoding || tt('loading'))
+    const paginationPending = !loading && (
+        globalPaginationStatus === 'loading' || globalPaginationStatus === 'recoverable_error'
+    )
+    const loadingLabel = error || globalPaginationError ? tt('loadContentFailed') : (manifest?.encoding || tt('loading'))
 
     return (
         <div
@@ -1533,25 +1690,71 @@ function TxtReader() {
                                         ))}
                                     </div>
                                 ) : (
-                                    <div>{tt('loadContentFailed')}</div>
+                                    <div data-testid={`txt-content-${contentStatus}`} className="flex h-full flex-col items-center justify-center gap-3">
+                                        <div>
+                                            {contentStatus === 'empty'
+                                                ? tt('emptyContent')
+                                                : contentStatus === 'unsupported'
+                                                    ? tt('unsupportedContent')
+                                                    : contentStatus === 'cancelled'
+                                                        ? tt('loadCancelled')
+                                                        : tt('loadContentFailed')}
+                                        </div>
+                                        {contentStatus === 'recoverable_error' && (
+                                            <button type="button" onClick={retryContent} className="rounded-lg border px-3 py-1.5 text-sm">
+                                                {tt('retry')}
+                                            </button>
+                                        )}
+                                    </div>
                                 )}
                             </div>
+                        </div>
+                    )}
+                    {paginationPending && (
+                        <div
+                            data-testid="txt-pagination-loading"
+                            className="absolute right-3 top-3 z-30 flex items-center justify-center rounded-lg border px-3 py-2 shadow-sm"
+                            style={{ backgroundColor: `${themeStyle.card}ee`, borderColor: themeStyle.border }}
+                        >
+                            {error || globalPaginationError ? (
+                                <div className="flex items-center gap-3">
+                                    <div>{tt('loadContentFailed')}</div>
+                                    {globalPaginationError && (
+                                        <button type="button" onClick={retryGlobalPagination} className="rounded-lg border px-3 py-1.5 text-sm">
+                                            {tt('retry')}
+                                        </button>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
+                            )}
                         </div>
                     )}
                 </div>
             </div>
 
-            <ReaderProgressBar
-                currentPage={effectiveViewportPage + 1}
-                totalPages={totalViewportPages}
-                onSeekPage={(page) => { void goToViewportPage({ page: page - 1 }) }}
-                progress={totalViewportPages > 1 ? effectiveViewportPage / (totalViewportPages - 1) : 0}
-                onSeekProgress={seekToProgress}
-                extraInfo={manifest ? `TXT ${effectiveViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
-                readerFocusRef={readerRootRef}
-                onVisibilityChange={handleProgressBarVisibilityChange}
-            />
-            <ResumeToast resumePrompt={resumePrompt} onResume={handleResume} onDismiss={dismissResume} tt={tt} />
+            <div
+                className="shrink-0"
+                aria-hidden={!globalPaginationReady}
+                style={{
+                    visibility: globalPaginationReady ? 'visible' : 'hidden',
+                    pointerEvents: globalPaginationReady ? 'auto' : 'none',
+                }}
+            >
+                <ReaderProgressBar
+                    currentPage={effectiveViewportPage + 1}
+                    totalPages={totalViewportPages}
+                    onSeekPage={(page) => { void goToViewportPage({ page: page - 1 }) }}
+                    progress={totalViewportPages > 1 ? effectiveViewportPage / (totalViewportPages - 1) : 0}
+                    onSeekProgress={seekToProgress}
+                    extraInfo={manifest ? `TXT ${effectiveViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
+                    readerFocusRef={readerRootRef}
+                    onVisibilityChange={handleProgressBarVisibilityChange}
+                />
+            </div>
+            {globalPaginationReady && (
+                <ResumeToast resumePrompt={resumePrompt} onResume={handleResume} onDismiss={handleStartOver} tt={tt} />
+            )}
         </div>
     )
 }
