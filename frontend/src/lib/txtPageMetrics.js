@@ -119,9 +119,18 @@ export function createTxtMeasuredPaginationOptions(metrics) {
     previous
     && next
     && previous.segmentId === next.segmentId
-    && Number.isFinite(previous.sliceEnd)
-    && Number.isFinite(next.sliceStart)
-    && previous.sliceEnd === next.sliceStart
+    && (
+      (
+        Number.isFinite(previous.sourceEndOffset)
+        && Number.isFinite(next.sourceStartOffset)
+        && previous.sourceEndOffset === next.sourceStartOffset
+      )
+      || (
+        Number.isFinite(previous.sliceEnd)
+        && Number.isFinite(next.sliceStart)
+        && previous.sliceEnd === next.sliceStart
+      )
+    )
   )
 
   return {

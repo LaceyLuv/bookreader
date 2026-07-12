@@ -64,3 +64,26 @@ def test_search_txt_file_uses_transform_aware_display_fragments(monkeypatch):
     assert result["results"][0]["segment_local_end"] == 13
     assert result["results"][0]["locator"] == "segment:3:offset:9"
     assert result["results"][0]["position"] == 109
+
+
+def test_search_compacted_unicode_whitespace_returns_original_source_locator(tmp_path):
+    book_path = tmp_path / "unicode-whitespace.txt"
+    book_path.write_text("머리말\n\nalpha\u00a0\u00a0beta\u200b  gamma", encoding="utf-8")
+
+    result = search_txt_file(
+        str(book_path),
+        "beta gamma",
+        transform_options={
+            "trim_spaces": True,
+            "remove_empty_lines": True,
+            "split_paragraphs": False,
+        },
+    )
+
+    assert result["total"] == 1
+    match = result["results"][0]
+    assert match["segment_id"] == 1
+    assert match["segment_local_start"] == 7
+    assert match["segment_local_end"] == 19
+    assert match["locator"] == "segment:1:offset:7"
+    assert match["position"] == len("머리말\n\n") + 7

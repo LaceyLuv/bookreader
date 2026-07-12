@@ -81,6 +81,27 @@ test('compressed mapping runs preserve exact offsets across removed source chara
     })
 })
 
+test('compacted Korean text selection skips removed Unicode whitespace but restores source range', () => {
+    const fragments = [{
+        segment_id: 12,
+        display_text: '안녕 세계',
+        source_start_offset: 200,
+        source_end_offset: 209,
+        display_to_source_runs: [[0, 200, 2], [2, 204, 3]],
+    }]
+
+    expect(findDisplayRangeForSourceLocator(fragments, 12, 204, 206)).toEqual({
+        fragmentIndex: 0,
+        displayStart: 2,
+        displayEnd: 4,
+    })
+    expect(recoverSourceRangeFromDisplaySelection(fragments, 12, 0, 0, 5)).toEqual({
+        fragmentIndex: 0,
+        sourceStart: 200,
+        sourceEnd: 207,
+    })
+})
+
 test('findNearestDisplayFragmentForSourceOffset falls back to the closest fragment when an exact mapping is missing', () => {
     const fragments = [
         { segment_id: 2, source_start_offset: 100, source_end_offset: 140, display_text: 'first' },

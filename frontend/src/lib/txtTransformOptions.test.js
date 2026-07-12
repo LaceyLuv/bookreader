@@ -33,3 +33,17 @@ test('keeps legacy segments when both response shapes are present without transf
         display_fragments: [{ segment_id: 1, display_text: 'display' }],
     })).toBe(segments)
 })
+
+test('keeps v2 continuation chunks separate without inserting synthetic whitespace', () => {
+    const result = normalizeTxtCompatibilitySegments({
+        contract_version: 2,
+        display_fragments: [
+            { fragment_index: 0, segment_id: 4, display_text: 'alpha', source_start_offset: 10, source_end_offset: 15 },
+            { fragment_index: 0, segment_id: 4, display_text: 'beta', source_start_offset: 15, source_end_offset: 19 },
+        ],
+    })
+
+    expect(result).toHaveLength(2)
+    expect(result.map((segment) => segment.text).join('')).toBe('alphabeta')
+    expect(result.map((segment) => [segment.start_offset, segment.end_offset])).toEqual([[10, 15], [15, 19]])
+})

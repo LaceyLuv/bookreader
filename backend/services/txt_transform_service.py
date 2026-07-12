@@ -4,7 +4,20 @@ import re
 from typing import Any
 
 
-SENTENCE_RE = re.compile(r"[^.!?\n]+(?:[.!?]+|$)")
+_HORIZONTAL_SPACES = {" ", "\t", "\u00a0", "\u202f", "\u3000"}
+_INVISIBLE_SPACES = {"\u200b", "\u2060", "\ufeff"}
+_SENTENCE_TERMINATORS = {".", "!", "?", "。", "！", "？", "…"}
+_SENTENCE_CLOSERS = {'"', "'", "”", "’", "」", "』", "〉", "》", ")", "]", "}"}
+_SENTENCE_OPENERS = {'"', "'", "“", "‘", "「", "『", "〈", "《", "(", "[", "{"}
+_DIALOGUE_START_RE = re.compile(r'^(?:["“‘「『〈《]|[-–—]\s*[^-–—])')
+_SPEAKER_LINE_RE = re.compile(r"^[^\s:：]{1,12}\s*[:：]\s*\S")
+_TITLE_LINE_RE = re.compile(
+    r"^(?:제?\s*\d+\s*[장화편부]|chapter\s+\d+|prologue|epilogue|서장|종장|프롤로그|에필로그)\b",
+    re.IGNORECASE,
+)
+_DENSE_SPLIT_MIN_CHARS = 80
+_DENSE_TARGET_CHARS = 420
+_DENSE_MAX_CHARS = 700
 
 
 def _normalize_newlines_with_mapping(text: str) -> tuple[str, list[int]]:
@@ -52,9 +65,9 @@ def _trim_spaces(line: str, offsets: list[int]) -> tuple[str, list[int]]:
 
     start = 0
     end = len(line)
-    while start < end and line[start] in {" ", "\t"}:
+    while start < end and (line[start] in _HORIZONTAL_SPACES or line[start] in _INVISIBLE_SPACES):
         start += 1
-    while end > start and line[end - 1] in {" ", "\t"}:
+    while end > start and (line[end - 1] in _HORIZONTAL_SPACES or line[end - 1] in _INVISIBLE_SPACES):
         end -= 1
 
     if start >= end:
@@ -66,7 +79,9 @@ def _trim_spaces(line: str, offsets: list[int]) -> tuple[str, list[int]]:
 
     for index in range(start, end):
         char = line[index]
-        if char in {" ", "\t"}:
+        if char in _INVISIBLE_SPACES:
+            continue
+        if char in _HORIZONTAL_SPACES:
             if previous_was_space:
                 continue
             display_chars.append(" ")
@@ -121,39 +136,135 @@ def _assemble_entries(entries: list[dict[str, Any]]) -> tuple[str, list[int]]:
     return "".join(display_parts), display_to_source
 
 
-def _split_dense_block(display_text: str, display_to_source: list[int]) -> list[tuple[str, list[int]]]:
-    if "\n" in display_text or len(display_text) < 80:
-        return [(display_text, display_to_source)]
+def _is_decimal_point(text: str, index: int) -> bool:
+    return (
+        text[index] == "."
+        and index > 0
+        and index + 1 < len(text)
+        and text[index - 1].isdigit()
+        and text[index + 1].isdigit()
+    )
 
-    sentence_spans = [
-        (match.start(), match.end())
-        for match in SENTENCE_RE.finditer(display_text)
-        if match.group(0).strip()
-    ]
-    if len(sentence_spans) < 4:
-        return [(display_text, display_to_source)]
 
-    split_index = len(sentence_spans) // 2
-    split_pos = sentence_spans[split_index][0]
+def _sentence_boundaries(text: str) -> list[int]:
+    boundaries: list[int] = []
+    index = 0
+    while index < len(text):
+        if text[index] not in _SENTENCE_TERMINATORS or _is_decimal_point(text, index):
+            index += 1
+            continue
 
-    left_text = display_text[:split_pos].rstrip(" \t")
-    left_map = display_to_source[:split_pos]
-    while left_text and left_map and left_text[-1] in {" ", "\t"}:
-        left_text = left_text[:-1]
-        left_map.pop()
+        end = index + 1
+        while end < len(text) and text[end] in _SENTENCE_TERMINATORS:
+            end += 1
+        while end < len(text) and text[end] in _SENTENCE_CLOSERS:
+            end += 1
+        previous = text[index - 1] if index > 0 else ""
+        following = text[end] if end < len(text) else ""
+        hangul_continuation = (
+            previous
+            and following
+            and "가" <= previous <= "힣"
+            and "가" <= following <= "힣"
+        )
+        if end == len(text) or text[end].isspace() or text[end] in _SENTENCE_OPENERS or hangul_continuation:
+            boundaries.append(end)
+        index = end
+    return boundaries
 
-    right_text = display_text[split_pos:].lstrip(" \t")
-    right_map = display_to_source[split_pos:]
-    lead_trim = len(display_text[split_pos:]) - len(right_text)
-    if lead_trim:
-        right_map = right_map[lead_trim:]
+
+def _is_structural_line(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return bool(
+        _DIALOGUE_START_RE.match(stripped)
+        or _SPEAKER_LINE_RE.match(stripped)
+        or _TITLE_LINE_RE.match(stripped)
+    )
+
+
+def _structural_boundaries(text: str) -> list[int]:
+    boundaries: set[int] = set()
+    line_start = 0
+    for line in text.splitlines(keepends=True):
+        line_end = line_start + len(line.rstrip("\r\n"))
+        if _is_structural_line(line):
+            if line_start > 0:
+                boundaries.add(line_start)
+            boundaries.add(line_end)
+        line_start += len(line)
+    return sorted(boundary for boundary in boundaries if 0 < boundary < len(text))
+
+
+def _trim_fragment_edges(text: str, mapping: list[int]) -> tuple[str, list[int]]:
+    start = 0
+    end = len(text)
+    while start < end and text[start] in {" ", "\t", "\n"}:
+        start += 1
+    while end > start and text[end - 1] in {" ", "\t", "\n"}:
+        end -= 1
+    return text[start:end], mapping[start:end]
+
+
+def _preferred_fallback_boundary(text: str, start: int, hard_end: int) -> int:
+    minimum = min(hard_end, start + _DENSE_SPLIT_MIN_CHARS)
+    for index in range(hard_end - 1, minimum - 1, -1):
+        if text[index] == "\n":
+            return index + 1
+    for index in range(hard_end - 1, minimum - 1, -1):
+        if text[index].isspace():
+            return index + 1
+    return hard_end
+
+
+def _split_region(text: str, mapping: list[int]) -> list[tuple[str, list[int]]]:
+    clean_text, clean_map = _trim_fragment_edges(text, mapping)
+    if not clean_text:
+        return []
+
+    sentence_boundaries = _sentence_boundaries(clean_text)
+    hangul_count = sum(1 for char in clean_text if "가" <= char <= "힣")
+    minimum_split_chars = 60 if hangul_count >= len(clean_text) // 2 else _DENSE_SPLIT_MIN_CHARS
+    if len(clean_text) <= _DENSE_MAX_CHARS:
+        if len(clean_text) < minimum_split_chars or len(sentence_boundaries) < 4:
+            return [(clean_text, clean_map)]
+        split_pos = sentence_boundaries[len(sentence_boundaries) // 2 - 1]
+        left = _trim_fragment_edges(clean_text[:split_pos], clean_map[:split_pos])
+        right = _trim_fragment_edges(clean_text[split_pos:], clean_map[split_pos:])
+        return [fragment for fragment in (left, right) if fragment[0]]
 
     fragments: list[tuple[str, list[int]]] = []
-    if left_text.strip():
-        fragments.append((left_text, left_map))
-    if right_text.strip():
-        fragments.append((right_text, right_map))
+    start = 0
+    while start < len(clean_text):
+        remaining = len(clean_text) - start
+        if remaining <= _DENSE_MAX_CHARS:
+            fragment = _trim_fragment_edges(clean_text[start:], clean_map[start:])
+            if fragment[0]:
+                fragments.append(fragment)
+            break
 
+        target_end = min(len(clean_text), start + _DENSE_TARGET_CHARS)
+        hard_end = min(len(clean_text), start + _DENSE_MAX_CHARS)
+        candidates = [
+            boundary for boundary in sentence_boundaries
+            if start + _DENSE_SPLIT_MIN_CHARS <= boundary <= hard_end
+        ]
+        preferred = [boundary for boundary in candidates if boundary <= target_end]
+        split_pos = preferred[-1] if preferred else (candidates[0] if candidates else _preferred_fallback_boundary(clean_text, start, hard_end))
+        fragment = _trim_fragment_edges(clean_text[start:split_pos], clean_map[start:split_pos])
+        if fragment[0]:
+            fragments.append(fragment)
+        start = max(split_pos, start + 1)
+
+    return fragments
+
+
+def _split_dense_block(display_text: str, display_to_source: list[int]) -> list[tuple[str, list[int]]]:
+    boundaries = [0, *_structural_boundaries(display_text), len(display_text)]
+    fragments: list[tuple[str, list[int]]] = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        fragments.extend(_split_region(display_text[start:end], display_to_source[start:end]))
     return fragments or [(display_text, display_to_source)]
 
 

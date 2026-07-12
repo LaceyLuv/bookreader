@@ -29,6 +29,17 @@ export function normalizeTxtCompatibilitySegments(data, transformOptions = {}) {
     if (displayFragments.length === 0) return segments
     if (!hasActiveTxtTransformOptions(transformOptions) && segments.length > 0) return segments
 
+    if (data?.contract_version >= 2) {
+        return displayFragments.map((fragment) => ({
+            ...fragment,
+            segment_id: fragment.segment_id,
+            start_offset: fragment.source_start_offset,
+            end_offset: fragment.source_end_offset,
+            text: fragment.display_text ?? '',
+            displayText: fragment.display_text ?? '',
+        }))
+    }
+
     const mergedBySegmentId = new Map()
     const orderedSegmentIds = []
 

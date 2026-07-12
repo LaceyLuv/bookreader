@@ -14,6 +14,8 @@ const DEFAULT_TRANSFORM_OPTIONS = createTxtTransformOptions()
 const MANIFEST_TIMEOUT_MS = 30_000
 const WINDOW_TIMEOUT_MS = 15_000
 const PAGINATION_TIMEOUT_MS = 60_000
+const WINDOW_MAX_CHARS = 128 * 1024
+const PAGINATION_MAX_CHARS = 1024 * 1024
 
 function createHttpError(status) {
     const error = new Error(`HTTP ${status}`)
@@ -144,13 +146,15 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
         const promise = (async () => {
             try {
                 const data = await fetchJsonWithTimeout(
-                    `${API_BOOKS_BASE}/${bookId}/txt-segments?start=${safeStart}&limit=${windowSize}&${transformQuery}`,
+                    `${API_BOOKS_BASE}/${bookId}/txt-segments?start=${safeStart}&limit=${windowSize}&${transformQuery}&max_chars=${WINDOW_MAX_CHARS}`,
                     controller,
                     WINDOW_TIMEOUT_MS,
                 )
                 const windowData = {
                     segments: normalizeTxtCompatibilitySegments(data, transformOptions),
                     displayFragments: normalizeTxtDisplayFragments(data, transformOptions),
+                    nextCursor: data?.next_cursor ?? null,
+                    hasMore: Boolean(data?.has_more),
                 }
                 if (windowRequestVersionRef.current !== requestVersion) return null
 
@@ -170,19 +174,21 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
         return promise
     }, [bookId, transformQuery, transformOptions, windowSize])
 
-    const loadPaginationWindow = useCallback(async (start, limit = windowSize) => {
+    const loadPaginationWindow = useCallback(async (start, limit = windowSize, cursor = null) => {
         const safeStart = Math.max(0, start)
         const safeLimit = Math.max(1, limit)
         const requestVersion = windowRequestVersionRef.current
-        const requestKey = `pagination:${safeStart}:${safeLimit}`
+        const safeCursor = typeof cursor === 'string' && cursor ? cursor : null
+        const requestKey = `pagination:${safeStart}:${safeLimit}:${safeCursor ?? ''}`
         const existing = inFlightRef.current.get(requestKey)
         if (existing) return existing.promise
 
         const controller = new AbortController()
         const promise = (async () => {
             try {
+                const cursorQuery = safeCursor ? `&cursor=${encodeURIComponent(safeCursor)}` : ''
                 const data = await fetchJsonWithTimeout(
-                    `${API_BOOKS_BASE}/${bookId}/txt-segments?start=${safeStart}&limit=${safeLimit}&${transformQuery}`,
+                    `${API_BOOKS_BASE}/${bookId}/txt-segments?start=${safeStart}&limit=${safeLimit}&${transformQuery}&max_chars=${PAGINATION_MAX_CHARS}${cursorQuery}`,
                     controller,
                     PAGINATION_TIMEOUT_MS,
                 )
@@ -190,6 +196,8 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
                 return {
                     segments: normalizeTxtCompatibilitySegments(data, transformOptions),
                     displayFragments: normalizeTxtDisplayFragments(data, transformOptions),
+                    nextCursor: data?.next_cursor ?? null,
+                    hasMore: Boolean(data?.has_more),
                 }
             } finally {
                 if (inFlightRef.current.get(requestKey)?.promise === promise) inFlightRef.current.delete(requestKey)
@@ -249,6 +257,7 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
     )
     const visibleSegments = visibleWindow.segments
     const visibleDisplayFragments = visibleWindow.displayFragments
+    const visibleWindowHasMore = Boolean(visibleWindow.hasMore)
 
     const showWindowForSegment = useCallback(async (segmentId) => {
         const centeredStart = Math.max(0, segmentId - Math.floor(windowSize / 2))
@@ -270,6 +279,7 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
         setVisibleStart,
         visibleSegments,
         visibleDisplayFragments,
+        visibleWindowHasMore,
         loadWindow,
         loadPaginationWindow,
         showWindowForSegment,

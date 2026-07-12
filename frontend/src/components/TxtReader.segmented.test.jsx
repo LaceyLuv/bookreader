@@ -890,6 +890,67 @@ test('TXT reader preloads the full-book page map on first open', async () => {
     expect(countFetchCalls(fetchSpy, '/txt-segments?start=40&limit=40')).toBe(1)
 })
 
+test('TXT reader follows a v2 continuation cursor for one dense source segment', async () => {
+    const firstChunk = 'A'.repeat(30)
+    const secondChunk = 'B'.repeat(30)
+    const fetchSpy = vi.fn(async (url) => {
+        const value = String(url)
+        if (value.includes('/txt-manifest')) {
+            return new Response(JSON.stringify({ encoding: 'utf-8', total_chars: 60, segment_count: 1 }), { status: 200 })
+        }
+        if (value.includes('/txt-segments?start=0&limit=40') && !value.includes('cursor=')) {
+            return new Response(JSON.stringify({
+                contract_version: 2,
+                start: 0,
+                limit: 40,
+                total: 1,
+                has_more: true,
+                next_cursor: '0:30',
+                display_fragments: [{
+                    fragment_index: 0,
+                    segment_id: 0,
+                    display_text: firstChunk,
+                    source_start_offset: 0,
+                    source_end_offset: 30,
+                    display_start_offset: 0,
+                    display_to_source_runs: [[0, 0, 30]],
+                }],
+            }), { status: 200 })
+        }
+        if (value.includes('/txt-segments?start=0&limit=40') && value.includes('cursor=0%3A30')) {
+            return new Response(JSON.stringify({
+                contract_version: 2,
+                start: 0,
+                limit: 40,
+                total: 1,
+                has_more: false,
+                next_cursor: null,
+                display_fragments: [{
+                    fragment_index: 0,
+                    segment_id: 0,
+                    display_text: secondChunk,
+                    source_start_offset: 30,
+                    source_end_offset: 60,
+                    display_start_offset: 30,
+                    display_to_source_runs: [[0, 30, 30]],
+                }],
+            }), { status: 200 })
+        }
+        if (value.includes('/annotations')) return new Response(JSON.stringify([]), { status: 200 })
+        if (value.includes('/search')) return new Response(JSON.stringify({ query: '', total: 0, results: [] }), { status: 200 })
+        return new Response('{}', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    renderReader()
+
+    await screen.findByText('A'.repeat(24))
+    await waitFor(() => {
+        expect(countFetchCalls(fetchSpy, 'cursor=0%3A30')).toBe(1)
+        expect(Number(screen.getByTestId('progress-total-pages').textContent)).toBeGreaterThan(1)
+    })
+})
+
 test('large TXT pagination uses 120-fragment batches with bounded parallel loading', async () => {
     const segmentCount = 1201
     let activePaginationRequests = 0

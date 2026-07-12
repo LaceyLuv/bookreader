@@ -186,9 +186,11 @@ class TxtTransformOptions(BaseModel):
 
 class TxtDisplayFragment(BaseModel):
     segment_id: int
+    fragment_index: int | None = None
     display_text: str
     source_start_offset: int
     source_end_offset: int
+    display_start_offset: int = 0
     display_to_source: List[int] = Field(default_factory=list)
     display_to_source_runs: List[tuple[int, int, int]] = Field(default_factory=list)
 
@@ -203,9 +205,13 @@ class TxtManifest(BaseModel):
 
 
 class TxtSegmentWindow(BaseModel):
+    contract_version: int = 1
     start: int
     limit: int
     total: int
+    returned_chars: int = 0
+    next_cursor: str | None = None
+    has_more: bool = False
     transform_options: TxtTransformOptions = Field(default_factory=TxtTransformOptions)
     display_fragments: List[TxtDisplayFragment] = Field(default_factory=list)
 

@@ -121,3 +121,37 @@ test('ignores a stale manifest that resolves after a newer book is ready', async
     expect(result.current.readyContentKey).toContain('book-2:')
     expect(fetchMock.mock.calls.some(([url]) => url.includes('book-1') && url.includes('txt-segments'))).toBe(false)
 })
+
+test('follows bounded pagination windows with an encoded continuation cursor', async () => {
+    const fetchMock = vi.fn((url) => {
+        if (url.includes('txt-manifest')) return jsonResponse({ segment_count: 1, total_chars: 200000 })
+        const cursor = new URL(url, 'http://localhost').searchParams.get('cursor')
+        return jsonResponse({
+            contract_version: 2,
+            has_more: cursor == null,
+            next_cursor: cursor == null ? '0:131072' : null,
+            display_fragments: [{
+                fragment_index: 0,
+                segment_id: 0,
+                display_text: cursor == null ? 'first' : 'second',
+                source_start_offset: cursor == null ? 0 : 131072,
+                source_end_offset: cursor == null ? 131072 : 200000,
+            }],
+        })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useTxtSegmentWindow('dense-book'))
+    await waitFor(() => expect(result.current.contentStatus).toBe('ready'))
+
+    let continuation
+    await act(async () => {
+        continuation = await result.current.loadPaginationWindow(0, 1, '0:131072')
+    })
+
+    expect(continuation.hasMore).toBe(false)
+    expect(continuation.displayFragments[0].display_text).toBe('second')
+    expect(fetchMock.mock.calls.some(([url]) => (
+        url.includes('max_chars=1048576') && url.includes('cursor=0%3A131072')
+    ))).toBe(true)
+})

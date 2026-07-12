@@ -17,7 +17,7 @@ from services.annotation_store import delete_book_annotations, get_annotation_co
 from services.epub_service import EpubSafetyError, clear_epub_caches, get_epub_asset, get_epub_chapter, get_epub_toc
 from services.library_store import add_book_record, delete_book_record, get_book_path, get_book_record, list_book_records, prepare_upload, restore_book_record, touch_book, update_book_record
 from services.search_service import clear_search_caches, prewarm_search_cache, search_epub_file, search_txt_file
-from services.txt_service import clear_txt_caches, read_txt_file, read_txt_manifest, read_txt_segment_window
+from services.txt_service import TXT_WINDOW_MAX_CHARS, clear_txt_caches, read_txt_file, read_txt_manifest, read_txt_segment_window
 from services.zip_service import ZipSafetyError, get_zip_image, list_zip_images
 from services.delete_recovery import begin_delete, finish_delete, mark_delete_phase
 
@@ -360,6 +360,8 @@ async def get_txt_segments(
     book_id: str,
     start: int = 0,
     limit: int = 40,
+    cursor: str | None = Query(default=None, max_length=64),
+    max_chars: int = Query(default=128 * 1024, ge=1, le=TXT_WINDOW_MAX_CHARS),
     trim_spaces: bool = False,
     remove_empty_lines: bool = False,
     split_paragraphs: bool = False,
@@ -368,17 +370,22 @@ async def get_txt_segments(
     if record['file_type'] != 'txt':
         raise HTTPException(status_code=400, detail='Not a TXT file')
 
-    window = await run_in_threadpool(
-        read_txt_segment_window,
-        str(path),
-        start=start,
-        limit=limit,
-        transform_options={
-            'trim_spaces': trim_spaces,
-            'remove_empty_lines': remove_empty_lines,
-            'split_paragraphs': split_paragraphs,
-        },
-    )
+    try:
+        window = await run_in_threadpool(
+            read_txt_segment_window,
+            str(path),
+            start=start,
+            limit=limit,
+            cursor=cursor,
+            max_chars=max_chars,
+            transform_options={
+                'trim_spaces': trim_spaces,
+                'remove_empty_lines': remove_empty_lines,
+                'split_paragraphs': split_paragraphs,
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return TxtSegmentWindow(**window)
 
 

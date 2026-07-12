@@ -74,9 +74,18 @@ function isContinuationRenderSegment(previous, next) {
         previous
         && next
         && previous.segmentId === next.segmentId
-        && Number.isFinite(previous.sliceEnd)
-        && Number.isFinite(next.sliceStart)
-        && previous.sliceEnd === next.sliceStart,
+        && (
+            (
+                Number.isFinite(previous.sourceEndOffset)
+                && Number.isFinite(next.sourceStartOffset)
+                && previous.sourceEndOffset === next.sourceStartOffset
+            )
+            || (
+                Number.isFinite(previous.sliceEnd)
+                && Number.isFinite(next.sliceStart)
+                && previous.sliceEnd === next.sliceStart
+            )
+        ),
     )
 }
 
@@ -215,6 +224,7 @@ function TxtReader() {
         visibleStart,
         visibleSegments,
         visibleDisplayFragments,
+        visibleWindowHasMore,
         setVisibleStart,
         loadWindow,
         loadPaginationWindow,
@@ -256,7 +266,9 @@ function TxtReader() {
     const indexedDisplayFragments = useMemo(
         () => visibleDisplayFragments.map((fragment, fragmentIndex) => ({
             ...fragment,
-            fragmentIndex: visibleStart + fragmentIndex,
+            fragmentIndex: Number.isFinite(fragment?.fragment_index)
+                ? fragment.fragment_index
+                : visibleStart + fragmentIndex,
         })),
         [visibleDisplayFragments, visibleStart],
     )
@@ -317,7 +329,7 @@ function TxtReader() {
 
         let promise = null
         promise = (async () => {
-            if (visibleSegments.length >= manifest.segment_count) {
+            if (!visibleWindowHasMore && visibleSegments.length >= manifest.segment_count) {
                 return resolveRenderPages(renderPages)
             }
 
@@ -333,20 +345,33 @@ function TxtReader() {
                     nextWindowIndex += 1
                     const start = starts[windowIndex]
                     if (isStaleLoad()) return
+                    const rangeEnd = Math.min(manifest.segment_count, start + paginationWindowSize)
+                    const fragments = []
+                    let cursor = null
 
-                    if (
-                        start === 0
-                        && paginationWindowSize === windowSize
-                        && visibleDisplayFragments.length > 0
-                        && visibleWindowStartsAtZero
-                    ) {
-                        windows[windowIndex] = visibleDisplayFragments
-                        continue
+                    if (start === 0 && paginationWindowSize === windowSize) {
+                        const zeroWindow = await loadWindow(0)
+                        if (!zeroWindow || isStaleLoad()) return
+                        fragments.push(...zeroWindow.displayFragments)
+                        if (!zeroWindow.hasMore || !zeroWindow.nextCursor) {
+                            windows[windowIndex] = fragments
+                            continue
+                        }
+                        cursor = zeroWindow.nextCursor
                     }
 
-                    const windowData = await loadPaginationWindow(start, paginationWindowSize)
-                    if (!windowData || isStaleLoad()) return
-                    windows[windowIndex] = windowData.displayFragments
+                    while (true) {
+                        const cursorFragmentIndex = cursor
+                            ? Number.parseInt(cursor.split(':', 1)[0], 10)
+                            : start
+                        if (!Number.isFinite(cursorFragmentIndex) || cursorFragmentIndex >= rangeEnd) break
+                        const windowData = await loadPaginationWindow(start, paginationWindowSize, cursor)
+                        if (!windowData || isStaleLoad()) return
+                        fragments.push(...windowData.displayFragments)
+                        if (!windowData.hasMore || !windowData.nextCursor || windowData.nextCursor === cursor) break
+                        cursor = windowData.nextCursor
+                    }
+                    windows[windowIndex] = fragments
                 }
             }
 
@@ -357,7 +382,9 @@ function TxtReader() {
             const segments = windows.flatMap((windowFragments, windowIndex) => (
                 windowFragments.map((fragment, fragmentIndex) => ({
                     ...fragment,
-                    fragmentIndex: starts[windowIndex] + fragmentIndex,
+                    fragmentIndex: Number.isFinite(fragment?.fragment_index)
+                        ? fragment.fragment_index
+                        : starts[windowIndex] + fragmentIndex,
                 }))
             ))
 
@@ -374,10 +401,12 @@ function TxtReader() {
     }, [
         globalRenderPages,
         manifest?.segment_count,
+        loadWindow,
         loadPaginationWindow,
         renderPages,
         visibleDisplayFragments,
         visibleSegments,
+        visibleWindowHasMore,
         visibleWindowStartsAtZero,
         viewportMetrics,
         windowSize,

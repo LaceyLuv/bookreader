@@ -160,7 +160,7 @@ def test_transformed_manifest_and_segment_window_counts_stay_aligned(monkeypatch
     monkeypatch.setattr(
         books_router,
         "read_txt_segment_window",
-        lambda file_path, start=0, limit=40, transform_options=None: {
+        lambda file_path, start=0, limit=40, transform_options=None, **kwargs: {
             "start": start,
             "limit": limit,
             "total": 30,
@@ -206,8 +206,10 @@ def test_txt_segments_endpoint_returns_transform_aware_window(monkeypatch):
         lambda book_id: ({"id": book_id, "file_type": "txt"}, "fake-path"),
     )
 
-    def _read_segment_window(file_path, start=0, limit=40, transform_options=None):
+    def _read_segment_window(file_path, start=0, limit=40, transform_options=None, **kwargs):
         captured_transform_options["value"] = transform_options
+        captured_transform_options["cursor"] = kwargs.get("cursor")
+        captured_transform_options["max_chars"] = kwargs.get("max_chars")
         return {
             "start": start,
             "limit": limit,
@@ -239,6 +241,8 @@ def test_txt_segments_endpoint_returns_transform_aware_window(monkeypatch):
         "remove_empty_lines": True,
         "split_paragraphs": False,
     }
+    assert captured_transform_options["cursor"] is None
+    assert captured_transform_options["max_chars"] == 128 * 1024
     assert payload["start"] == 10
     assert payload["limit"] == 4
     assert payload["total"] == 30
