@@ -31,8 +31,19 @@ reports/release/
 frontend/src-tauri/tauri.release.local.conf.json
 
 # ===== BookReader local runtime data =====
-backend/library.json
-backend/annotations.json
+backend/library.json*
+backend/.library.json*
+backend/annotations.json*
+backend/.annotations.json*
+backend/reading-progress.json*
+backend/.reading-progress.json*
+backend/delete-journal.json*
+backend/.delete-journal.json*
+backend/restore-journal.json*
+backend/.restore-journal.json*
+backend/backups/
+backend/.restore-sessions/
+backend/txt-index/
 backend/backend*.log
 backend/backend_*.log
 

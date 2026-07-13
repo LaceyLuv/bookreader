@@ -1,6 +1,12 @@
+import os
 from pathlib import Path
 
 import paths
+
+
+def test_pytest_runtime_data_dir_is_isolated_from_repository():
+    assert paths.DATA_DIR == Path(os.environ[paths.DATA_DIR_ENV]).resolve()
+    assert paths.DATA_DIR != paths.BASE_DIR
 
 
 def test_resolve_data_dir_uses_explicit_environment_path(monkeypatch, tmp_path):
