@@ -82,6 +82,8 @@ export function withThemeVars(theme = {}) {
 export const THEME_PRESETS = [
     withThemeVars({
         key: 'soft-white',
+        nameKey: 'themeSoftWhite',
+        noteKey: 'themeSoftWhiteHint',
         name: '\uC18C\uD504\uD2B8 \uD654\uC774\uD2B8',
         bg: 'rgb(250,250,250)',
         fg: 'rgb(51,51,51)',
@@ -89,6 +91,8 @@ export const THEME_PRESETS = [
     }),
     withThemeVars({
         key: 'classic-sepia',
+        nameKey: 'themeClassicSepia',
+        noteKey: 'themeClassicSepiaHint',
         name: '\uD074\uB798\uC2DD \uC138\uD53C\uC544',
         bg: 'rgb(244,236,216)',
         fg: 'rgb(91,70,54)',
@@ -96,6 +100,8 @@ export const THEME_PRESETS = [
     }),
     withThemeVars({
         key: 'midnight-dark',
+        nameKey: 'themeMidnightDark',
+        noteKey: 'themeMidnightDarkHint',
         name: '\uBBF8\uB4DC\uB098\uC787 \uB2E4\uD06C',
         bg: 'rgb(28,28,28)',
         fg: 'rgb(210,210,210)',
@@ -103,6 +109,8 @@ export const THEME_PRESETS = [
     }),
     withThemeVars({
         key: 'solarized',
+        nameKey: 'themeSolarized',
+        noteKey: 'themeSolarizedHint',
         name: '\uC194\uB77C\uC774\uC988\uB4DC',
         bg: 'rgb(0,43,54)',
         fg: 'rgb(131,148,150)',
@@ -110,6 +118,8 @@ export const THEME_PRESETS = [
     }),
     withThemeVars({
         key: 'pastel-green',
+        nameKey: 'themePastelGreen',
+        noteKey: 'themePastelGreenHint',
         name: '\uD30C\uC2A4\uD154 \uC5F0\uB450',
         bg: 'rgb(232,245,233)',
         fg: 'rgb(46,125,50)',
@@ -117,6 +127,8 @@ export const THEME_PRESETS = [
     }),
     withThemeVars({
         key: 'pastel-gray',
+        nameKey: 'themePastelGray',
+        noteKey: 'themePastelGrayHint',
         name: '\uD30C\uC2A4\uD154 \uD68C\uC0C9',
         bg: 'rgb(240,240,240)',
         fg: 'rgb(66,66,66)',

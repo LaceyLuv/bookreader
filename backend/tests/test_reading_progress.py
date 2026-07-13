@@ -50,6 +50,36 @@ def test_progress_api_round_trip_and_delete(monkeypatch, tmp_path):
         assert client.get("/api/books/book-1/progress").status_code == 204
 
 
+def test_progress_api_round_trips_locator_v2_and_mixed_bookmarks(monkeypatch, tmp_path):
+    _configure_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(progress_router, "get_book_record", lambda book_id: {"id": book_id})
+    locator_v2 = {
+        "version": 2,
+        "kind": "txt",
+        "segmentId": 2,
+        "sourceOffset": 42,
+        "sourceRevision": "revision-a",
+        "quote": {"exact": "target", "prefix": "", "suffix": "", "position": 0},
+    }
+    with TestClient(main.app) as client:
+        response = client.put("/api/books/book-1/progress", json={
+            "position": 2,
+            "totalPages": 8,
+            "type": "txt",
+            "bookmarks": [
+                {"position": 1, "locator": {"version": 1, "kind": "txt", "segmentId": 1}},
+                {"position": 2, "locator": locator_v2},
+            ],
+            "locator": locator_v2,
+        })
+
+        assert response.status_code == 200
+        payload = client.get("/api/books/book-1/progress").json()
+        assert payload["locator"] == locator_v2
+        assert payload["bookmarks"][0]["locator"]["version"] == 1
+        assert payload["bookmarks"][1]["locator"]["version"] == 2
+
+
 def test_progress_api_rejects_invalid_positions(monkeypatch, tmp_path):
     _configure_store(monkeypatch, tmp_path)
     monkeypatch.setattr(progress_router, "get_book_record", lambda book_id: {"id": book_id})

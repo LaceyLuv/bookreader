@@ -96,6 +96,28 @@ test('aborts outstanding requests when the book changes', async () => {
     expect(result.current.visibleSegments).toEqual([])
 })
 
+test('content version changes discard in-flight windows for the same book', async () => {
+    const segmentSignals = []
+    const fetchMock = vi.fn((url, options = {}) => {
+        if (url.includes('txt-manifest')) return jsonResponse({ segment_count: 1, total_chars: 12 })
+        segmentSignals.push(options.signal)
+        return new Promise(() => {})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result, rerender } = renderHook(({ contentVersion }) => (
+        useTxtSegmentWindow('book-1', undefined, undefined, contentVersion)
+    ), { initialProps: { contentVersion: 0 } })
+    await waitFor(() => expect(segmentSignals).toHaveLength(1))
+    const previousSignal = segmentSignals[0]
+
+    act(() => rerender({ contentVersion: 1 }))
+
+    expect(previousSignal.aborted).toBe(true)
+    expect(result.current.visibleSegments).toEqual([])
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url.includes('txt-manifest'))).toHaveLength(2))
+})
+
 test('ignores a stale manifest that resolves after a newer book is ready', async () => {
     const staleManifest = createDeferred()
     const fetchMock = vi.fn((url) => {

@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react'
 
 import { API_BOOKS_BASE } from '../lib/apiBase'
+import { createReaderLocator, hasMeaningfulLocator } from '../lib/readerLocator'
 
 const STORAGE_KEY = 'bookreader_progress'
 
@@ -78,7 +79,7 @@ function persistProgressEntry(bookId, legacyId, entry) {
     saveAllProgress(all)
 }
 
-export function removeBookProgress(bookId, legacyId = null) {
+export function clearLocalBookProgress(bookId, legacyId = null) {
     if (!bookId && !legacyId) return
     const all = getAllProgress()
     if (bookId) delete all[bookId]
@@ -88,6 +89,28 @@ export function removeBookProgress(bookId, legacyId = null) {
     } catch {
         // Ignore storage failures; deletion already succeeded server-side.
     }
+}
+
+export function pruneLocalBookProgress(books) {
+    if (!Array.isArray(books)) return
+    const validIds = new Set()
+    books.forEach((book) => {
+        if (book?.id) validIds.add(String(book.id))
+        if (book?.legacy_id) validIds.add(String(book.legacy_id))
+    })
+    const all = getAllProgress()
+    const retained = Object.fromEntries(Object.entries(all).filter(([bookId]) => validIds.has(bookId)))
+    if (Object.keys(retained).length !== Object.keys(all).length) {
+        try {
+            saveAllProgress(retained)
+        } catch {
+            // A stale local entry is harmless until storage is writable again.
+        }
+    }
+}
+
+export function removeBookProgress(bookId, legacyId = null) {
+    clearLocalBookProgress(bookId, legacyId)
     if (bookId && typeof fetch === 'function') {
         void fetch(`${API_BOOKS_BASE}/${encodeURIComponent(bookId)}/progress`, { method: 'DELETE' }).catch(() => {})
     }
@@ -143,8 +166,8 @@ export function useReadingProgress(bookId, {
     const canAdjustPagination = hydratedBookId === bookId && paginationReady
     const resolveLocator = useCallback(() => {
         const value = typeof locator === 'function' ? locator() : locator
-        return value && typeof value === 'object' ? { version: 1, ...value } : null
-    }, [locator])
+        return createReaderLocator(type, value)
+    }, [locator, type])
 
     useEffect(() => {
         progressVersionRef.current += 1
@@ -173,7 +196,7 @@ export function useReadingProgress(bookId, {
         latestEntryRef.current = normalized
         setCurrentPosition(normalized.position)
         setBookmarks(normalized.bookmarks)
-        if (normalized.position > 0) {
+        if (normalized.position > 0 || hasMeaningfulLocator(normalized.locator)) {
             setRestoredProgress({
                 position: normalized.position,
                 percent: calculatePercent(normalized.position, totalPages),
@@ -212,7 +235,7 @@ export function useReadingProgress(bookId, {
                     appliedLocatorKeyRef.current = null
                     setCurrentPosition(normalized.position)
                     setBookmarks(normalized.bookmarks)
-                    if (normalized.position > 0) {
+                    if (normalized.position > 0 || hasMeaningfulLocator(normalized.locator)) {
                         setRestoredProgress({
                             position: normalized.position,
                             percent: normalized.percent,
@@ -222,8 +245,6 @@ export function useReadingProgress(bookId, {
                     } else {
                         setRestoredProgress(null)
                     }
-                } else if (localAtRequestStart) {
-                    void writeRemoteProgress(bookId, normalizeProgressEntry(localAtRequestStart, type)).catch(() => {})
                 }
             } catch {
                 // Offline and browser-only use continue safely with local storage.
@@ -298,18 +319,31 @@ export function useReadingProgress(bookId, {
     const addBookmark = useCallback(() => {
         const label = `Page ${currentPosition + 1}`
         const ts = new Date().toISOString()
+        const nextLocator = resolveLocator()
+        const locatorKey = nextLocator ? JSON.stringify(nextLocator) : null
         setBookmarks(prev => {
-            if (prev.some(b => b.position === currentPosition)) return prev
-            return [...prev, { position: currentPosition, label, savedAt: ts, locator: resolveLocator() }]
+            if (prev.some((bookmark) => {
+                if (locatorKey && bookmark?.locator) return JSON.stringify(bookmark.locator) === locatorKey
+                return bookmark.position === currentPosition
+            })) return prev
+            return [...prev, { id: ts, position: currentPosition, label, savedAt: ts, locator: nextLocator }]
         })
     }, [currentPosition, resolveLocator])
 
-    const removeBookmark = useCallback((position) => {
-        setBookmarks(prev => prev.filter(b => b.position !== position))
+    const removeBookmark = useCallback((target) => {
+        setBookmarks((items) => items.filter((bookmark) => {
+            if (target && typeof target === 'object') {
+                if (target.id && bookmark.id) return target.id !== bookmark.id
+                if (target.savedAt && bookmark.savedAt) return target.savedAt !== bookmark.savedAt
+                return bookmark !== target
+            }
+            return bookmark.position !== target
+        }))
     }, [])
 
-    const goToBookmark = useCallback((position) => {
-        setCurrentPosition(position)
+    const goToBookmark = useCallback((target) => {
+        const position = target && typeof target === 'object' ? target.position : target
+        if (Number.isFinite(position)) setCurrentPosition(position)
     }, [])
 
     const percent = calculatePercent(currentPosition, totalPages)

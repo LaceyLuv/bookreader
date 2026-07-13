@@ -1,10 +1,11 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { API_BOOKS_BASE } from '../lib/apiBase'
-import { getBookProgress, removeBookProgress } from '../hooks/useReadingProgress'
+import { clearLocalBookProgress, getBookProgress, pruneLocalBookProgress } from '../hooks/useReadingProgress'
 import { createT } from '../i18n'
 import { readErrorDetail } from '../lib/readErrorDetail'
 import DashboardSettingsPanel from '../components/DashboardSettingsPanel'
+import AnnotationExportControls from '../components/AnnotationExportControls'
 
 const API = API_BOOKS_BASE
 const FOLDER_API = API_BOOKS_BASE.replace(/\/books$/, '/library/folders')
@@ -394,6 +395,7 @@ function Dashboard() {
             if (!res.ok) throw new Error(`HTTP ${res.status}`)
             const data = await res.json()
             const list = Array.isArray(data) ? data : (Array.isArray(data?.books) ? data.books : [])
+            pruneLocalBookProgress(list)
             setBooks(list)
         } catch (err) {
             console.error('Failed to fetch books', err)
@@ -633,10 +635,15 @@ function Dashboard() {
             setBooks((prev) => prev.filter((item) => item.id !== book.id))
             setSelectedInfo((prev) => (prev?.id === book.id ? null : prev))
             setSelectedBookIds((prev) => prev.filter((id) => id !== book.id))
-            removeBookProgress(book.id, book.legacy_id ?? null)
-            await fetchFolders()
+            clearLocalBookProgress(book.id, book.legacy_id ?? null)
+            try {
+                await fetchFolders()
+            } catch (refreshError) {
+                console.error('Folder refresh after deletion failed', refreshError)
+            }
         } catch (err) {
             console.error('Delete failed', err)
+            await Promise.allSettled([fetchBooks(), fetchFolders()])
         }
     }
 
@@ -1334,7 +1341,7 @@ function Dashboard() {
             </div>
 
             <DashboardSettingsPanel
-                open={settingsOpen} onClose={() => setSettingsOpen(false)} onGoToLibrary={goToLibrary} tt={tt}
+                open={settingsOpen} onClose={() => setSettingsOpen(false)} onGoToLibrary={goToLibrary} onDataRestored={() => window.location.reload()} tt={tt}
                 filters={{ searchQuery, setSearchQuery, sortBy, setSortBy, statusFilter, setStatusFilter, flagFilter, setFlagFilter, sortOptions, statusOptions, flagFilterOptions, groupSeries, setGroupSeries, groupDuplicates, setGroupDuplicates, allTags, selectedTag, setSelectedTag, allCollections, selectedCollection, setSelectedCollection, clearFilters, activeFilterCount }}
                 folders={folders} folderColors={folderColors} getDefaultFolderColor={getDefaultFolderColor} onFolderColorChange={(folderId, color) => setFolderColors(prev => ({ ...prev, [folderId]: color }))} folderDraft={folderDraft} setFolderDraft={setFolderDraft} folderSaving={folderSaving} onAddFolder={handleAddFolder} onRenameFolder={handleRenameFolder} onRemoveFolder={handleRemoveFolder} folderStatsById={folderStatsById}
                 selection={{ selectionMode, setSelectionMode, summary: formatSelectedSummary(selectedBookIds.length), selectedCount: selectedBookIds.length, allVisibleSelected, toggleVisibleSelection, bulkFolderId, setBulkFolderId, bulkMoving, handleBulkMove, clearSelection }}
@@ -1456,6 +1463,7 @@ function Dashboard() {
                                         <div style={{ color: mutedTextColor }}>{tt('lastRead')}</div>
                                         <div>{formatDateTime(selectedInfo.last_read_at)}</div>
                                     </div>
+                                    <AnnotationExportControls bookId={selectedInfo.id} annotationCount={selectedInfo.annotation_count || 0} tt={tt} />
                                 </div>
                             )}
                         </div>

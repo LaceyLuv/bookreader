@@ -29,7 +29,7 @@ test('Space moves to next page when focus is returned to reader root', async () 
     expect(onPrev).not.toHaveBeenCalled()
 })
 
-test('Space does not activate a focused button from the last mouse click', async () => {
+test('Space stays with a focused toolbar button instead of turning the page', async () => {
     const user = userEvent.setup()
     const onNext = vi.fn()
     const onPrev = vi.fn()
@@ -38,7 +38,7 @@ test('Space does not activate a focused button from the last mouse click', async
     await user.click(getByRole('button', { name: 'toolbar button' }))
     await user.keyboard(' ')
 
-    expect(onNext).toHaveBeenCalledTimes(1)
+    expect(onNext).not.toHaveBeenCalled()
     expect(onPrev).not.toHaveBeenCalled()
 })
 

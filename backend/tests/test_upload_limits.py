@@ -157,7 +157,10 @@ def test_zip_rejects_unsafe_image_member_paths(tmp_path, member_name):
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.writestr(member_name, b"image")
 
-    assert zip_service.list_zip_images(str(archive_path)) == {"images": [], "total": 0}
+    manifest = zip_service.list_zip_images(str(archive_path))
+    assert manifest["images"] == []
+    assert manifest["total"] == 0
+    assert manifest["diagnostics"][0]["code"] == "unsafe_member"
     with pytest.raises(zip_service.ZipSafetyError):
         zip_service.get_zip_image(str(archive_path), member_name)
 
@@ -250,7 +253,7 @@ def test_zip_listing_uses_natural_sort(tmp_path):
     ]
 
 
-def test_zip_images_endpoint_returns_400_for_invalid_archives(tmp_path, monkeypatch):
+def test_zip_images_endpoint_returns_structured_error_for_invalid_archives(tmp_path, monkeypatch):
     from routers import books as books_router
 
     archive_path = tmp_path / "corrupt.zip"
@@ -265,4 +268,5 @@ def test_zip_images_endpoint_returns_400_for_invalid_archives(tmp_path, monkeypa
     client = TestClient(main.app)
     response = client.get("/api/books/book-1/images")
 
-    assert response.status_code == 400
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_archive"

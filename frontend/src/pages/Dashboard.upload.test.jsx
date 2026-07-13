@@ -7,7 +7,9 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import Dashboard from './Dashboard'
 
 vi.mock('../hooks/useReadingProgress', () => ({
+    clearLocalBookProgress: vi.fn(),
     getBookProgress: () => null,
+    pruneLocalBookProgress: vi.fn(),
 }))
 
 vi.mock('../i18n', () => ({

@@ -21,16 +21,17 @@ const sanitizedEnv = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith("="))
 );
 const backendDir = path.join(__dirname, "..", "..", "backend");
-const tauriCmd = path.join(
+const tauriCli = path.join(
   __dirname,
   "..",
   "node_modules",
-  ".bin",
-  process.platform === "win32" ? "tauri.cmd" : "tauri"
+  "@tauri-apps",
+  "cli",
+  "tauri.js"
 );
 
-if (!fs.existsSync(tauriCmd)) {
-  console.error(`[tauri-wrapper] tauri CLI not found: ${tauriCmd}`);
+if (!fs.existsSync(tauriCli)) {
+  console.error(`[tauri-wrapper] tauri CLI not found: ${tauriCli}`);
   process.exit(1);
 }
 
@@ -65,7 +66,7 @@ function stopBackend() {
   }
 }
 
-const child = spawn(tauriCmd, tauriArgs, {
+const child = spawn(process.execPath, [tauriCli, ...tauriArgs], {
   stdio: "inherit",
   shell: false,
   env: {

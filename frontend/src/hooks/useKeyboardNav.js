@@ -1,13 +1,10 @@
 import { useCallback, useEffect } from 'react'
 
-function isTextEntryTarget(target) {
+function isInteractiveTarget(target) {
     if (!(target instanceof Element)) return false
-    const editable = target.closest('input, textarea, [contenteditable="true"]')
-    if (!editable) return false
-    if (editable instanceof HTMLInputElement) {
-        return !['range', 'button', 'checkbox', 'radio'].includes(editable.type)
-    }
-    return true
+    return Boolean(target.closest(
+        'input, textarea, select, button, a[href], [contenteditable="true"], [role="button"], [role="tab"], [role="slider"]',
+    ))
 }
 
 function restoreReaderFocus(readerRootRef) {
@@ -38,7 +35,7 @@ function isHandledKey(e, hasEscapeHandler) {
 export function useKeyboardNav({ onNext, onPrev, onEscape, enabled = true, readerRootRef = null }) {
     const handler = useCallback((e) => {
         if (!enabled) return
-        if (isTextEntryTarget(e.target)) return
+        if (isInteractiveTarget(e.target)) return
 
         restoreReaderFocus(readerRootRef)
 
@@ -59,7 +56,7 @@ export function useKeyboardNav({ onNext, onPrev, onEscape, enabled = true, reade
 
     const preventHandledKeyup = useCallback((e) => {
         if (!enabled) return
-        if (isTextEntryTarget(e.target)) return
+        if (isInteractiveTarget(e.target)) return
         if (!isHandledKey(e, !!onEscape)) return
         e.preventDefault()
         e.stopPropagation()

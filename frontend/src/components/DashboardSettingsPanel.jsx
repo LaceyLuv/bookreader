@@ -1,13 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import { API_FONTS_BASE } from '../lib/apiBase'
 import { emitUserFontsUpdated } from './FontStyleInjector'
+import { applyRestoredClientState, commitRestore, discardRestore, exportBackup, previewRestore } from '../lib/backupClient'
 
-export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, tt, filters, folders, folderColors, getDefaultFolderColor, onFolderColorChange, folderDraft, setFolderDraft, folderSaving, onAddFolder, onRenameFolder, onRemoveFolder, folderStatsById, selection }) {
+export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, onDataRestored, tt, filters, folders, folderColors, getDefaultFolderColor, onFolderColorChange, folderDraft, setFolderDraft, folderSaving, onAddFolder, onRenameFolder, onRemoveFolder, folderStatsById, selection }) {
     const panelRef = useRef(null)
     const fontInputRef = useRef(null)
+    const restoreInputRef = useRef(null)
     const [fonts, setFonts] = useState([])
     const [fontBusy, setFontBusy] = useState(false)
     const [fontError, setFontError] = useState('')
+    const [dataBusy, setDataBusy] = useState('')
+    const [dataError, setDataError] = useState('')
+    const [dataStatus, setDataStatus] = useState('')
+    const [restorePreview, setRestorePreview] = useState(null)
+    const [restoreFileName, setRestoreFileName] = useState('')
 
     const loadFonts = async () => {
         try {
@@ -77,6 +84,60 @@ export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, t
         }
     }
 
+    const createBackup = async (includeBooks) => {
+        setDataBusy(includeBooks ? 'full-backup' : 'data-backup')
+        setDataError('')
+        setDataStatus('')
+        try {
+            const filename = await exportBackup(includeBooks)
+            setDataStatus(`${tt('backupCreated')}: ${filename}`)
+        } catch (error) {
+            setDataError(error.message || tt('backupFailed'))
+        } finally {
+            setDataBusy('')
+        }
+    }
+
+    const chooseRestore = async (event) => {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) return
+        if (restorePreview?.restore_id) void discardRestore(restorePreview.restore_id)
+        setDataBusy('preview')
+        setDataError('')
+        setDataStatus('')
+        setRestorePreview(null)
+        setRestoreFileName(file.name)
+        try {
+            setRestorePreview(await previewRestore(file))
+        } catch (error) {
+            setDataError(error.message || tt('backupVerifyFailed'))
+        } finally {
+            setDataBusy('')
+        }
+    }
+
+    const applyRestore = async () => {
+        if (!restorePreview?.restore_id) return
+        const counts = restorePreview.counts || {}
+        if (!window.confirm(`${tt('restoreConfirm')}\n${counts.books || 0} ${tt('books')}, ${counts.annotations || 0} ${tt('annotations')}`)) return
+        setDataBusy('restore')
+        setDataError('')
+        try {
+            const result = await commitRestore(restorePreview.restore_id)
+            applyRestoredClientState(result.client_state)
+            emitUserFontsUpdated()
+            setDataStatus(`${tt('restoreComplete')} (${result.snapshot_filename})`)
+            setRestorePreview(null)
+            if (onDataRestored) onDataRestored(result)
+            else window.location.reload()
+        } catch (error) {
+            setDataError(error.message || tt('restoreFailed'))
+        } finally {
+            setDataBusy('')
+        }
+    }
+
     if (!open) return null
     const fieldClass = 'dashboard-settings-field'
 
@@ -134,6 +195,25 @@ export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, t
                         <div className="dashboard-font-list">{fonts.map(font => <div key={font.id}><span>{font.filename}</span><button type="button" disabled={fontBusy} onClick={() => deleteFont(font)}>{tt('deleteLabel')}</button></div>)}</div>
                         {!fontBusy && fonts.length === 0 && <p>{tt('noUploadedFonts')}</p>}
                         {fontError && <p className="dashboard-settings-error">{fontError}</p>}
+                    </section>
+                    <section>
+                        <h3>{tt('dataAndBackup')}</h3>
+                        <p className="dashboard-settings-help">{tt('backupPrivacyWarning')}</p>
+                        <div className="dashboard-settings-stack">
+                            <button className="dashboard-primary-button" type="button" disabled={!!dataBusy} onClick={() => createBackup(false)}>{dataBusy === 'data-backup' ? tt('creatingBackup') : tt('backupReadingData')}</button>
+                            <button className="dashboard-outline-button" type="button" disabled={!!dataBusy} onClick={() => createBackup(true)}>{dataBusy === 'full-backup' ? tt('creatingBackup') : tt('backupWithBooks')}</button>
+                            <input ref={restoreInputRef} type="file" accept=".bookreader-backup,.zip,application/zip" hidden onChange={chooseRestore} />
+                            <button className="dashboard-outline-button" type="button" disabled={!!dataBusy} onClick={() => restoreInputRef.current?.click()}>{dataBusy === 'preview' ? tt('verifyingBackup') : tt('chooseBackupToRestore')}</button>
+                        </div>
+                        {restorePreview && <div className="dashboard-restore-preview" role="status">
+                            <strong>{restoreFileName}</strong>
+                            <span>{restorePreview.kind === 'full' ? tt('fullBackup') : tt('readingDataBackup')} · {restorePreview.created_at?.slice(0, 10)}</span>
+                            <span>{restorePreview.counts?.books || 0} {tt('books')} · {restorePreview.counts?.annotations || 0} {tt('annotations')} · {restorePreview.counts?.fonts || 0} {tt('fonts')}</span>
+                            {(restorePreview.warnings || []).map(warning => <span key={warning} className="dashboard-settings-warning">{warning}</span>)}
+                            <button className="dashboard-primary-button" type="button" disabled={!!dataBusy} onClick={applyRestore}>{dataBusy === 'restore' ? tt('restoringBackup') : tt('applyRestore')}</button>
+                        </div>}
+                        {dataStatus && <p className="dashboard-settings-success" role="status">{dataStatus}</p>}
+                        {dataError && <p className="dashboard-settings-error" role="alert">{dataError}</p>}
                     </section>
                 </div>
             </aside>

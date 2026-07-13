@@ -131,6 +131,61 @@ test('shows the book title to the left of the TXT format label', async () => {
     expect(screen.getByText('utf-16')).toBeTruthy()
 })
 
+test('applies a per-book encoding override and reloads TXT content from the server', async () => {
+    const user = userEvent.setup()
+    let encodingOverride = null
+    const preview = {
+        detected_encoding: 'utf-8',
+        encoding_confidence: 0.88,
+        encoding_override: null,
+        encoding_source: 'auto',
+        encoding_candidates: [
+            { encoding: 'utf-8', label: 'UTF-8', valid: true, preview: 'UTF-8 preview', confidence: 0.88 },
+            { encoding: 'cp949', label: 'CP949', valid: true, preview: 'CP949 preview', confidence: null },
+        ],
+    }
+    global.fetch = vi.fn(async (url, options = {}) => {
+        const requestUrl = String(url)
+        if (requestUrl.includes('/txt-encoding-preview')) {
+            return new Response(JSON.stringify({
+                ...preview,
+                encoding_override: encodingOverride,
+                encoding_source: encodingOverride ? 'override' : 'auto',
+            }), { status: 200 })
+        }
+        if (options.method === 'PATCH') {
+            encodingOverride = JSON.parse(options.body).txt_encoding_override
+            return new Response(JSON.stringify({ id: 'txt-1', txt_encoding_override: encodingOverride }), { status: 200 })
+        }
+        if (requestUrl.includes('/txt-manifest')) {
+            return new Response(JSON.stringify({
+                ...preview,
+                title: 'Encoding Book',
+                encoding: encodingOverride || 'utf-8',
+                encoding_override: encodingOverride,
+                encoding_source: encodingOverride ? 'override' : 'auto',
+                source_revision: encodingOverride ? 'revision-cp949' : 'revision-utf8',
+                total_chars: 0,
+                segment_count: 0,
+            }), { status: 200 })
+        }
+        if (requestUrl.includes('/txt-segments')) {
+            return new Response(JSON.stringify({ start: 0, limit: 40, total: 0, display_fragments: [] }), { status: 200 })
+        }
+        return new Response(JSON.stringify([]), { status: 200 })
+    })
+
+    renderReader()
+    await user.click(await screen.findByRole('button', { name: /utf-8/ }))
+    await screen.findByText('CP949 preview')
+    await user.click(screen.getByRole('radio', { name: /CP949/ }))
+    await user.click(screen.getByRole('button', { name: 'applyEncoding' }))
+
+    await waitFor(() => expect(encodingOverride).toBe('cp949'))
+    await waitFor(() => expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/txt-manifest'))).toHaveLength(2))
+    expect(await screen.findByText('cp949')).toBeTruthy()
+})
+
 function RouteControlHarness() {
     const navigate = useNavigate()
 
@@ -2130,7 +2185,10 @@ test('compatibility-mode search refetches with the active TXT transform paramete
     await user.click(screen.getAllByRole('button', { name: 'search' })[1])
 
     await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/search?q=beta&trim_spaces=true&remove_empty_lines=true&split_paragraphs=false'))
+        expect(fetchSpy).toHaveBeenCalledWith(
+            expect.stringContaining('/search?q=beta&trim_spaces=true&remove_empty_lines=true&split_paragraphs=false'),
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        )
     })
 })
 

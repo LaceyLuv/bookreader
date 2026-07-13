@@ -22,9 +22,9 @@ function createSettings(overrides = {}) {
     }
 }
 
-function renderToolbar({ settings = createSettings(), readerType = 'epub', txtTransforms = null } = {}) {
+function renderToolbar({ settings = createSettings(), readerType = 'epub', txtTransforms = null, txtEncoding = null } = {}) {
     global.fetch = vi.fn(() => new Promise(() => {}))
-    render(<ReaderToolbar settings={settings} readerType={readerType} txtTransforms={txtTransforms} />)
+    render(<ReaderToolbar settings={settings} readerType={readerType} txtTransforms={txtTransforms} txtEncoding={txtEncoding} />)
     return settings
 }
 
@@ -32,14 +32,22 @@ afterEach(() => {
     vi.restoreAllMocks()
 })
 
-test('reading tab keeps typography, detailed weight, and margin controls connected', async () => {
+test('basic and advanced tabs keep typography controls connected', async () => {
     const user = userEvent.setup()
     const settings = renderToolbar()
 
-    expect(screen.getByRole('tab', { name: 'settingsReadTab' }).getAttribute('aria-selected')).toBe('true')
+    const basicTab = screen.getByRole('tab', { name: 'settingsBasicTab' })
+    const advancedTab = screen.getByRole('tab', { name: 'settingsAdvancedTab' })
+    expect(basicTab.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
     await user.click(screen.getByRole('button', { name: 'increaseFontSize' }))
     await user.click(screen.getByRole('button', { name: 'boldWeight' }))
     fireEvent.change(screen.getByRole('slider', { name: 'lineHeight' }), { target: { value: '2' } })
+    expect(screen.queryByRole('slider', { name: 'fontWeightDetail' })).toBeNull()
+    expect(screen.queryByRole('slider', { name: 'hMargin' })).toBeNull()
+
+    fireEvent.keyDown(basicTab, { key: 'ArrowRight' })
+    expect(advancedTab.getAttribute('aria-selected')).toBe('true')
     fireEvent.change(screen.getByRole('slider', { name: 'fontWeightDetail' }), { target: { value: '550' } })
     fireEvent.change(screen.getByRole('slider', { name: 'hMargin' }), { target: { value: '64' } })
 
@@ -49,24 +57,36 @@ test('reading tab keeps typography, detailed weight, and margin controls connect
     expect(settings.setLineHeight).toHaveBeenCalledWith(2)
     expect(settings.setHMargin).toHaveBeenCalledWith(64)
 
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'settingsReadTab' }), { key: 'ArrowRight' })
-    expect(screen.getByRole('tab', { name: 'settingsDisplayTab' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(advancedTab, { key: 'Home' })
+    expect(basicTab.getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(basicTab, { key: 'End' })
+    expect(advancedTab.getAttribute('aria-selected')).toBe('true')
 })
 
-test('display tab groups layout, themes, colors, and ZIP scale without title bar controls', async () => {
+test('ZIP basic shows only effective theme, layout, and image controls', async () => {
     const user = userEvent.setup()
     const settings = renderToolbar({ readerType: 'zip' })
-    await user.click(screen.getByRole('tab', { name: 'settingsDisplayTab' }))
 
     await user.click(screen.getByRole('button', { name: 'single' }))
     fireEvent.change(screen.getByRole('slider', { name: 'zipImageScale' }), { target: { value: '1.5' } })
 
     expect(settings.setLayout).toHaveBeenCalledWith('single')
     expect(settings.setZipImageScale).toHaveBeenCalledWith(1.5)
+    expect(screen.queryByRole('combobox', { name: 'font' })).toBeNull()
+    expect(screen.queryByRole('slider', { name: 'lineHeight' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'regularWeight' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'titleBar' })).toBeNull()
+
+    await user.click(screen.getByRole('tab', { name: 'settingsAdvancedTab' }))
+    expect(screen.getByRole('slider', { name: 'hMargin' })).toBeTruthy()
+    expect(screen.getByRole('slider', { name: 'vMargin' })).toBeTruthy()
+    expect(screen.queryByRole('slider', { name: 'letterSpacing' })).toBeNull()
+    expect(screen.queryByRole('slider', { name: 'splitMargin' })).toBeNull()
+    expect(screen.queryByText('fontManagement')).toBeNull()
 })
 
-test('shared preview reflects reading and display values', () => {
+test('shared preview reflects settings on basic and is hidden on advanced', async () => {
+    const user = userEvent.setup()
     const settings = createSettings({
         bgColor: '#112233', textColor: '#f0e0d0', fontWeight: 650, fontSize: 22,
         lineHeight: 2.1, letterSpacing: 0.08, hMargin: 80, vMargin: 40, columnGap: 72,
@@ -82,6 +102,9 @@ test('shared preview reflects reading and display values', () => {
     expect(page.style.lineHeight).toBe('2.1')
     expect(page.style.letterSpacing).toBe('0.08em')
     expect(page.style.columnGap).toBe('8.64px')
+
+    await user.click(screen.getByRole('tab', { name: 'settingsAdvancedTab' }))
+    expect(screen.queryByTestId('reader-settings-preview')).toBeNull()
 })
 
 test('TXT transforms live in the advanced tab and call their existing setters', async () => {
@@ -103,14 +126,49 @@ test('TXT transforms live in the advanced tab and call their existing setters', 
     expect(onSplitParagraphsChange).toHaveBeenCalledWith(false)
 })
 
-test('advanced format options are contextual', async () => {
+test('TXT advanced settings show the effective encoding and open the comparison dialog', async () => {
     const user = userEvent.setup()
-    renderToolbar({ readerType: 'epub' })
+    const onOpen = vi.fn()
+    const settings = renderToolbar({
+        readerType: 'txt',
+        txtEncoding: { encoding: 'cp949', source: 'override', confidence: null, onOpen },
+    })
+
+    await user.click(screen.getByRole('tab', { name: 'settingsAdvancedTab' }))
+    expect(screen.getByText(/cp949/)).toBeTruthy()
+    expect(screen.getByText(/manualEncoding/)).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'changeEncoding' }))
+
+    expect(settings.toggleSettings).toHaveBeenCalledOnce()
+    expect(onOpen).toHaveBeenCalledOnce()
+})
+
+test('EPUB keeps its embedded-font toggle in basic and explanation in advanced', async () => {
+    const user = userEvent.setup()
+    const settings = renderToolbar({ readerType: 'epub' })
+
+    await user.click(screen.getByRole('checkbox', { name: 'useEpubEmbeddedFonts' }))
+    expect(settings.setFontMode).toHaveBeenCalledWith('embedded')
     await user.click(screen.getByRole('tab', { name: 'settingsAdvancedTab' }))
 
-    expect(screen.getByRole('checkbox', { name: /useEpubEmbeddedFonts/ })).toBeTruthy()
+    expect(screen.getByText('embeddedFontsHint')).toBeTruthy()
+    expect(screen.queryByRole('checkbox', { name: 'useEpubEmbeddedFonts' })).toBeNull()
     expect(screen.queryByText('trimSpaces')).toBeNull()
     expect(screen.queryByRole('slider', { name: 'zipImageScale' })).toBeNull()
+})
+
+test.each([
+    ['txt', true, false],
+    ['epub', true, false],
+    ['zip', false, true],
+])('%s basic settings expose only controls relevant to that reader', (readerType, hasTypography, hasImageScale) => {
+    renderToolbar({ readerType })
+
+    expect(Boolean(screen.queryByRole('combobox', { name: 'font' }))).toBe(hasTypography)
+    expect(Boolean(screen.queryByRole('slider', { name: 'lineHeight' }))).toBe(hasTypography)
+    expect(Boolean(screen.queryByRole('slider', { name: 'zipImageScale' }))).toBe(hasImageScale)
+    expect(screen.getByRole('button', { name: 'single' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'dual' })).toBeTruthy()
 })
 
 test('done, close, backdrop, and Escape all use the existing close callback', async () => {

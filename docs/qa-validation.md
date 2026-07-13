@@ -1,6 +1,6 @@
 # QA Validation
 
-Last updated: 2026-06-22
+Last updated: 2026-07-13
 
 This document lists the validation steps for build-readiness and reader regression checks.
 
@@ -20,6 +20,9 @@ cmd /c npm run test
 cmd /c npm run build
 cmd /c npm run desktop:info
 cmd /c npm run desktop:sidecar
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+cargo check --manifest-path src-tauri/Cargo.toml --release
+cmd /c npm run desktop:release:check
 ```
 
 For a release candidate, also run:
@@ -29,16 +32,16 @@ cd C:\dev\bookreader\frontend
 cmd /c npm run desktop:build
 ```
 
+This candidate build is for internal QA only. A public artifact must use `npm run desktop:release:signed`.
+
 ## Packaged Sidecar Smoke
 
-After `desktop:sidecar`, run the copied binary on a temporary port and verify `/api/health`.
+After `desktop:build`, run the migration fixtures and isolated Windows fault smoke. They use temporary application-data roots without touching the real library and force-close the packaged desktop to verify its parent watchdog.
 
 ```powershell
-cd C:\dev\bookreader
-$exe = Resolve-Path "frontend/src-tauri/binaries/bookreader-backend-x86_64-pc-windows-msvc.exe"
-$proc = Start-Process -FilePath $exe -ArgumentList @("--host","127.0.0.1","--port","8765") -WorkingDirectory (Resolve-Path "backend") -WindowStyle Hidden -PassThru
-Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/health"
-Stop-Process -Id $proc.Id -Force
+cd C:\dev\bookreader\frontend
+npm run desktop:migration-fixtures
+npm run desktop:fault-smoke
 ```
 
 ## TXT Manual QA
@@ -82,7 +85,7 @@ After `desktop:build`:
 
 1. Install with the NSIS installer.
 2. Launch the app and confirm the main window loads.
-3. Confirm backend health at `http://127.0.0.1:8000/api/health`.
+3. Confirm the app shows no backend diagnostic and the library/API-backed views work.
 4. Open TXT, EPUB, and ZIP books.
 5. Close the app and confirm no sidecar process remains.
 
@@ -98,6 +101,24 @@ Use an isolated `BOOKREADER_DATA_DIR` so the installed app and sidecar run norma
 6. Annotation create, patch, list, delete, and empty-after-delete all persist.
 7. Font list and font download return expected data.
 8. Normal window close leaves no `bookreader-backend` process.
+
+Packaged Tauri selects a random loopback port and requires a secret launch nonce. `127.0.0.1:8000` is not a valid installed-build check and the nonce must not be logged. Use the UI plus the isolated fault script.
+
+## Release security QA
+
+See [windows-release.md](windows-release.md). Public artifacts must pass the `Public` readiness profile: current artifacts, SHA-256-bound fault and migration reports, valid Authenticode on desktop/sidecar/installer, one expected publisher, and trusted timestamps. The updater remains disabled until the stronger `Updater` profile passes.
+
+Latest Windows fault smoke result, 2026-07-13:
+
+- Migration fixtures passed 4/4; Candidate readiness passed 34/34.
+- Fault smoke passed 15/15 against the exact final sidecar and desktop hashes.
+- Korean executable path started successfully after forcing the PyInstaller embedded interpreter into UTF-8 mode.
+- Isolated data root length: 222 characters.
+- Managed TXT path length: 249 characters; library API returned it successfully.
+- Requests without the per-launch nonce returned 401.
+- Explicit shutdown terminated all 3 captured sidecar processes.
+- Forced termination of the packaged desktop left no captured sidecar process through the parent watchdog.
+- Invalid data-root startup exited with code 3 and diagnostics.
 
 Latest installed API smoke result, 2026-06-20:
 - Books listed: 3 (`txt,epub,zip`).

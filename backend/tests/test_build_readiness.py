@@ -30,6 +30,15 @@ def test_backend_build_and_dev_requirements_are_reproducible():
     assert "httpx" in dev_requirements
     assert "requirements-build.txt" in recreate_venv
     assert "requirements-dev.txt" in recreate_venv
+    assert "pyinstaller==6.19.0" in build_requirements
+
+
+def test_sidecar_build_enforces_the_pinned_pyinstaller_version():
+    script = read_text(BACKEND / "build_sidecar.ps1")
+
+    assert "requirements-build.txt must pin pyinstaller" in script
+    assert "$pyInstallerVersionExitCode = $LASTEXITCODE" in script
+    assert "PyInstaller version mismatch" in script
 
 
 def test_frontend_perf_report_scripts_have_an_implementation():
@@ -64,6 +73,7 @@ def test_pyinstaller_spec_includes_backend_entrypoints_and_router_imports():
         '"routers.fonts"',
         '"routers.library_folders"',
         '"services.annotation_store"',
+        '"services.annotation_export_service"',
         '"services.library_store"',
         '"services.search_service"',
         '"services.txt_transform_service"',
@@ -80,3 +90,96 @@ def test_windows_sidecar_script_documents_platform_limit():
     assert "Windows" in script
     assert "PowerShell" in script
     assert "Tauri externalBin" in script
+
+
+def test_pyinstaller_forces_utf8_before_python_initializes_in_unicode_paths():
+    spec = read_text(BACKEND / "bookreader-backend.spec")
+
+    assert '("X utf8", None, "OPTION")' in spec
+    assert "interpreter_options" in spec
+
+
+def test_windows_bundle_policy_blocks_downgrades_and_freezes_current_user_scope():
+    config = json.loads(read_text(FRONTEND / "src-tauri" / "tauri.conf.json"))
+    windows = config["bundle"]["windows"]
+
+    assert windows["allowDowngrades"] is False
+    assert windows["nsis"]["installMode"] == "currentUser"
+    assert "updater" not in config.get("plugins", {})
+    assert "createUpdaterArtifacts" not in config["bundle"]
+
+
+def test_release_commands_fail_closed_and_verify_all_windows_artifacts():
+    package = json.loads(read_text(FRONTEND / "package.json"))
+    release_build = read_text(FRONTEND / "scripts" / "build-windows-release.ps1")
+    readiness = read_text(FRONTEND / "scripts" / "release-readiness.ps1")
+    migration_fixtures = read_text(FRONTEND / "scripts" / "windows-migration-fixtures.ps1")
+    policy = read_text(FRONTEND / "scripts" / "release-policy.mjs")
+
+    assert "desktop:release:check" in package["scripts"]
+    assert "desktop:release:signed" in package["scripts"]
+    assert "bookreader-release-overlay-" in release_build
+    assert "finally" in release_build
+    assert "--locked" in release_build
+    assert "--no-sign" not in release_build
+    assert "Get-AuthenticodeSignature" in readiness
+    assert "TimeStamperCertificate" in readiness
+    assert "sidecar_sha256" in readiness
+    assert "desktop_sha256" in readiness
+    assert "application_version" in readiness
+    assert "bookreader-windows-migration-fixtures" in readiness
+    assert "MigrationReportPath" in release_build
+    assert "windows-migration-fixtures.ps1" in release_build
+    assert "desktop:migration-fixtures" in package["scripts"]
+    assert "migration_source_sha256" in migration_fixtures
+    assert "--locked" in migration_fixtures
+    for artifact in ["sidecar", "desktop", "installer"]:
+        assert f'"{artifact}"' in readiness
+    assert "runtime_updater_disabled" in policy
+    assert "TAURI_SIGNING_PRIVATE_KEY" in policy
+
+
+def test_windows_fault_smoke_is_isolated_authenticated_and_non_destructive():
+    script = read_text(FRONTEND / "scripts" / "windows-sidecar-fault-smoke.ps1")
+
+    assert "BOOKREADER_DATA_DIR" in script
+    assert "BOOKREADER_SIDECAR_NONCE" in script
+    assert "GetTempPath" in script
+    assert "managed_book_path_240_to_250" in script
+    assert "invalid_data_root_fails_closed" in script
+    assert "$null -ne $failureExitCode" in script
+    assert "$failureProcess.Handle" in script
+    assert "desktop_crash_watchdog_shutdown" in script
+    assert "Get-ProcessTreeSnapshot" in script
+    assert "CreationTicks" in script
+    assert "taskkill.exe" in script
+    assert "Defender" not in script
+    assert "EICAR" not in script
+
+
+def test_tauri_runtime_uses_separate_data_root_and_reports_early_exit():
+    source = read_text(FRONTEND / "src-tauri" / "src" / "lib.rs")
+
+    assert 'env("BOOKREADER_DATA_DIR"' in source
+    assert 'env("BOOKREADER_PARENT_PID"' in source
+    assert "app_local_data_dir" in source
+    assert "LEGACY_MIGRATION_PENDING" in source
+    assert "source_preserved: true" in source
+    assert "MigrationFileRecord" in source
+    assert "collect_pending_migration_manifest" in source
+    assert '"sidecar_stop_failed"' in source
+    assert "CommandEvent::Terminated" in source
+    assert '"sidecar_exited"' in source
+    assert "restart_application" in source
+    restart_body = source[source.index("fn restart_application"):source.index("fn reserve_loopback_listener")]
+    assert restart_body.index("cleanup_backend_runtime") < restart_body.index("app.restart()")
+
+
+def test_tauri_node_wrappers_do_not_spawn_cmd_through_a_shell():
+    cli = read_text(FRONTEND / "scripts" / "tauri-cli.cjs")
+    wrapper = read_text(FRONTEND / "scripts" / "tauri-wrapper.cjs")
+
+    for script in [cli, wrapper]:
+        assert '"@tauri-apps"' in script
+        assert '"tauri.js"' in script
+        assert "shell: false" in script

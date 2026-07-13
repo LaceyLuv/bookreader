@@ -5,7 +5,34 @@ import { API_FONTS_BASE } from '../lib/apiBase'
 import { emitUserFontsUpdated } from './FontStyleInjector'
 import { readErrorDetail } from '../lib/readErrorDetail'
 
-export default function ReaderToolbar({ settings, readerType = '', txtTransforms = null }) {
+export function ReaderSettingSlider({ label, value, min, max, step, unit = '', onChange }) {
+    const percentage = ((Number(value) - min) / (max - min)) * 100
+
+    return (
+        <div>
+            <div className="mb-2 flex items-center justify-between">
+                <span className="text-[12px] font-semibold">{label}</span>
+                <span className="rounded-md bg-[#f1eadf] px-2 py-0.5 text-[11px] tabular-nums text-[#766854]">{value}{unit}</span>
+            </div>
+            <input
+                aria-label={label}
+                type="range"
+                min={min}
+                max={max}
+                step={step}
+                value={value}
+                onChange={(event) => onChange(parseFloat(event.target.value))}
+                className="h-1 w-full cursor-pointer rounded-full"
+                style={{
+                    background: `linear-gradient(90deg, #b7864b 0%, #b7864b ${percentage}%, #ded4c5 ${percentage}%, #ded4c5 100%)`,
+                    accentColor: '#b7864b',
+                }}
+            />
+        </div>
+    )
+}
+
+export default function ReaderToolbar({ settings, readerType = '', txtTransforms = null, txtEncoding = null }) {
     const {
         theme,
         font,
@@ -57,7 +84,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
     const [userFonts, setUserFonts] = useState([])
     const [fontsLoading, setFontsLoading] = useState(false)
     const [fontError, setFontError] = useState('')
-    const [activeTab, setActiveTab] = useState('reading')
+    const [activeTab, setActiveTab] = useState('basic')
     const fileInputRef = useRef(null)
     const panelRef = useRef(null)
     const triggerRef = useRef(null)
@@ -77,11 +104,13 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
         const fg = rgbToHex(textColor)
         return THEME_PRESETS.find((p) => rgbToHex(p.bg) === bg && rgbToHex(p.fg) === fg) || null
     })()
+    const getPresetName = (preset) => preset?.nameKey ? tt(preset.nameKey) : preset?.name
+    const getPresetNote = (preset) => preset?.noteKey ? tt(preset.noteKey) : preset?.note
 
     const applyPreset = (preset) => {
         setBgColor(preset.bg)
         setTextColor(preset.fg)
-        setThemeToast(`${preset.name} ${tt('themeApplied')}`)
+        setThemeToast(`${getPresetName(preset)} ${tt('themeApplied')}`)
         setTimeout(() => setThemeToast(null), 1800)
     }
 
@@ -162,32 +191,6 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
         }
     }
 
-    const Slider = ({ label, value, min, max, step, unit, onChange }) => {
-        const percentage = ((Number(value) - min) / (max - min)) * 100
-        return (
-        <div>
-            <div className="mb-2 flex items-center justify-between">
-                <span className="text-[12px] font-semibold">{label}</span>
-                <span className="rounded-md bg-[#f1eadf] px-2 py-0.5 text-[11px] tabular-nums text-[#766854]">{value}{unit}</span>
-            </div>
-            <input
-                aria-label={label}
-                type="range"
-                min={min}
-                max={max}
-                step={step}
-                value={value}
-                onChange={e => onChange(parseFloat(e.target.value))}
-                className="h-1 w-full cursor-pointer rounded-full"
-                style={{
-                    background: `linear-gradient(90deg, #b7864b 0%, #b7864b ${percentage}%, #ded4c5 ${percentage}%, #ded4c5 100%)`,
-                    accentColor: '#b7864b',
-                }}
-            />
-        </div>
-        )
-    }
-
     const handleReset = () => {
         if (window.confirm(tt('resetConfirm'))) {
             resetDefaults()
@@ -210,6 +213,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
     const isBuiltinFontFamily = !!fontFamily && Object.values(FONTS || {}).some((f) => f?.family === fontFamily)
     const isBuiltinSelectedValue = selectedFontValue.startsWith('__builtin:')
     const hasDetachedFontValue = !isBuiltinSelectedValue && !userFonts.some((f) => `UserFont_${f.id}` === selectedFontValue) && !isBuiltinFontFamily
+    const isTextReader = readerType !== 'zip'
 
     const handleFontSelectChange = (nextValue) => {
         if (!nextValue) return
@@ -228,7 +232,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
     const handleTabKeyDown = (event, currentKey) => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
         event.preventDefault()
-        const keys = ['reading', 'display', 'advanced']
+        const keys = ['basic', 'advanced']
         const currentIndex = keys.indexOf(currentKey)
         const nextKey = event.key === 'Home'
             ? keys[0]
@@ -287,10 +291,9 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                             </div>
                         </header>
 
-                        <div role="tablist" aria-label={tt('settingsSections')} className="mx-6 mt-4 grid grid-cols-3 rounded-xl border border-[#ded4c5] bg-[#f4eee5] p-1">
+                        <div role="tablist" aria-label={tt('settingsSections')} className="mx-6 mt-4 grid grid-cols-2 rounded-xl border border-[#ded4c5] bg-[#f4eee5] p-1">
                             {[
-                                ['reading', tt('settingsReadTab')],
-                                ['display', tt('settingsDisplayTab')],
+                                ['basic', tt('settingsBasicTab')],
                                 ['advanced', tt('settingsAdvancedTab')],
                             ].map(([key, label]) => (
                                 <button
@@ -310,102 +313,103 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                             ))}
                         </div>
 
-                        <div
-                            data-testid="reader-settings-preview"
-                            className="mx-6 mt-4 overflow-hidden rounded-2xl border border-[#d9cdbd] p-3 shadow-inner transition-colors"
-                            style={{ backgroundColor: bgColor, color: textColor }}
-                        >
-                            <p className="mb-2 text-[8px] font-bold uppercase tracking-[0.18em] opacity-55">{tt('livePreview')}</p>
+                        {activeTab === 'basic' && (
                             <div
-                                data-testid="reader-settings-preview-page"
-                                className={`grid min-h-16 ${layout === 'dual' ? 'grid-cols-2' : 'grid-cols-1'} overflow-hidden rounded-lg bg-white/20 shadow-sm`}
-                                style={{
-                                    columnGap: `${Math.max(4, columnGap * 0.12)}px`,
-                                    padding: `${Math.max(6, vMargin * 0.18)}px ${Math.max(8, hMargin * 0.16)}px`,
-                                    fontFamily: selectedFontPreviewFamily,
-                                    fontWeight,
-                                    fontSize: `${Math.max(10, fontSize * 0.58)}px`,
-                                    lineHeight,
-                                    letterSpacing: `${letterSpacing}em`,
-                                }}
+                                data-testid="reader-settings-preview"
+                                className="mx-6 mt-4 overflow-hidden rounded-2xl border border-[#d9cdbd] p-3 shadow-inner transition-colors"
+                                style={{ backgroundColor: bgColor, color: textColor }}
                             >
-                                <p className={layout === 'dual' ? 'border-r border-current/20 pr-2' : ''}>{tt('previewText')}</p>
-                                {layout === 'dual' && <p className="pl-2">{tt('previewTextAlt')}</p>}
+                                <p className="mb-2 text-[8px] font-bold uppercase tracking-[0.18em] opacity-55">{tt('livePreview')}</p>
+                                <div
+                                    data-testid="reader-settings-preview-page"
+                                    className={`grid min-h-16 ${layout === 'dual' ? 'grid-cols-2' : 'grid-cols-1'} overflow-hidden rounded-lg bg-white/20 shadow-sm`}
+                                    style={{
+                                        columnGap: `${Math.max(4, columnGap * 0.12)}px`,
+                                        padding: `${Math.max(6, vMargin * 0.18)}px ${Math.max(8, hMargin * 0.16)}px`,
+                                        fontFamily: selectedFontPreviewFamily,
+                                        fontWeight,
+                                        fontSize: `${Math.max(10, fontSize * 0.58)}px`,
+                                        lineHeight,
+                                        letterSpacing: `${letterSpacing}em`,
+                                    }}
+                                >
+                                    <p className={layout === 'dual' ? 'border-r border-current/20 pr-2' : ''}>{tt('previewText')}</p>
+                                    {layout === 'dual' && <p className="pl-2">{tt('previewTextAlt')}</p>}
+                                </div>
                             </div>
-                        </div>
+                        )}
 
                         <div className="flex-1 overflow-y-auto px-6 py-5 [scrollbar-color:#d8cdbd_transparent]">
-                            {activeTab === 'reading' && (
-                                <div id="settings-panel-reading" role="tabpanel" aria-labelledby="settings-tab-reading" className="space-y-4">
-                                    <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
-                                        <label className="mb-2 block text-[12px] font-semibold" htmlFor="reader-font-select">{tt('font')}</label>
-                                        <select
-                                            id="reader-font-select"
-                                            value={selectedFontValue}
-                                            onChange={(event) => handleFontSelectChange(event.target.value)}
-                                            className="w-full rounded-xl border border-[#ded4c5] bg-[#fffdf9] px-3 py-2.5 text-[12px] outline-none focus:border-[#b7864b]"
-                                            style={{ fontFamily: selectedFontPreviewFamily }}
-                                        >
-                                            {BUILTIN_FONT_OPTIONS.map((item) => <option key={item.key} value={`__builtin:${item.key}`}>{item.label}</option>)}
-                                            {userFonts.map((fontItem) => <option key={fontItem.id} value={`UserFont_${fontItem.id}`}>{fontItem.filename}</option>)}
-                                            {hasDetachedFontValue && <option value={selectedFontValue}>{tt('customSelectedFont')}</option>}
-                                        </select>
-
-                                        <div className="mt-4 flex items-center justify-between">
-                                            <span className="text-[12px] font-semibold">{tt('size')}</span>
-                                            <div className="flex items-center overflow-hidden rounded-xl border border-[#ded4c5] bg-[#fffdf9]">
-                                                <button type="button" aria-label={tt('decreaseFontSize')} onClick={decFont} className="h-9 w-10 text-lg hover:bg-[#f1eadf]">−</button>
-                                                <span className="min-w-16 border-x border-[#ded4c5] px-3 text-center text-[12px] tabular-nums">{fontSize} px</span>
-                                                <button type="button" aria-label={tt('increaseFontSize')} onClick={incFont} className="h-9 w-10 text-lg hover:bg-[#f1eadf]">+</button>
-                                            </div>
+                            {activeTab === 'basic' && (
+                                <div id="settings-panel-basic" role="tabpanel" aria-labelledby="settings-tab-basic" className="space-y-5">
+                                    <section>
+                                        <div className="mb-3 flex items-center justify-between">
+                                            <h3 className="text-[12px] font-semibold">{tt('themePresets')}</h3>
+                                            <span className="text-[10px] text-[#8a7c66]">{getPresetName(matchedPreset) || tt('custom')}</span>
                                         </div>
-
-                                        <div className="mt-4">
-                                            <span className="mb-2 block text-[12px] font-semibold">{tt('weight')}</span>
-                                            <div className="grid grid-cols-2 gap-2">
-                                                {[400, 700].map((value) => (
-                                                    <button key={value} type="button" onClick={() => setFontWeight(value)} aria-pressed={fontWeight === value} className={`rounded-xl border py-2 text-[11px] font-semibold ${fontWeight === value ? 'border-[#b7864b] bg-[#f5eadc] text-[#765022]' : 'border-[#ded4c5] bg-[#fffdf9]'}`}>
-                                                        {value === 400 ? tt('regularWeight') : tt('boldWeight')}
+                                        <div className="grid grid-cols-3 gap-2">
+                                            {THEME_PRESETS.map((preset) => {
+                                                const selected = matchedPreset?.key === preset.key
+                                                return (
+                                                    <button key={preset.key} type="button" onClick={() => applyPreset(preset)} aria-pressed={selected} title={getPresetNote(preset)} className={`rounded-2xl border p-2.5 text-center ${selected ? 'border-[#b7864b] bg-[#f5eadc]' : 'border-[#ded4c5] bg-white/70'}`}>
+                                                        <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border shadow-sm" style={{ backgroundColor: preset.bg, borderColor: selected ? '#b7864b' : '#ded4c5' }}>
+                                                            <i className="h-4 w-1 rounded-full" style={{ backgroundColor: preset.fg }} />
+                                                        </span>
+                                                        <span className="mt-2 block truncate text-[10px] font-semibold">{getPresetName(preset)}</span>
                                                     </button>
-                                                ))}
-                                            </div>
-                                            <div className="mt-3 flex items-center gap-3">
-                                                <input
-                                                    aria-label={tt('fontWeightDetail')}
-                                                    type="range"
-                                                    min={100}
-                                                    max={900}
-                                                    step={50}
-                                                    value={fontWeight}
-                                                    onChange={(event) => setFontWeight(parseInt(event.target.value, 10))}
-                                                    className="h-1 flex-1 cursor-pointer accent-[#b7864b]"
-                                                />
-                                                <input
-                                                    aria-label={tt('fontWeightValue')}
-                                                    type="number"
-                                                    min={100}
-                                                    max={900}
-                                                    step={50}
-                                                    value={fontWeight}
-                                                    onChange={(event) => setFontWeight(parseInt(event.target.value, 10))}
-                                                    className="w-20 rounded-lg border border-[#ded4c5] bg-[#fffdf9] px-2 py-1.5 text-center text-[11px] tabular-nums outline-none focus:border-[#b7864b]"
-                                                />
-                                            </div>
+                                                )
+                                            })}
                                         </div>
                                     </section>
 
-                                    <section className="space-y-5 rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
-                                        <Slider label={tt('lineHeight')} value={lineHeight} min={1} max={2.5} step={0.1} unit="" onChange={setLineHeight} />
-                                        <Slider label={tt('letterSpacing')} value={letterSpacing} min={-0.05} max={0.2} step={0.01} unit=" em" onChange={setLetterSpacing} />
-                                        <Slider label={tt('hMargin')} value={hMargin} min={16} max={120} step={4} unit=" px" onChange={setHMargin} />
-                                        <Slider label={tt('vMargin')} value={vMargin} min={8} max={80} step={4} unit=" px" onChange={setVMargin} />
-                                        <Slider label={tt('splitMargin')} value={columnGap} min={16} max={120} step={4} unit=" px" onChange={setColumnGap} />
-                                    </section>
-                                </div>
-                            )}
+                                    {isTextReader && (
+                                        <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                            <label className="mb-2 block text-[12px] font-semibold" htmlFor="reader-font-select">{tt('font')}</label>
+                                            <select
+                                                id="reader-font-select"
+                                                value={selectedFontValue}
+                                                onChange={(event) => handleFontSelectChange(event.target.value)}
+                                                className="w-full rounded-xl border border-[#ded4c5] bg-[#fffdf9] px-3 py-2.5 text-[12px] outline-none focus:border-[#b7864b]"
+                                                style={{ fontFamily: selectedFontPreviewFamily }}
+                                            >
+                                                {BUILTIN_FONT_OPTIONS.map((item) => <option key={item.key} value={`__builtin:${item.key}`}>{item.label}</option>)}
+                                                {userFonts.map((fontItem) => <option key={fontItem.id} value={`UserFont_${fontItem.id}`}>{fontItem.filename}</option>)}
+                                                {hasDetachedFontValue && <option value={selectedFontValue}>{tt('customSelectedFont')}</option>}
+                                            </select>
 
-                            {activeTab === 'display' && (
-                                <div id="settings-panel-display" role="tabpanel" aria-labelledby="settings-tab-display" className="space-y-5">
+                                            {readerType === 'epub' && (
+                                                <label className="mt-3 flex items-center justify-between rounded-xl border border-[#ded4c5] bg-[#fffdf9] px-3 py-2.5 text-[11px] font-semibold">
+                                                    <span>{tt('useEpubEmbeddedFonts')}</span>
+                                                    <input type="checkbox" checked={fontMode === 'embedded'} onChange={(event) => setFontMode(event.target.checked ? 'embedded' : 'user')} className="h-4 w-4 accent-[#b7864b]" />
+                                                </label>
+                                            )}
+
+                                            <div className="mt-4 flex items-center justify-between">
+                                                <span className="text-[12px] font-semibold">{tt('size')}</span>
+                                                <div className="flex items-center overflow-hidden rounded-xl border border-[#ded4c5] bg-[#fffdf9]">
+                                                    <button type="button" aria-label={tt('decreaseFontSize')} onClick={decFont} className="h-9 w-10 text-lg hover:bg-[#f1eadf]">−</button>
+                                                    <span className="min-w-16 border-x border-[#ded4c5] px-3 text-center text-[12px] tabular-nums">{fontSize} px</span>
+                                                    <button type="button" aria-label={tt('increaseFontSize')} onClick={incFont} className="h-9 w-10 text-lg hover:bg-[#f1eadf]">+</button>
+                                                </div>
+                                            </div>
+
+                                            <div className="mt-4">
+                                                <span className="mb-2 block text-[12px] font-semibold">{tt('weight')}</span>
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    {[400, 700].map((value) => (
+                                                        <button key={value} type="button" onClick={() => setFontWeight(value)} aria-pressed={fontWeight === value} className={`rounded-xl border py-2 text-[11px] font-semibold ${fontWeight === value ? 'border-[#b7864b] bg-[#f5eadc] text-[#765022]' : 'border-[#ded4c5] bg-[#fffdf9]'}`}>
+                                                            {value === 400 ? tt('regularWeight') : tt('boldWeight')}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            <div className="mt-5">
+                                                <ReaderSettingSlider label={tt('lineHeight')} value={lineHeight} min={1} max={2.5} step={0.1} onChange={setLineHeight} />
+                                            </div>
+                                        </section>
+                                    )}
+
                                     <section>
                                         <h3 className="mb-2 text-[12px] font-semibold">{tt('layout')}</h3>
                                         <div className="grid grid-cols-2 gap-3">
@@ -423,26 +427,16 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                         </div>
                                     </section>
 
-                                    <section>
-                                        <div className="mb-3 flex items-center justify-between">
-                                            <h3 className="text-[12px] font-semibold">{tt('themePresets')}</h3>
-                                            <span className="text-[10px] text-[#8a7c66]">{matchedPreset?.name || tt('custom')}</span>
-                                        </div>
-                                        <div className="grid grid-cols-3 gap-2">
-                                            {THEME_PRESETS.map((preset) => {
-                                                const selected = matchedPreset?.key === preset.key
-                                                return (
-                                                    <button key={preset.key} type="button" onClick={() => applyPreset(preset)} aria-pressed={selected} title={preset.note} className={`rounded-2xl border p-2.5 text-center ${selected ? 'border-[#b7864b] bg-[#f5eadc]' : 'border-[#ded4c5] bg-white/70'}`}>
-                                                        <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border shadow-sm" style={{ backgroundColor: preset.bg, borderColor: selected ? '#b7864b' : '#ded4c5' }}>
-                                                            <i className="h-4 w-1 rounded-full" style={{ backgroundColor: preset.fg }} />
-                                                        </span>
-                                                        <span className="mt-2 block truncate text-[10px] font-semibold">{preset.name}</span>
-                                                    </button>
-                                                )
-                                            })}
-                                        </div>
-                                    </section>
+                                    {readerType === 'zip' && (
+                                        <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                            <ReaderSettingSlider label={tt('zipImageScale')} value={Number((zipImageScale || 1).toFixed(1))} min={0.5} max={2.5} step={0.1} unit="x" onChange={setZipImageScale} />
+                                        </section>
+                                    )}
+                                </div>
+                            )}
 
+                            {activeTab === 'advanced' && (
+                                <div id="settings-panel-advanced" role="tabpanel" aria-labelledby="settings-tab-advanced" className="space-y-5">
                                     <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
                                         <h3 className="mb-3 text-[12px] font-semibold">{tt('colors')}</h3>
                                         <div className="grid grid-cols-2 gap-3">
@@ -455,17 +449,6 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                         </div>
                                     </section>
 
-                                    {readerType === 'zip' && (
-                                        <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
-                                            <Slider label={tt('zipImageScale')} value={Number((zipImageScale || 1).toFixed(1))} min={0.5} max={2.5} step={0.1} unit="x" onChange={setZipImageScale} />
-                                        </section>
-                                    )}
-
-                                </div>
-                            )}
-
-                            {activeTab === 'advanced' && (
-                                <div id="settings-panel-advanced" role="tabpanel" aria-labelledby="settings-tab-advanced" className="space-y-5">
                                     <section>
                                         <h3 className="mb-2 text-[12px] font-semibold">{tt('language')}</h3>
                                         <div className="grid grid-cols-2 gap-2">
@@ -475,32 +458,95 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                         </div>
                                     </section>
 
-                                    <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
-                                        <div className="flex items-center justify-between">
-                                            <div><h3 className="text-[12px] font-semibold">{tt('fontManagement')}</h3><p className="mt-1 text-[10px] text-[#8a7c66]">{fontsLoading ? tt('loadingFonts') : `${userFonts.length} ${tt('uploadedCountSuffix')}`}</p></div>
-                                            <button type="button" onClick={() => fileInputRef.current?.click()} className="rounded-xl border border-[#b7864b] bg-[#f5eadc] px-3 py-2 text-[11px] font-semibold text-[#765022]">{tt('addFont')}</button>
-                                            <input ref={fileInputRef} type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={handleUploadFont} />
-                                        </div>
-                                        {fontError && <p role="alert" className="mt-2 text-[10px] text-red-600">{fontError}</p>}
-                                    </section>
+                                    {isTextReader ? (
+                                        <>
+                                            <section className="space-y-5 rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                                <div>
+                                                    <div className="mb-2 flex items-center justify-between">
+                                                        <span className="text-[12px] font-semibold">{tt('fontWeightDetail')}</span>
+                                                        <input
+                                                            aria-label={tt('fontWeightValue')}
+                                                            type="number"
+                                                            min={100}
+                                                            max={900}
+                                                            step={50}
+                                                            value={fontWeight}
+                                                            onChange={(event) => setFontWeight(parseInt(event.target.value, 10))}
+                                                            className="w-20 rounded-lg border border-[#ded4c5] bg-[#fffdf9] px-2 py-1.5 text-center text-[11px] tabular-nums outline-none focus:border-[#b7864b]"
+                                                        />
+                                                    </div>
+                                                    <input
+                                                        aria-label={tt('fontWeightDetail')}
+                                                        type="range"
+                                                        min={100}
+                                                        max={900}
+                                                        step={50}
+                                                        value={fontWeight}
+                                                        onChange={(event) => setFontWeight(parseInt(event.target.value, 10))}
+                                                        className="h-1 w-full cursor-pointer accent-[#b7864b]"
+                                                    />
+                                                </div>
+                                                <ReaderSettingSlider label={tt('letterSpacing')} value={letterSpacing} min={-0.05} max={0.2} step={0.01} unit=" em" onChange={setLetterSpacing} />
+                                                <ReaderSettingSlider label={tt('hMargin')} value={hMargin} min={16} max={120} step={4} unit=" px" onChange={setHMargin} />
+                                                <ReaderSettingSlider label={tt('vMargin')} value={vMargin} min={8} max={80} step={4} unit=" px" onChange={setVMargin} />
+                                                <ReaderSettingSlider label={tt('splitMargin')} value={columnGap} min={16} max={120} step={4} unit=" px" onChange={setColumnGap} />
+                                            </section>
 
-                                    {readerType === 'epub' && (
-                                        <label className="flex items-center justify-between rounded-2xl border border-[#e2d9cb] bg-white/70 px-4 py-3 text-[12px] font-semibold">
-                                            <span><b className="block font-semibold">{tt('useEpubEmbeddedFonts')}</b><small className="mt-1 block font-normal text-[#8a7c66]">{tt('embeddedFontsHint')}</small></span>
-                                            <input type="checkbox" checked={fontMode === 'embedded'} onChange={(event) => setFontMode(event.target.checked ? 'embedded' : 'user')} className="h-4 w-4 accent-[#b7864b]" />
-                                        </label>
+                                            <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                                <div className="flex items-center justify-between">
+                                                    <div><h3 className="text-[12px] font-semibold">{tt('fontManagement')}</h3><p className="mt-1 text-[10px] text-[#8a7c66]">{fontsLoading ? tt('loadingFonts') : `${userFonts.length} ${tt('uploadedCountSuffix')}`}</p></div>
+                                                    <button type="button" onClick={() => fileInputRef.current?.click()} className="rounded-xl border border-[#b7864b] bg-[#f5eadc] px-3 py-2 text-[11px] font-semibold text-[#765022]">{tt('addFont')}</button>
+                                                    <input ref={fileInputRef} type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={handleUploadFont} />
+                                                </div>
+                                                {fontError && <p role="alert" className="mt-2 text-[10px] text-red-600">{fontError}</p>}
+                                            </section>
+                                        </>
+                                    ) : (
+                                        <section className="space-y-5 rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                            <ReaderSettingSlider label={tt('hMargin')} value={hMargin} min={16} max={120} step={4} unit=" px" onChange={setHMargin} />
+                                            <ReaderSettingSlider label={tt('vMargin')} value={vMargin} min={8} max={80} step={4} unit=" px" onChange={setVMargin} />
+                                        </section>
                                     )}
 
-                                    {readerType === 'txt' && txtTransforms && (
+                                    {readerType === 'epub' && (
+                                        <section className="rounded-2xl border border-dashed border-[#d7cbbb] bg-[#f4eee5] px-4 py-3">
+                                            <h3 className="text-[12px] font-semibold">{tt('useEpubEmbeddedFonts')}</h3>
+                                            <p className="mt-1 text-[10px] leading-relaxed text-[#766854]">{tt('embeddedFontsHint')}</p>
+                                        </section>
+                                    )}
+
+                                    {readerType === 'txt' && (txtTransforms || txtEncoding) && (
                                         <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
                                             <h3 className="mb-3 text-[12px] font-semibold">TXT</h3>
                                             <div className="space-y-3">
-                                                {[
+                                                {txtTransforms && [
                                                     [tt('trimSpaces'), txtTransforms.trimSpaces, txtTransforms.onTrimSpacesChange],
                                                     [tt('splitParagraphs'), txtTransforms.splitParagraphs, txtTransforms.onSplitParagraphsChange],
                                                 ].map(([label, checked, setter]) => (
                                                     <label key={label} className="flex items-center justify-between text-[11px]"><span>{label}</span><input type="checkbox" checked={checked} onChange={(event) => setter(event.target.checked)} className="h-4 w-4 accent-[#b7864b]" /></label>
                                                 ))}
+                                                {txtEncoding && (
+                                                    <div className="border-t border-[#e2d9cb] pt-3">
+                                                        <div className="flex items-center justify-between gap-3">
+                                                            <span>
+                                                                <b className="block text-[11px] font-semibold">{tt('currentEncoding')}</b>
+                                                                <small className="mt-0.5 block text-[10px] font-normal text-[#8a7c66]">
+                                                                    {txtEncoding.encoding || tt('unknown')} · {txtEncoding.source === 'override' ? tt('manualEncoding') : tt('automaticEncoding')}
+                                                                </small>
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    toggleSettings()
+                                                                    txtEncoding.onOpen?.()
+                                                                }}
+                                                                className="shrink-0 rounded-xl border border-[#b7864b] bg-[#f5eadc] px-3 py-2 text-[10px] font-semibold text-[#765022]"
+                                                            >
+                                                                {tt('changeEncoding')}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         </section>
                                     )}

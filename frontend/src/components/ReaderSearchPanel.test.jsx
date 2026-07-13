@@ -38,3 +38,28 @@ test('renders formatted result location instead of raw locator text', () => {
     expect(screen.getByText('Page 7')).toBeTruthy()
     expect(screen.queryByText('segment:12:offset:45')).toBeNull()
 })
+
+test('shows partial timeout status and lets Escape close the dialog', () => {
+    const onClose = vi.fn()
+    render(
+        <ReaderSearchPanel
+            open
+            themeStyle={themeStyle}
+            query="target"
+            submittedQuery="target"
+            loading={false}
+            results={[]}
+            meta={{ total: 0, complete: false, partial_reason: 'timeout', results_truncated: false }}
+            onQueryChange={vi.fn()}
+            onSubmit={vi.fn()}
+            onClose={onClose}
+            onResultClick={vi.fn()}
+            tt={(key) => key}
+        />,
+    )
+
+    expect(screen.getByText('searchIncomplete')).toBeTruthy()
+    expect(screen.getByText(/searchTimedOut/)).toBeTruthy()
+    screen.getByRole('dialog').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(onClose).toHaveBeenCalledOnce()
+})

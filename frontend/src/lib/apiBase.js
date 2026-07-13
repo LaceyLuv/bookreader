@@ -25,6 +25,10 @@ export function getApiFontsBase(windowLike = globalThis.window) {
     return buildApiPath(getApiBase(windowLike), '/api/fonts')
 }
 
+export function getApiDataBase(windowLike = globalThis.window) {
+    return buildApiPath(getApiBase(windowLike), '/api/data')
+}
+
 export function getApiHealthUrl(windowLike = globalThis.window) {
     return buildApiPath(getApiBase(windowLike), '/api/health')
 }
@@ -33,6 +37,7 @@ export const IS_TAURI_RUNTIME = detectTauriRuntime()
 export let API_BASE = getApiBase()
 export let API_BOOKS_BASE = getApiBooksBase()
 export let API_FONTS_BASE = getApiFontsBase()
+export let API_DATA_BASE = getApiDataBase()
 export let API_HEALTH_URL = getApiHealthUrl()
 
 export function configureDesktopBackend({ apiBase, nonce, assetToken }, windowLike = globalThis.window) {
@@ -53,6 +58,7 @@ export function configureDesktopBackend({ apiBase, nonce, assetToken }, windowLi
     API_BASE = desktopApiBase
     API_BOOKS_BASE = buildApiPath(API_BASE, '/api/books')
     API_FONTS_BASE = buildApiPath(API_BASE, '/api/fonts')
+    API_DATA_BASE = buildApiPath(API_BASE, '/api/data')
     API_HEALTH_URL = buildApiPath(API_BASE, '/api/health')
 }
 

@@ -27,6 +27,12 @@
     "bundle":  {
                    "active":  true,
                    "targets":  "nsis",
+                   "windows":  {
+                                   "allowDowngrades":  false,
+                                   "nsis":  {
+                                                "installMode":  "currentUser"
+                                            }
+                               },
                    "externalBin":  [
                                        "binaries/bookreader-backend"
                                    ]

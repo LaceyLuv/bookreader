@@ -97,24 +97,36 @@ test('dual ZIP view shows only the final odd page after seeking to the last imag
     mockUseReaderSettings.mockImplementation(() => createSettings({ layout: 'dual' }))
     renderReader()
 
-    await screen.findByAltText('Page 1')
+    await screen.findByAltText('page 1')
     fireEvent.click(screen.getByRole('button', { name: 'seek-last-page' }))
 
     await waitFor(() => {
-        expect(screen.getByAltText('Page 3')).toBeTruthy()
+        expect(screen.getByAltText('page 3')).toBeTruthy()
     })
-    expect(screen.queryByAltText('Page 4')).toBeNull()
+    expect(screen.queryByAltText('page 4')).toBeNull()
     expect(screen.getByTestId('progress-extra').textContent).toBe('ZIP  3/3')
+})
+
+test('disables page keyboard navigation while reader settings are open', async () => {
+    mockUseReaderSettings.mockImplementation(() => createSettings({ settingsOpen: true }))
+    renderReader()
+
+    await screen.findByAltText('page 1')
+    expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ enabled: false }))
 })
 
 test('ZIP image load failures show a per-page error without removing the reader', async () => {
     renderReader()
 
-    const image = await screen.findByAltText('Page 1')
+    const image = await screen.findByAltText('page 1')
     fireEvent.error(image)
 
     expect(screen.getByText('imageLoadFailed')).toBeTruthy()
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'retryImage' }))
+    const retriedImage = await screen.findByAltText('page 1')
+    expect(retriedImage.getAttribute('src')).toContain('?retry=1')
 })
 
 test('automatically shows the restored ZIP image', async () => {
@@ -129,6 +141,59 @@ test('automatically shows the restored ZIP image', async () => {
 
     renderReader()
 
-    expect(await screen.findByAltText('Page 2')).toBeTruthy()
+    expect(await screen.findByAltText('page 2')).toBeTruthy()
     expect(screen.getByTestId('progress-extra').textContent).toBe('ZIP  2/3')
+})
+
+test('ZIP listing errors are distinct from an empty archive and can be retried', async () => {
+    global.fetch
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+            detail: {
+                code: 'zip.invalid_archive',
+                message: 'Damaged ZIP archive',
+                severity: 'error',
+                stage: 'archive',
+                retryable: false,
+                recovery: 'choose_another_file',
+                context: {},
+            },
+        }), { status: 422, headers: { 'Content-Type': 'application/json' } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ images: ['1.jpg'], total: 1 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }))
+
+    renderReader()
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Damaged ZIP archive')
+    expect(screen.queryByText('noImagesFound')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'retry' }))
+
+    expect(await screen.findByAltText('page 1')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+})
+
+test('a successful empty ZIP keeps the separate no-images state', async () => {
+    global.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ images: [], total: 0 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+    }))
+
+    renderReader()
+
+    expect(await screen.findByText('noImagesFound')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+})
+
+test('shows skipped ZIP entries as a non-blocking safety warning', async () => {
+    global.fetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        images: ['1.jpg'],
+        total: 1,
+        diagnostics: [{ code: 'unsafe_member', severity: 'warning' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    renderReader()
+
+    expect((await screen.findByText(/archiveEntriesSkipped/)).textContent).toContain('unsafe_member')
+    expect(await screen.findByAltText('page 1')).toBeTruthy()
 })

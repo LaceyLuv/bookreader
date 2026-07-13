@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { removeBookProgress, useReadingProgress } from './useReadingProgress'
+import { clearLocalBookProgress, pruneLocalBookProgress, removeBookProgress, useReadingProgress } from './useReadingProgress'
 
 beforeEach(() => {
     localStorage.clear()
@@ -58,8 +58,56 @@ test('prefers newer backend progress then dual-writes locator and bookmarks', as
 
     const put = requests.find((options) => options.method === 'PUT')
     const written = JSON.parse(put.body)
-    expect(written.locator).toEqual({ version: 1, ...locator })
-    expect(written.bookmarks.at(-1).locator).toEqual({ version: 1, ...locator })
+    expect(written.locator).toEqual({ ...locator, version: 2 })
+    expect(written.bookmarks.at(-1).locator).toEqual({ ...locator, version: 2 })
+})
+
+test('restores a meaningful EPUB locator inside chapter zero', async () => {
+    const savedLocator = {
+        version: 1,
+        kind: 'epub',
+        chapterHref: 'chapter-1.xhtml',
+        chapterIndex: 0,
+        chapterPage: 3,
+    }
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        'epub-1': {
+            position: 0,
+            totalPages: 5,
+            type: 'epub',
+            bookmarks: [],
+            locator: savedLocator,
+        },
+    }))
+
+    const { result } = renderHook(() => useReadingProgress('epub-1', {
+        totalPages: 5,
+        type: 'epub',
+        locatorToPosition: () => 0,
+    }))
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.restoredProgress).toMatchObject({ position: 0, locator: savedLocator })
+})
+
+test('keeps two bookmarks on different pages of the same EPUB chapter', async () => {
+    const { result, rerender } = renderHook(
+        ({ chapterPage }) => useReadingProgress('epub-1', {
+            totalPages: 4,
+            type: 'epub',
+            locator: { kind: 'epub', chapterHref: 'chapter-1.xhtml', chapterIndex: 0, chapterPage },
+        }),
+        { initialProps: { chapterPage: 1 } },
+    )
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    act(() => result.current.addBookmark())
+    rerender({ chapterPage: 2 })
+    act(() => result.current.addBookmark())
+
+    expect(result.current.bookmarks).toHaveLength(2)
+    expect(result.current.bookmarks.map((bookmark) => bookmark.locator.chapterPage)).toEqual([1, 2])
+    expect(result.current.bookmarks.every((bookmark) => bookmark.locator.version === 2)).toBe(true)
 })
 
 test('restored progress is clamped when pagination shrinks after layout changes', async () => {
@@ -162,5 +210,31 @@ test('removeBookProgress deletes current and legacy progress entries', () => {
 
     expect(JSON.parse(localStorage.getItem('bookreader_progress'))).toEqual({
         'book-2': { position: 1, totalPages: 5, type: 'txt', bookmarks: [] },
+    })
+})
+
+test('clearLocalBookProgress does not repeat the backend progress deletion', () => {
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        'book-1': { position: 3, totalPages: 10, type: 'txt', bookmarks: [] },
+    }))
+
+    clearLocalBookProgress('book-1')
+
+    expect(JSON.parse(localStorage.getItem('bookreader_progress'))).toEqual({})
+    expect(fetch).not.toHaveBeenCalled()
+})
+
+test('pruneLocalBookProgress removes crash-recovery orphans and keeps current and legacy ids', () => {
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        current: { position: 1 },
+        legacy: { position: 2 },
+        deleted: { position: 3 },
+    }))
+
+    pruneLocalBookProgress([{ id: 'current', legacy_id: 'legacy' }])
+
+    expect(JSON.parse(localStorage.getItem('bookreader_progress'))).toEqual({
+        current: { position: 1 },
+        legacy: { position: 2 },
     })
 })

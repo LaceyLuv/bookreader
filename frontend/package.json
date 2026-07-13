@@ -16,6 +16,10 @@
         "desktop:info": "npm run tauri -- info",
         "desktop:sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\backend\\build_sidecar.ps1",
         "desktop:preflight": "npm run desktop:info && npm run build:desktop && npm run desktop:build",
+        "desktop:release:check": "node scripts/release-policy.mjs --profile development",
+        "desktop:fault-smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows-sidecar-fault-smoke.ps1",
+        "desktop:migration-fixtures": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows-migration-fixtures.ps1",
+        "desktop:release:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-windows-release.ps1",
         "perf:report": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\collect-build-metrics.ps1",
         "perf:report:web": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\collect-build-metrics.ps1 -SkipDesktopSidecar",
         "perf:report:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\collect-build-metrics.ps1 -SkipWebBuild"

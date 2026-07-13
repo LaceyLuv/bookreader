@@ -13,6 +13,14 @@ STORE_VERSION = 1
 _LOCK = threading.Lock()
 
 
+class StoreCorruptionError(RuntimeError):
+    pass
+
+
+class UnsupportedStoreVersionError(StoreCorruptionError):
+    pass
+
+
 def _empty() -> dict[str, Any]:
     return {"version": STORE_VERSION, "progress": {}}
 
@@ -25,8 +33,15 @@ def _read_file(path):
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict) or not isinstance(data.get("progress", {}), dict):
-        raise ValueError("Invalid reading progress store")
-    return {"version": STORE_VERSION, "progress": data.get("progress", {})}
+        raise StoreCorruptionError("Invalid reading progress store")
+    source_version = data.get("version", 1)
+    if isinstance(source_version, bool) or not isinstance(source_version, int) or source_version < 1:
+        raise StoreCorruptionError("Reading progress store has an invalid version")
+    if source_version > STORE_VERSION:
+        raise UnsupportedStoreVersionError(
+            f"Reading progress store version {source_version} is newer than supported version {STORE_VERSION}"
+        )
+    return {"version": source_version, "progress": data.get("progress", {})}
 
 
 def _read_unlocked():
@@ -34,10 +49,14 @@ def _read_unlocked():
         return _empty()
     try:
         return _read_file(READING_PROGRESS_DATA_PATH)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except UnsupportedStoreVersionError:
+        raise
+    except (OSError, StoreCorruptionError, json.JSONDecodeError) as exc:
         try:
             recovered = _read_file(_backup_path())
-        except (OSError, ValueError, json.JSONDecodeError):
+        except UnsupportedStoreVersionError:
+            raise
+        except (OSError, StoreCorruptionError, json.JSONDecodeError):
             raise RuntimeError("Unable to read reading progress store or backup") from exc
         _write_unlocked(recovered, keep_backup=False)
         return recovered
@@ -67,7 +86,7 @@ def _write_unlocked(data, *, keep_backup=True):
 def ensure_reading_progress_store():
     with _LOCK:
         data = _read_unlocked()
-        if not READING_PROGRESS_DATA_PATH.exists():
+        if not READING_PROGRESS_DATA_PATH.exists() or data.get("version") != STORE_VERSION:
             _write_unlocked(data, keep_backup=False)
         return data
 

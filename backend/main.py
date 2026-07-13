@@ -12,14 +12,17 @@ from routers import books as books_router_module
 from routers.fonts import router as fonts_router
 from routers.library_folders import router as library_folders_router
 from routers.reading_progress import router as reading_progress_router
+from routers.data_backup import router as data_backup_router
 from services.annotation_store import ensure_annotation_store
 from services.library_store import ensure_library_store
 from services.reading_progress_store import ensure_reading_progress_store
 from services.delete_recovery import recover_pending_deletes
+from services.backup_service import APP_VERSION, is_restore_in_progress, recover_interrupted_restore
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    recover_interrupted_restore()
     BOOKS_DIR.mkdir(parents=True, exist_ok=True)
     FONTS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_library_store()
@@ -29,7 +32,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title='Universal Book Reader API', version='1.0.0', lifespan=lifespan)
+app = FastAPI(title='Universal Book Reader API', version=APP_VERSION, lifespan=lifespan)
 
 SIDECAR_NONCE = os.environ.get('BOOKREADER_SIDECAR_NONCE')
 SIDECAR_ASSET_TOKEN = os.environ.get('BOOKREADER_SIDECAR_ASSET_TOKEN')
@@ -53,6 +56,13 @@ async def authenticate_sidecar_requests(request: Request, call_next):
         )
         if not hmac.compare_digest(supplied, SIDECAR_NONCE) and not asset_authorized:
             return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
+    return await call_next(request)
+
+
+@app.middleware('http')
+async def reject_requests_during_restore(request: Request, call_next):
+    if is_restore_in_progress() and not request.url.path.startswith('/api/data/restores/'):
+        return JSONResponse({'detail': 'Data restore in progress'}, status_code=503)
     return await call_next(request)
 
 
@@ -90,6 +100,7 @@ app.include_router(fonts_router)
 app.include_router(annotations_router)
 app.include_router(library_folders_router)
 app.include_router(reading_progress_router)
+app.include_router(data_backup_router)
 
 
 @app.get('/api/health')

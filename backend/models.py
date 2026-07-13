@@ -32,6 +32,7 @@ class BookMeta(BaseModel):
     file_missing: bool = False
     content_fingerprint: str | None = None
     annotation_count: int = 0
+    txt_encoding_override: str | None = None
 
 
 class BookInfo(BookMeta):
@@ -57,6 +58,7 @@ class BookMetaUpdate(BaseModel):
     duplicate_group: str | None = None
     version_label: str | None = None
     duplicate_lead: bool | None = None
+    txt_encoding_override: Literal['utf-8', 'utf-8-sig', 'utf-16', 'utf-16-le', 'utf-16-be', 'cp949', 'euc-kr', 'latin-1'] | None = None
 
 
 class LibraryFolder(BaseModel):
@@ -101,6 +103,11 @@ class BookSearchResponse(BaseModel):
     query: str
     total: int
     results: List[BookSearchResult] = Field(default_factory=list)
+    complete: bool = True
+    partial_reason: Literal['timeout', 'cancelled'] | None = None
+    results_truncated: bool = False
+    scanned_units: int = 0
+    total_units: int | None = None
 
 
 class Annotation(BaseModel):
@@ -108,6 +115,7 @@ class Annotation(BaseModel):
     book_id: str
     kind: AnnotationKind
     locator: str | None = None
+    locator_v2: dict | None = None
     page: int | None = None
     chapter_index: int | None = None
     chapter_title: str | None = None
@@ -128,6 +136,7 @@ class Annotation(BaseModel):
 class AnnotationCreate(BaseModel):
     kind: AnnotationKind
     locator: str | None = None
+    locator_v2: dict | None = None
     page: int | None = None
     chapter_index: int | None = None
     chapter_title: str | None = None
@@ -146,6 +155,7 @@ class AnnotationCreate(BaseModel):
 class AnnotationUpdate(BaseModel):
     note_text: str | None = None
     color: str | None = None
+    locator_v2: dict | None = None
 
 
 class ReadingProgressUpdate(BaseModel):
@@ -169,6 +179,27 @@ class FontMeta(BaseModel):
 class TxtContent(BaseModel):
     text: str
     encoding: str
+
+
+class TxtEncodingCandidate(BaseModel):
+    encoding: str
+    label: str
+    valid: bool
+    strict_valid: bool = False
+    preview: str
+    confidence: float | None = None
+    replacement_count: int = 0
+
+
+class TxtEncodingPreview(BaseModel):
+    encoding: str
+    detected_encoding: str | None = None
+    encoding_confidence: float | None = None
+    encoding_override: str | None = None
+    encoding_source: Literal['auto', 'override'] = 'auto'
+    encoding_candidates: List[TxtEncodingCandidate] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    sampled_bytes: int = 0
 
 
 class TxtSegment(BaseModel):
@@ -198,6 +229,12 @@ class TxtDisplayFragment(BaseModel):
 class TxtManifest(BaseModel):
     title: str | None = None
     encoding: str
+    detected_encoding: str | None = None
+    encoding_confidence: float | None = None
+    encoding_override: str | None = None
+    encoding_source: Literal['auto', 'override'] = 'auto'
+    encoding_candidates: List[TxtEncodingCandidate] = Field(default_factory=list)
+    source_revision: str | None = None
     total_chars: int
     segment_count: int
     transform_options: TxtTransformOptions = Field(default_factory=TxtTransformOptions)
@@ -237,3 +274,24 @@ class EpubChapter(BaseModel):
 class ZipImageList(BaseModel):
     images: List[str]
     total: int
+    archive_revision: str | None = None
+    entries_total: int | None = None
+    skipped_entries: int = 0
+    diagnostics: List[dict] = Field(default_factory=list)
+
+
+class FormatDiagnosticIssue(BaseModel):
+    code: str
+    message: str
+    severity: Literal['info', 'warning', 'error'] = 'warning'
+    stage: str
+    retryable: bool = False
+    recovery: str = 'none'
+    context: dict = Field(default_factory=dict)
+
+
+class BookDiagnostics(BaseModel):
+    format: Literal['epub', 'zip']
+    status: Literal['supported', 'degraded', 'unsupported_or_corrupt']
+    issues: List[FormatDiagnosticIssue] = Field(default_factory=list)
+    stats: dict = Field(default_factory=dict)

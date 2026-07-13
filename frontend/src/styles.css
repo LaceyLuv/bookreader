@@ -402,5 +402,9 @@ body {
 .dashboard-folder-manager button, .dashboard-font-list button { margin-left: 8px; color: #8b695f; }
 .dashboard-font-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-settings-error { margin-top: 9px; color: #b5483e; font-size: 11px; }
+.dashboard-settings-help { color: #746b5c; font-size: 12px; line-height: 1.5; }
+.dashboard-settings-success { margin-top: 9px; color: #34735a; font-size: 11px; }
+.dashboard-settings-warning { color: #9a6428; }
+.dashboard-restore-preview { display: grid; gap: 7px; margin-top: 13px; padding: 12px; border: 1px solid #d9cfbd; border-radius: 10px; background: #fffdf8; color: #665d4f; font-size: 12px; }
 @media (max-width: 1100px) { .dashboard-book-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 640px) { .dashboard-shell { width: min(100% - 28px, 1480px); padding-top: 26px; } .dashboard-hero { gap: 13px; } .dashboard-brand-mark { width: 43px; height: 37px; } .dashboard-settings-button { width: 46px; height: 46px; } .dashboard-upload { min-height: 220px; } .dashboard-book-grid { grid-template-columns: 1fr; } .dashboard-book-card { grid-template-columns: 112px 1fr; } .dashboard-settings-grid { grid-template-columns: 1fr; } .dashboard-settings-grid > :last-child { grid-column: auto; } }

@@ -21,6 +21,14 @@ backend/build-sidecar/
 backend/dist-sidecar/
 frontend/src-tauri/binaries/
 frontend/*.log
+reports/release/
+
+# ===== Release secrets =====
+.secrets/
+*.pfx
+*.p12
+*.updater.key
+frontend/src-tauri/tauri.release.local.conf.json
 
 # ===== BookReader local runtime data =====
 backend/library.json

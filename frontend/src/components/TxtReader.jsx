@@ -6,6 +6,12 @@ import ReaderSearchPanel from './ReaderSearchPanel'
 import ReaderSelectionMenu from './ReaderSelectionMenu'
 import ReaderToolbar from './ReaderToolbar'
 import ResumeToast from './ResumeToast'
+import TxtEncodingDialog from './TxtEncodingDialog'
+import ReaderShell, {
+    ReaderBookmarkStrip,
+    ReaderPageTurnControls,
+    ReaderTopBar,
+} from './ReaderShell'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
 import { useReaderViewportAnchor } from '../hooks/useReaderViewportAnchor'
 import { useReadingProgress } from '../hooks/useReadingProgress'
@@ -27,6 +33,7 @@ import { TXT_OFFSET_UNIT, reanchorLegacyTxtAnnotation, utf16IndexToCodePoint } f
 import { buildMeasuredPages } from '../lib/txtMeasuredPagination'
 import { createTxtMeasuredPaginationOptions, getTxtViewportMetrics, measureAverageCharacterWidth } from '../lib/txtPageMetrics'
 import { createTxtTransformOptions, toTxtTransformQuery } from '../lib/txtTransformOptions'
+import { createTxtLocatorV2, reanchorTxtLocator } from '../lib/txtLocator'
 import { clearSegmentMarks, highlightSegmentMatch, resolveSegmentTarget } from '../lib/txtSegmentDom'
 import { clampViewportPage, getPagesPerView } from '../lib/txtPagination'
 import {
@@ -181,12 +188,16 @@ function TxtReader() {
     const [compactWhitespace, setCompactWhitespace] = useState(false)
     const layout = useResponsiveReaderLayout(preferredLayout)
     const [splitParagraphs, setSplitParagraphs] = useState(false)
+    const [encodingDialogOpen, setEncodingDialogOpen] = useState(false)
+    const [encodingContentVersion, setEncodingContentVersion] = useState(0)
     const [searchOpen, setSearchOpen] = useState(false)
     const [searchDraft, setSearchDraft] = useState('')
     const [searchQuery, setSearchQuery] = useState('')
     const [searchRequestId, setSearchRequestId] = useState(0)
     const [searchLoading, setSearchLoading] = useState(false)
     const [searchResults, setSearchResults] = useState([])
+    const [searchMeta, setSearchMeta] = useState({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+    const [searchError, setSearchError] = useState('')
     const [activeSearchIndex, setActiveSearchIndex] = useState(null)
     const [pendingSearchTarget, setPendingSearchTarget] = useState(null)
     const [annotationsOpen, setAnnotationsOpen] = useState(false)
@@ -221,6 +232,8 @@ function TxtReader() {
     const appliedRestoreKeyRef = useRef(null)
     const firstContentTelemetryKeyRef = useRef(null)
     const isPointerSelectingRef = useRef(false)
+    const searchAbortRef = useRef(null)
+    const searchGenerationRef = useRef(0)
     const { captureAnchor, restoreAnchor, clearAnchor } = useReaderViewportAnchor()
     const transformOptions = useMemo(() => createTxtTransformOptions({
         trimSpaces: compactWhitespace,
@@ -244,7 +257,7 @@ function TxtReader() {
         readyContentKey,
         contentStatus,
         retryContent,
-    } = useTxtSegmentWindow(id, transformOptions)
+    } = useTxtSegmentWindow(id, transformOptions, undefined, encodingContentVersion)
 
     useEffect(() => {
         if (manifest?.title) {
@@ -466,19 +479,26 @@ function TxtReader() {
             const fallbackPage = renderPages[clampViewportPage(currentViewportPage, renderPages.length || 1)]
             const activeStart = currentViewportStartSegment
                 ?? getRenderPageStartSegment(renderPages, { page: currentViewportPage }, fallbackPage?.startLocator)
-            return {
-                kind: 'txt',
-                segmentId: getSegmentIdForLocator(activeStart),
-                sourceOffset: getLocatorSegmentOffset(activeStart)
-                    ?? getSegmentStartOffset(visibleSegments, getSegmentIdForLocator(activeStart)),
+            const segmentId = getSegmentIdForLocator(activeStart)
+            const sourceOffset = getLocatorSegmentOffset(activeStart)
+                ?? getSegmentStartOffset(visibleSegments, segmentId)
+            return createTxtLocatorV2({
+                renderPages: hasGlobalRenderPageMap ? globalRenderPages : renderPages,
+                segmentId,
+                sourceOffset,
                 page: currentViewportPage,
-            }
+                sourceRevision: manifest?.source_revision,
+            })
         },
-        locatorToPosition: (saved) => findRenderPageForLocator(hasGlobalRenderPageMap ? globalRenderPages : renderPages, {
-            segmentId: saved?.segmentId,
-            offset: saved?.sourceOffset,
-            page: saved?.page,
-        }),
+        locatorToPosition: (saved) => {
+            const pages = hasGlobalRenderPageMap ? globalRenderPages : renderPages
+            const reanchored = reanchorTxtLocator(pages, saved, manifest?.source_revision)
+            return reanchored?.page ?? findRenderPageForLocator(pages, {
+                segmentId: saved?.segmentId,
+                offset: saved?.sourceOffset,
+                page: saved?.page ?? saved?.fallbackPage,
+            })
+        },
     })
     const {
         currentPosition: currentViewportPage,
@@ -710,12 +730,12 @@ function TxtReader() {
         setCurrentViewportStartFragmentIndex(null)
         globalRenderPageMapPromiseRef.current = null
         requestedViewportPageRef.current = 0
-    }, [id, transformOptions])
+    }, [encodingContentVersion, id, transformOptions])
 
     useEffect(() => {
         setPendingSearchTarget(null)
         setActiveSearchIndex(null)
-    }, [transformOptions])
+    }, [encodingContentVersion, transformOptions])
 
     useEffect(() => {
         globalRenderPageMapVersionRef.current += 1
@@ -730,7 +750,7 @@ function TxtReader() {
 
     useEffect(() => {
         if (loading || error || !manifest) return
-        if (readyContentKey !== `${id}:${transformQuery}`) return
+        if (readyContentKey !== `${id}:${transformQuery}:${encodingContentVersion}`) return
         if (!manifest.segment_count) {
             if (!Array.isArray(globalRenderPages)) setGlobalRenderPages([])
             if (globalPaginationStatus !== 'ready') setGlobalPaginationStatus('ready')
@@ -791,6 +811,7 @@ function TxtReader() {
         loading,
         manifest,
         id,
+        encodingContentVersion,
         readyContentKey,
         renderPages.length,
         transformQuery,
@@ -899,36 +920,50 @@ function TxtReader() {
         if (!trimmedQuery) {
             setSearchLoading(false)
             setSearchResults([])
+            setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+            setSearchError('')
             setActiveSearchIndex(null)
             return
         }
 
-        let cancelled = false
+        const controller = new AbortController()
+        const generation = searchGenerationRef.current + 1
+        searchGenerationRef.current = generation
+        searchAbortRef.current = controller
 
         ; (async () => {
             setSearchLoading(true)
+            setSearchError('')
             try {
-                const res = await fetch(`${API}/${id}/search?q=${encodeURIComponent(trimmedQuery)}&${transformQuery}`)
+                const res = await fetch(`${API}/${id}/search?q=${encodeURIComponent(trimmedQuery)}&${transformQuery}`, { signal: controller.signal })
                 if (!res.ok) throw new Error(`HTTP ${res.status}`)
                 const data = await res.json()
-                if (!cancelled) {
+                if (!controller.signal.aborted && searchGenerationRef.current === generation) {
                     setSearchResults(Array.isArray(data?.results) ? data.results : [])
+                    setSearchMeta({
+                        total: Number.isFinite(data?.total) ? data.total : 0,
+                        complete: data?.complete !== false,
+                        partial_reason: data?.partial_reason || null,
+                        results_truncated: Boolean(data?.results_truncated),
+                    })
                     setActiveSearchIndex(null)
                 }
             } catch (err) {
-                if (!cancelled) {
+                if (err?.name !== 'AbortError' && searchGenerationRef.current === generation) {
                     console.error('Failed to search TXT', err)
                     setSearchResults([])
+                    setSearchError(tt('searchFailed'))
                     setActiveSearchIndex(null)
                 }
             }
-            if (!cancelled) setSearchLoading(false)
+            if (!controller.signal.aborted && searchGenerationRef.current === generation) setSearchLoading(false)
         })()
 
         return () => {
-            cancelled = true
+            controller.abort()
+            if (searchAbortRef.current === controller) searchAbortRef.current = null
         }
-    }, [id, searchOpen, searchQuery, searchRequestId, transformQuery])
+    }, [encodingContentVersion, id, searchOpen, searchQuery, searchRequestId, transformQuery])
 
     useEffect(() => {
         const root = contentRef.current
@@ -1006,6 +1041,8 @@ function TxtReader() {
             setSearchQuery('')
             setSearchLoading(false)
             setSearchResults([])
+            setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+            setSearchError('')
             setActiveSearchIndex(null)
             setPendingSearchTarget(null)
             return
@@ -1014,6 +1051,8 @@ function TxtReader() {
             setSearchQuery('')
             setSearchLoading(false)
             setSearchResults([])
+            setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+            setSearchError('')
             setActiveSearchIndex(null)
             setPendingSearchTarget(null)
         }
@@ -1025,6 +1064,8 @@ function TxtReader() {
             setSearchQuery('')
             setSearchLoading(false)
             setSearchResults([])
+            setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+            setSearchError('')
             setActiveSearchIndex(null)
             setPendingSearchTarget(null)
             return
@@ -1032,6 +1073,14 @@ function TxtReader() {
         setSearchQuery(trimmedQuery)
         setSearchRequestId((value) => value + 1)
     }, [searchDraft])
+
+    const handleSearchCancel = useCallback(() => {
+        searchAbortRef.current?.abort()
+        searchGenerationRef.current += 1
+        setSearchLoading(false)
+        setSearchError('')
+        setSearchMeta((current) => ({ ...current, complete: false, partial_reason: 'cancelled' }))
+    }, [])
 
     const goToViewportPage = useCallback(async (targetLocator) => {
         const requestId = navigationRequestIdRef.current + 1
@@ -1214,19 +1263,28 @@ function TxtReader() {
     }, [currentViewportPage, currentViewportStartSegment, error, goToViewportPage, loading, renderPages, restoredProgress])
 
     useEffect(() => {
-        if (loading || error || renderPages.length === 0 || !restoredProgress || restoredProgress.position <= 0) return
-        const restoreKey = `${id}:${restoredProgress.updatedAt || ''}:${JSON.stringify(restoredProgress.locator || restoredProgress.position)}`
+        if (loading || error || renderPages.length === 0 || !restoredProgress) return
+        const savedLocator = restoredProgress.locator
+        const requiresQuoteReanchor = savedLocator?.version === 2
+            && savedLocator?.sourceRevision
+            && manifest?.source_revision
+            && savedLocator.sourceRevision !== manifest.source_revision
+        if (requiresQuoteReanchor && !hasGlobalRenderPageMap) return
+        const restoreKey = `${id}:${manifest?.source_revision || ''}:${restoredProgress.updatedAt || ''}:${JSON.stringify(restoredProgress.locator || restoredProgress.position)}`
         if (appliedRestoreKeyRef.current === restoreKey) return
         appliedRestoreKeyRef.current = restoreKey
 
-        const target = restoredProgress.locator
+        const reanchored = reanchorTxtLocator(globalRenderPages, savedLocator, manifest?.source_revision)
+        const target = reanchored
+            ? { page: reanchored.page }
+            : restoredProgress.locator
             ? {
                 ...restoredProgress.locator,
                 offset: restoredProgress.locator.sourceOffset ?? restoredProgress.locator.offset,
             }
             : { page: restoredProgress.position }
         void goToViewportPage(target)
-    }, [error, goToViewportPage, id, loading, renderPages.length, restoredProgress])
+    }, [error, globalRenderPages, goToViewportPage, hasGlobalRenderPageMap, id, loading, manifest?.source_revision, renderPages.length, restoredProgress])
 
     useEffect(() => {
         if (loading || error || renderPages.length === 0) return
@@ -1515,6 +1573,23 @@ function TxtReader() {
         return updated
     }, [activeAnnotationId])
 
+    useEffect(() => {
+        const legacyAnnotations = currentPageAnnotations.filter((annotation) => !annotation.locator_v2)
+        for (const annotation of legacyAnnotations) {
+            const anchored = reanchorLegacyTxtAnnotation(annotation, visibleSegments)
+            if (anchored?.offset_unit !== TXT_OFFSET_UNIT || !Number.isFinite(anchored.start_offset)) continue
+            const locatorV2 = createTxtLocatorV2({
+                renderPages: hasGlobalRenderPageMap ? globalRenderPages : renderPages,
+                segmentId: anchored.segment_id,
+                sourceOffset: anchored.start_offset,
+                page: anchored.page ?? effectiveViewportPage,
+                sourceRevision: manifest?.source_revision,
+            })
+            locatorV2.sourceEndOffset = Number.isFinite(anchored.end_offset) ? anchored.end_offset : null
+            void updateAnnotationItem(annotation.id, { locator_v2: locatorV2 }).catch(() => {})
+        }
+    }, [currentPageAnnotations, effectiveViewportPage, globalRenderPages, hasGlobalRenderPageMap, manifest?.source_revision, renderPages, updateAnnotationItem, visibleSegments])
+
     const createAnnotation = useCallback(async (kind) => {
         if (!selectionSnapshot) return
 
@@ -1555,6 +1630,14 @@ function TxtReader() {
             const segmentLocalEnd = Number.isFinite(sourceEnd) && Number.isFinite(segmentStartOffset)
                 ? sourceEnd - segmentStartOffset
                 : selectionSnapshot.segmentLocalEnd
+            const locatorV2 = createTxtLocatorV2({
+                renderPages: hasGlobalRenderPageMap ? globalRenderPages : renderPages,
+                segmentId: recoveredSegmentId,
+                sourceOffset: sourceStart,
+                page: effectiveViewportPage,
+                sourceRevision: manifest?.source_revision,
+            })
+            locatorV2.sourceEndOffset = Number.isFinite(sourceEnd) ? sourceEnd : null
 
             const res = await fetch(`${API}/${id}/annotations`, {
                 method: 'POST',
@@ -1564,6 +1647,7 @@ function TxtReader() {
                     locator: Number.isFinite(recoveredSegmentId)
                         ? `segment:${recoveredSegmentId}:offset:${segmentLocalStart}`
                         : `page:${effectiveViewportPage}`,
+                    locator_v2: locatorV2,
                     page: effectiveViewportPage,
                     segment_id: Number.isFinite(recoveredSegmentId) ? recoveredSegmentId : selectionSnapshot.segmentId,
                     segment_local_start: segmentLocalStart,
@@ -1591,7 +1675,7 @@ function TxtReader() {
             console.error('Failed to create annotation', err)
             window.alert(tt('annotationSaveFailed'))
         }
-    }, [effectiveViewportPage, getDisplaySelectionBoundary, getSegmentStartOffset, id, indexedDisplayFragments, selectionSnapshot, tt, visibleSegments])
+    }, [effectiveViewportPage, getDisplaySelectionBoundary, getSegmentStartOffset, globalRenderPages, hasGlobalRenderPageMap, id, indexedDisplayFragments, manifest?.source_revision, renderPages, selectionSnapshot, tt, visibleSegments])
 
     const handleEditAnnotation = useCallback(async (annotation) => {
         if (annotation.kind !== 'note') return
@@ -1635,7 +1719,10 @@ function TxtReader() {
         setPendingSearchTarget(null)
         setActiveSearchIndex(null)
         setActiveAnnotationId(annotation.id)
-        if (annotation.locator) {
+        if (annotation.locator_v2) {
+            const reanchored = reanchorTxtLocator(globalRenderPages, annotation.locator_v2, manifest?.source_revision)
+            void goToViewportPage(reanchored ? { page: reanchored.page } : annotation.locator_v2)
+        } else if (annotation.locator) {
             void goToViewportPage(annotation.locator)
         } else if (Number.isFinite(annotation.segment_id)) {
             void goToViewportPage({
@@ -1645,7 +1732,7 @@ function TxtReader() {
         } else if (Number.isFinite(annotation.page)) {
             void goToViewportPage({ page: annotation.page })
         }
-    }, [goToViewportPage])
+    }, [globalRenderPages, goToViewportPage, manifest?.source_revision])
 
     const handleStartOver = useCallback(() => {
         appliedRestoreKeyRef.current = null
@@ -1666,8 +1753,22 @@ function TxtReader() {
         setGlobalPaginationRetryToken((value) => value + 1)
     }, [])
 
+    const handleEncodingApplied = useCallback(() => {
+        appliedRestoreKeyRef.current = null
+        searchGenerationRef.current += 1
+        searchAbortRef.current?.abort()
+        searchAbortRef.current = null
+        setSearchLoading(false)
+        setSearchResults([])
+        setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+        setSearchError('')
+        setPendingSearchTarget(null)
+        setActiveSearchIndex(null)
+        setEncodingContentVersion((version) => version + 1)
+    }, [])
+
     const partialNavigationReady = !loading && !error && renderPages.length > 0
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: partialNavigationReady, readerRootRef })
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: partialNavigationReady && !searchOpen && !annotationsOpen && !encodingDialogOpen && !settings.settingsOpen, readerRootRef })
 
     const paginationPending = !loading && (
         globalPaginationStatus === 'loading' || globalPaginationStatus === 'recoverable_error'
@@ -1679,72 +1780,97 @@ function TxtReader() {
     const canShowNextControl = globalPaginationReady
         ? effectiveViewportPage < totalViewportPages - 1
         : effectiveViewportPage < localRenderPageStartSegments.length - 1 || globalPaginationStatus === 'loading'
+    const encodingSourceLabel = manifest?.encoding_source === 'override' ? tt('manualEncoding') : tt('automaticEncoding')
+    const encodingConfidenceLabel = manifest?.encoding_source === 'override' || !Number.isFinite(manifest?.encoding_confidence)
+        ? null
+        : `${Math.round(Math.max(0, Math.min(1, manifest.encoding_confidence)) * 100)}%`
 
     return (
-        <div
-            ref={readerRootRef}
-            tabIndex={-1}
-            className="readerRoot reader-shell relative h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden"
-            style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}
-        >
-            <div className="reader-ui reader-topbar shrink-0 flex items-center justify-between" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
-                <div className="reader-topbar-meta flex items-center gap-3">
-                    <button onClick={() => navigate('/')} title={tt('backToLibrary')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg></button>
-                    <div className="h-5 w-px opacity-20" style={{ backgroundColor: themeStyle.text }} />
-                    {bookTitle && <span className="text-sm opacity-60 truncate max-w-[18rem]" style={{ color: themeStyle.text }}>{bookTitle}</span>}
-                    <span className="text-[11px] font-semibold uppercase tracking-widest opacity-40" style={{ color: themeStyle.text }}>TXT</span>
-                    {manifest?.encoding && <span className="text-[11px] opacity-30" style={{ color: themeStyle.text }}>{manifest.encoding}</span>}
-                </div>
-                <div className="reader-topbar-actions flex items-center gap-2">
-                    <button
-                        onClick={() => {
-                            setSearchOpen((open) => !open)
-                            setAnnotationsOpen(false)
-                            setActiveAnnotationId(null)
-                        }}
-                        title={tt('search')}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60"
-                        style={{ color: searchOpen ? '#5c7cfa' : themeStyle.text }}
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.35-4.35" /></svg>
-                    </button>
-                    <button
-                        onClick={() => {
-                            setAnnotationsOpen((open) => !open)
-                            setSearchOpen(false)
-                        }}
-                        title={tt('annotations')}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60"
-                        style={{ color: annotationsOpen ? '#ff922b' : themeStyle.text }}
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z" /></svg>
-                    </button>
-                    <button onClick={addBookmark} title={tt('addBookmark')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg></button>
-                    <ReaderToolbar
-                        settings={settings}
-                        readerType="txt"
-                        txtTransforms={{
-                            trimSpaces: compactWhitespace,
-                            splitParagraphs,
-                            onTrimSpacesChange: setCompactWhitespace,
-                            onSplitParagraphsChange: setSplitParagraphs,
-                        }}
-                    />
-                </div>
-            </div>
-
-            {bookmarks.length > 0 && (
-                <div className="shrink-0 px-6 py-1.5 flex items-center gap-2 overflow-x-auto" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
-                    <span className="text-[10px] uppercase tracking-widest opacity-30 shrink-0" style={{ color: themeStyle.text }}>{tt('bookmarks')}</span>
-                    {bookmarks.map((bookmark) => (
-                        <button key={bookmark.position} onClick={() => { void goToViewportPage({ page: bookmark.position }) }} className="px-2 py-0.5 rounded text-[11px] border transition-all hover:opacity-70 shrink-0" style={{ borderColor: themeStyle.border, color: themeStyle.text }}>
-                            {bookmark.label}
-                            <span onClick={(event) => { event.stopPropagation(); removeBookmark(bookmark.position) }} className="ml-1.5 opacity-30 hover:opacity-100 cursor-pointer">x</span>
-                        </button>
-                    ))}
-                </div>
+        <ReaderShell
+            rootRef={readerRootRef}
+            topBar={(
+                <ReaderTopBar
+                    themeStyle={themeStyle}
+                    backLabel={tt('backToLibrary')}
+                    onBack={() => navigate('/')}
+                    meta={(
+                        <>
+                            {bookTitle && <span className="text-sm opacity-60 truncate max-w-[18rem]" style={{ color: themeStyle.text }}>{bookTitle}</span>}
+                            <span className="text-[11px] font-semibold uppercase tracking-widest opacity-40" style={{ color: themeStyle.text }}>TXT</span>
+                            {manifest?.encoding && (
+                                <button
+                                    type="button"
+                                    onClick={() => setEncodingDialogOpen(true)}
+                                    title={`${tt('changeEncoding')} · ${encodingSourceLabel}${encodingConfidenceLabel ? ` ${encodingConfidenceLabel}` : ''}`}
+                                    className="rounded-md border px-2 py-1 text-[10px] opacity-60 transition-opacity hover:opacity-100"
+                                    style={{ borderColor: themeStyle.border, color: themeStyle.text }}
+                                >
+                                    <span>{manifest.encoding}</span>
+                                    <span> · {encodingSourceLabel}{encodingConfidenceLabel ? ` ${encodingConfidenceLabel}` : ''}</span>
+                                </button>
+                            )}
+                        </>
+                    )}
+                    actions={(
+                        <>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSearchOpen((open) => !open)
+                                    setAnnotationsOpen(false)
+                                    setActiveAnnotationId(null)
+                                }}
+                                title={tt('search')}
+                                className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60"
+                                style={{ color: searchOpen ? '#5c7cfa' : themeStyle.text }}
+                            >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.35-4.35" /></svg>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setAnnotationsOpen((open) => !open)
+                                    setSearchOpen(false)
+                                }}
+                                title={tt('annotations')}
+                                className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60"
+                                style={{ color: annotationsOpen ? '#ff922b' : themeStyle.text }}
+                            >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                            </button>
+                            <button type="button" onClick={addBookmark} title={tt('addBookmark')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg></button>
+                            <ReaderToolbar
+                                settings={settings}
+                                readerType="txt"
+                                txtTransforms={{
+                                    trimSpaces: compactWhitespace,
+                                    splitParagraphs,
+                                    onTrimSpacesChange: setCompactWhitespace,
+                                    onSplitParagraphsChange: setSplitParagraphs,
+                                }}
+                                txtEncoding={{
+                                    encoding: manifest?.encoding,
+                                    source: manifest?.encoding_source,
+                                    confidence: manifest?.encoding_confidence,
+                                    onOpen: () => setEncodingDialogOpen(true),
+                                }}
+                            />
+                        </>
+                    )}
+                />
             )}
-
+            bookmarkBar={(
+                <ReaderBookmarkStrip
+                    items={bookmarks}
+                    label={tt('bookmarks')}
+                    themeStyle={themeStyle}
+                    getLabel={(bookmark) => bookmark.label}
+                    onActivate={(bookmark) => { void goToViewportPage(bookmark.locator ?? { page: bookmark.position }) }}
+                    onRemove={removeBookmark}
+                    removeLabel={tt('removeBookmark')}
+                />
+            )}
+            main={(
             <div className="flex-1 relative min-h-0">
                 <ReaderSearchPanel
                     open={searchOpen}
@@ -1753,15 +1879,19 @@ function TxtReader() {
                     submittedQuery={searchQuery}
                     loading={searchLoading}
                     results={searchResults}
+                    meta={searchMeta}
+                    error={searchError}
                     activeIndex={activeSearchIndex}
                     onQueryChange={handleSearchQueryChange}
                     onSubmit={handleSearchSubmit}
+                    onCancel={handleSearchCancel}
                     onClose={() => setSearchOpen(false)}
                     onResultClick={handleSearchResultClick}
                     formatResultLocation={formatSearchResultLocation}
                     tt={tt}
                 />
                 <ReaderAnnotationsPanel
+                    bookId={id}
                     open={annotationsOpen}
                     themeStyle={themeStyle}
                     loading={annotationsLoading}
@@ -1786,8 +1916,15 @@ function TxtReader() {
                     }}
                     tt={tt}
                 />
-                <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{effectiveViewportPage > 0 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
-                <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{canShowNextControl && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
+                <ReaderPageTurnControls
+                    themeStyle={themeStyle}
+                    showPrev={effectiveViewportPage > 0}
+                    showNext={canShowNextControl}
+                    onPrev={goPrev}
+                    onNext={goNext}
+                    previousLabel={tt('previous')}
+                    nextLabel={tt('next')}
+                />
 
                 <div data-testid="txt-reader-stage" className={`reader-stage ${layout === 'dual' ? 'reader-stage-dual' : ''}`} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
                     {loading ? (
@@ -1904,74 +2041,90 @@ function TxtReader() {
                     )}
                 </div>
             </div>
-
-            {paginationPending && (
-                <div
-                    data-testid="txt-pagination-loading"
-                    className="reader-ui reader-progress reader-progress-layer txt-pagination-preparation"
-                    style={{ borderTop: '1px solid var(--panel-border)' }}
-                    aria-live="polite"
-                >
-                    <div className="reader-progress-inner">
-                        {globalPaginationError ? (
-                            <div className="txt-pagination-status-row">
-                                <span>{tt('pagePreparationFailed')}</span>
-                                <button type="button" onClick={retryGlobalPagination} className="rounded-md border px-3 py-1 text-xs" style={{ borderColor: themeStyle.border }}>
-                                    {tt('retry')}
-                                </button>
-                            </div>
-                        ) : globalPaginationProgress.phase === 'layout' ? (
-                            <div className="txt-pagination-status-row justify-center">
-                                <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
-                                <span>{tt('calculatingPageLayout')}</span>
-                            </div>
-                        ) : (
-                            <>
-                                <div className="txt-pagination-status-row tabular-nums">
-                                    <span>{queuedNextPage != null ? tt('preparingNextPage') : tt('preparingPages')}</span>
-                                    <span>{paginationPercent}%</span>
-                                </div>
-                                <div
-                                    className="txt-pagination-track"
-                                    role="progressbar"
-                                    aria-label={tt('preparingPages')}
-                                    aria-valuemin="0"
-                                    aria-valuemax="100"
-                                    aria-valuenow={paginationPercent}
-                                >
-                                    <div className="txt-pagination-fill" style={{ width: `${paginationPercent}%` }} />
-                                </div>
-                            </>
-                        )}
-                    </div>
-                </div>
             )}
+            bottom={(
+                <>
+                    {paginationPending && (
+                        <div
+                            data-testid="txt-pagination-loading"
+                            className="reader-ui reader-progress reader-progress-layer txt-pagination-preparation"
+                            style={{ borderTop: '1px solid var(--panel-border)' }}
+                            aria-live="polite"
+                        >
+                            <div className="reader-progress-inner">
+                                {globalPaginationError ? (
+                                    <div className="txt-pagination-status-row">
+                                        <span>{tt('pagePreparationFailed')}</span>
+                                        <button type="button" onClick={retryGlobalPagination} className="rounded-md border px-3 py-1 text-xs" style={{ borderColor: themeStyle.border }}>
+                                            {tt('retry')}
+                                        </button>
+                                    </div>
+                                ) : globalPaginationProgress.phase === 'layout' ? (
+                                    <div className="txt-pagination-status-row justify-center">
+                                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
+                                        <span>{tt('calculatingPageLayout')}</span>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="txt-pagination-status-row tabular-nums">
+                                            <span>{queuedNextPage != null ? tt('preparingNextPage') : tt('preparingPages')}</span>
+                                            <span>{paginationPercent}%</span>
+                                        </div>
+                                        <div
+                                            className="txt-pagination-track"
+                                            role="progressbar"
+                                            aria-label={tt('preparingPages')}
+                                            aria-valuemin="0"
+                                            aria-valuemax="100"
+                                            aria-valuenow={paginationPercent}
+                                        >
+                                            <div className="txt-pagination-fill" style={{ width: `${paginationPercent}%` }} />
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
-            <div
-                className="shrink-0"
-                aria-hidden={!globalPaginationReady}
-                style={{
-                    visibility: globalPaginationReady ? 'visible' : 'hidden',
-                    pointerEvents: globalPaginationReady ? 'auto' : 'none',
-                }}
-            >
-                <ReaderProgressBar
-                    currentPage={effectiveViewportPage + 1}
-                    totalPages={totalViewportPages}
-                    onSeekPage={(page) => { void goToViewportPage({ page: page - 1 }) }}
-                    progress={totalViewportPages > 1 ? effectiveViewportPage / (totalViewportPages - 1) : 0}
-                    onSeekProgress={seekToProgress}
-                    extraInfo={manifest ? `TXT ${effectiveViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
-                    readerFocusRef={readerRootRef}
-                />
-            </div>
-            <ResumeToast
-                message={restoredProgress ? tt('resumedFromLastPosition') : null}
-                actionLabel={tt('startOver')}
-                onAction={handleStartOver}
-                durationMs={5000}
-            />
-        </div>
+                    <div
+                        className="shrink-0"
+                        aria-hidden={!globalPaginationReady}
+                        style={{
+                            visibility: globalPaginationReady ? 'visible' : 'hidden',
+                            pointerEvents: globalPaginationReady ? 'auto' : 'none',
+                        }}
+                    >
+                        <ReaderProgressBar
+                            currentPage={effectiveViewportPage + 1}
+                            totalPages={totalViewportPages}
+                            onSeekPage={(page) => { void goToViewportPage({ page: page - 1 }) }}
+                            progress={totalViewportPages > 1 ? effectiveViewportPage / (totalViewportPages - 1) : 0}
+                            onSeekProgress={seekToProgress}
+                            extraInfo={manifest ? `TXT ${effectiveViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
+                            readerFocusRef={readerRootRef}
+                        />
+                    </div>
+                </>
+            )}
+            overlays={(
+                <>
+                    <TxtEncodingDialog
+                        open={encodingDialogOpen}
+                        bookId={id}
+                        initialData={manifest}
+                        tt={tt}
+                        onClose={() => setEncodingDialogOpen(false)}
+                        onApplied={handleEncodingApplied}
+                    />
+                    <ResumeToast
+                        message={restoredProgress ? tt('resumedFromLastPosition') : null}
+                        actionLabel={tt('startOver')}
+                        onAction={handleStartOver}
+                        durationMs={5000}
+                    />
+                </>
+            )}
+        />
     )
 }
 

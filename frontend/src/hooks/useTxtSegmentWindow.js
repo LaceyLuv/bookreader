@@ -59,7 +59,12 @@ function normalizeTxtDisplayFragments(data, transformOptions = {}) {
     return normalizeTxtCompatibilitySegments(data, transformOptions)
 }
 
-export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM_OPTIONS, windowSize = DEFAULT_WINDOW_SIZE) {
+export function useTxtSegmentWindow(
+    bookId,
+    transformOptions = DEFAULT_TRANSFORM_OPTIONS,
+    windowSize = DEFAULT_WINDOW_SIZE,
+    contentVersion = 0,
+) {
     const [manifest, setManifest] = useState(null)
     const [windows, setWindows] = useState({})
     const [visibleStart, setVisibleStart] = useState(0)
@@ -129,7 +134,7 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
             controller.abort()
             emitTxtLoadEvent('manifest:cancelled', { bookId, requestId, reason: 'superseded' })
         }
-    }, [bookId, reloadToken, transformQuery])
+    }, [bookId, contentVersion, reloadToken, transformQuery])
 
     const loadWindow = useCallback(async (start) => {
         const safeStart = Math.max(0, start)
@@ -172,7 +177,7 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
         })()
         inFlightRef.current.set(safeStart, { controller, promise })
         return promise
-    }, [bookId, transformQuery, transformOptions, windowSize])
+    }, [bookId, contentVersion, transformQuery, transformOptions, windowSize])
 
     const loadPaginationWindow = useCallback(async (start, limit = windowSize, cursor = null) => {
         const safeStart = Math.max(0, start)
@@ -205,7 +210,7 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
         })()
         inFlightRef.current.set(requestKey, { controller, promise })
         return promise
-    }, [bookId, transformOptions, transformQuery, windowSize])
+    }, [bookId, contentVersion, transformOptions, transformQuery, windowSize])
 
     useEffect(() => () => {
         for (const request of inFlightRef.current.values()) request.controller.abort()
@@ -229,7 +234,7 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
                         durationMs: getTxtLoadTimestamp() - windowStartedAt,
                         fragmentCount: windowData.displayFragments.length,
                     })
-                    setReadyContentKey(`${bookId}:${transformQuery}`)
+                    setReadyContentKey(`${bookId}:${transformQuery}:${contentVersion}`)
                     setContentStatus(windowData.displayFragments.length > 0 ? 'ready' : 'empty')
                 }
             } catch (err) {
@@ -249,7 +254,7 @@ export function useTxtSegmentWindow(bookId, transformOptions = DEFAULT_TRANSFORM
         return () => {
             cancelled = true
         }
-    }, [bookId, manifest, loadWindow, transformQuery])
+    }, [bookId, contentVersion, manifest, loadWindow, transformQuery])
 
     const visibleWindow = useMemo(
         () => windows[visibleStart] || { segments: [], displayFragments: [] },
