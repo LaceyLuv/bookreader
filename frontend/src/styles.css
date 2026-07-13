@@ -172,11 +172,49 @@ body {
   background: color-mix(in srgb, var(--reader-page-bg) 97%, white 3%);
 }
 
+.reader-progress-layer {
+  position: absolute;
+  z-index: 30;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
 .reader-progress-inner {
   position: relative;
   width: 100%;
   padding: 0 42px;
   background: transparent !important;
+}
+
+.txt-pagination-preparation {
+  display: flex;
+  align-items: center;
+}
+
+.txt-pagination-status-row {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: color-mix(in srgb, var(--reader-page-fg) 68%, transparent);
+  font-size: 12px;
+}
+
+.txt-pagination-track {
+  height: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--reader-page-fg) 12%, transparent);
+}
+
+.txt-pagination-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease-out;
 }
 
 .reader-progress-summary {

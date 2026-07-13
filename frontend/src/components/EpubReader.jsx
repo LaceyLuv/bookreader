@@ -150,6 +150,7 @@ function EpubReader() {
     const pendingChapterPageRef = useRef(null)
     const chapterPageCountsRef = useRef({})
     const pendingSearchResultRef = useRef(null)
+    const appliedRestoreKeyRef = useRef(null)
     const initialMeasureDoneRef = useRef(false)
     const scheduledMeasureCleanupRef = useRef(null)
 
@@ -170,7 +171,7 @@ function EpubReader() {
     })
     const { currentPosition: chapterIndex, setCurrentPosition: setChapterIndex,
         bookmarks, addBookmark, removeBookmark, goToBookmark,
-        resumePrompt, resumeReading, dismissResume } = progress
+        restoredProgress, startOver } = progress
     const isDualLayout = layout === 'dual'
     const useEmbeddedFonts = fontMode === 'embedded'
     const isSearchActive = searchOpen && !!searchQuery.trim()
@@ -415,6 +416,26 @@ function EpubReader() {
         }
         setLoading(false)
     }
+
+    useEffect(() => {
+        if (loading || !chapter || !restoredProgress || restoredProgress.position <= 0) return
+        const restoreKey = `${id}:${restoredProgress.updatedAt || ''}:${JSON.stringify(restoredProgress.locator || restoredProgress.position)}`
+        if (appliedRestoreKeyRef.current === restoreKey) return
+        appliedRestoreKeyRef.current = restoreKey
+        const targetChapter = Math.max(0, Math.min(
+            restoredProgress.locator?.chapterIndex ?? restoredProgress.position,
+            Math.max(0, totalChapters - 1),
+        ))
+        void loadChapter(targetChapter, {
+            page: Math.max(0, restoredProgress.locator?.chapterPage ?? 0),
+        })
+    }, [chapter, id, loading, restoredProgress, totalChapters])
+
+    const handleStartOver = useCallback(() => {
+        appliedRestoreKeyRef.current = null
+        startOver()
+        void loadChapter(0, { page: 0 })
+    }, [startOver])
 
     const waitForMeasuredAssets = useCallback(async (root) => {
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
@@ -1024,7 +1045,7 @@ function EpubReader() {
         }
     }, [chapterIndex, goToPage])
 
-    return (        <div ref={readerRootRef} tabIndex={-1} className="readerRoot reader-shell h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}>
+    return (        <div ref={readerRootRef} tabIndex={-1} className="readerRoot reader-shell relative h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}>
 
             <div className="reader-ui reader-topbar shrink-0 flex items-center justify-between" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
                 <div className="reader-topbar-meta flex items-center gap-3">
@@ -1090,7 +1111,12 @@ function EpubReader() {
 
             <div className="reader-ui">
                 {chapter && (<ReaderProgressBar currentPage={overallPagination.currentPage} totalPages={overallPagination.totalPages} onSeekPage={overallPagination.ready ? (p) => goToOverallPage(p - 1) : undefined} progress={overallPagination.totalPages > 1 ? (overallPagination.currentPage - 1) / (overallPagination.totalPages - 1) : 0} onSeekProgress={overallPagination.ready ? seekToOverallProgress : undefined} extraInfo={`${tt('chapter')} ${chapterIndex + 1}/${chapter?.total || totalChapters}`} readerFocusRef={readerRootRef} />)}
-                <ResumeToast resumePrompt={resumePrompt} onResume={() => { resumeReading(); if (resumePrompt) loadChapter(resumePrompt.position) }} onDismiss={dismissResume} tt={tt} />
+                <ResumeToast
+                    message={restoredProgress ? tt('resumedFromLastPosition') : null}
+                    actionLabel={tt('startOver')}
+                    onAction={handleStartOver}
+                    durationMs={5000}
+                />
             </div>
 
             <div ref={measureHostRef} aria-hidden="true" style={{ position: 'fixed', left: '-100000px', top: '0', width: '1px', height: '1px', overflow: 'hidden', visibility: 'hidden', pointerEvents: 'none' }} />

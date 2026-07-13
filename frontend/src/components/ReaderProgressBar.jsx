@@ -147,7 +147,7 @@ function ReaderProgressBar({
 
     if (isCollapsed) {
         return (
-            <div className="group relative shrink-0 h-3" style={{ borderTop: '1px solid var(--panel-border)' }}>
+            <div className="reader-progress-layer group h-3" style={{ borderTop: '1px solid var(--panel-border)' }}>
                 <button
                     type="button"
                     title="Show progress bar (Ctrl+H)"
@@ -173,7 +173,7 @@ function ReaderProgressBar({
     }
 
     return (
-        <div className="reader-progress relative shrink-0" style={{ borderTop: '1px solid var(--panel-border)' }}>
+        <div className="reader-progress reader-progress-layer" style={{ borderTop: '1px solid var(--panel-border)' }}>
             <button
                 type="button"
                 title="Hide progress bar (Ctrl+H)"

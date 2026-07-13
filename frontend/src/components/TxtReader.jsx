@@ -198,6 +198,13 @@ function TxtReader() {
     const [globalPaginationStatus, setGlobalPaginationStatus] = useState('idle')
     const [globalPaginationError, setGlobalPaginationError] = useState(null)
     const [globalPaginationRetryToken, setGlobalPaginationRetryToken] = useState(0)
+    const [globalPaginationProgress, setGlobalPaginationProgress] = useState({
+        phase: 'idle',
+        completedSegments: 0,
+        totalSegments: 0,
+        version: 0,
+    })
+    const [queuedNextPage, setQueuedNextPage] = useState(null)
     const [currentViewportStartSegment, setCurrentViewportStartSegment] = useState(null)
     const [currentViewportStartFragmentIndex, setCurrentViewportStartFragmentIndex] = useState(null)
     const [viewportMetrics, setViewportMetrics] = useState(null)
@@ -210,6 +217,8 @@ function TxtReader() {
     const globalRenderPageMapVersionRef = useRef(0)
     const navigationRequestIdRef = useRef(0)
     const requestedViewportPageRef = useRef(0)
+    const queuedNextPageRef = useRef(null)
+    const appliedRestoreKeyRef = useRef(null)
     const firstContentTelemetryKeyRef = useRef(null)
     const isPointerSelectingRef = useRef(false)
     const { captureAnchor, restoreAnchor, clearAnchor } = useReaderViewportAnchor()
@@ -338,6 +347,26 @@ function TxtReader() {
             for (let start = 0; start < manifest.segment_count; start += paginationWindowSize) starts.push(start)
             const windows = new Array(starts.length)
             let nextWindowIndex = 0
+            setGlobalPaginationProgress({
+                phase: 'fetching',
+                completedSegments: 0,
+                totalSegments: manifest.segment_count,
+                version: mapVersion,
+            })
+
+            const reportCompletedRange = (start, rangeEnd) => {
+                if (isStaleLoad()) return
+                setGlobalPaginationProgress((current) => {
+                    if (current.version !== mapVersion) return current
+                    return {
+                        ...current,
+                        completedSegments: Math.min(
+                            current.totalSegments,
+                            current.completedSegments + Math.max(0, rangeEnd - start),
+                        ),
+                    }
+                })
+            }
 
             const loadNextWindow = async () => {
                 while (nextWindowIndex < starts.length) {
@@ -355,6 +384,7 @@ function TxtReader() {
                         fragments.push(...zeroWindow.displayFragments)
                         if (!zeroWindow.hasMore || !zeroWindow.nextCursor) {
                             windows[windowIndex] = fragments
+                            reportCompletedRange(start, rangeEnd)
                             continue
                         }
                         cursor = zeroWindow.nextCursor
@@ -372,12 +402,22 @@ function TxtReader() {
                         cursor = windowData.nextCursor
                     }
                     windows[windowIndex] = fragments
+                    reportCompletedRange(start, rangeEnd)
                 }
             }
 
             const workerCount = Math.min(GLOBAL_PAGINATION_CONCURRENCY, starts.length)
             await Promise.all(Array.from({ length: workerCount }, () => loadNextWindow()))
             if (isStaleLoad() || windows.some((windowFragments) => !Array.isArray(windowFragments))) return null
+
+            setGlobalPaginationProgress({
+                phase: 'layout',
+                completedSegments: manifest.segment_count,
+                totalSegments: manifest.segment_count,
+                version: mapVersion,
+            })
+            await new Promise((resolve) => window.requestAnimationFrame(resolve))
+            if (isStaleLoad()) return null
 
             const segments = windows.flatMap((windowFragments, windowIndex) => (
                 windowFragments.map((fragment, fragmentIndex) => ({
@@ -422,14 +462,18 @@ function TxtReader() {
         type: 'txt',
         legacyId,
         paginationReady: !loading && !error && globalPaginationReady,
-        deferInitialPosition: true,
-        locator: () => ({
-            kind: 'txt',
-            segmentId: getSegmentIdForLocator(currentViewportStartSegment),
-            sourceOffset: getLocatorSegmentOffset(currentViewportStartSegment)
-                ?? getSegmentStartOffset(visibleSegments, getSegmentIdForLocator(currentViewportStartSegment)),
-            page: currentViewportPage,
-        }),
+        locator: () => {
+            const fallbackPage = renderPages[clampViewportPage(currentViewportPage, renderPages.length || 1)]
+            const activeStart = currentViewportStartSegment
+                ?? getRenderPageStartSegment(renderPages, { page: currentViewportPage }, fallbackPage?.startLocator)
+            return {
+                kind: 'txt',
+                segmentId: getSegmentIdForLocator(activeStart),
+                sourceOffset: getLocatorSegmentOffset(activeStart)
+                    ?? getSegmentStartOffset(visibleSegments, getSegmentIdForLocator(activeStart)),
+                page: currentViewportPage,
+            }
+        },
         locatorToPosition: (saved) => findRenderPageForLocator(hasGlobalRenderPageMap ? globalRenderPages : renderPages, {
             segmentId: saved?.segmentId,
             offset: saved?.sourceOffset,
@@ -442,8 +486,7 @@ function TxtReader() {
         bookmarks,
         addBookmark,
         removeBookmark,
-        resumePrompt,
-        dismissResume,
+        restoredProgress,
         startOver,
     } = progress
     const currentRenderPageIndex = useMemo(() => {
@@ -660,6 +703,9 @@ function TxtReader() {
         setGlobalRenderPages(null)
         setGlobalPaginationStatus('idle')
         setGlobalPaginationError(null)
+        setGlobalPaginationProgress({ phase: 'idle', completedSegments: 0, totalSegments: 0, version: globalRenderPageMapVersionRef.current })
+        queuedNextPageRef.current = null
+        setQueuedNextPage(null)
         setCurrentViewportStartSegment(null)
         setCurrentViewportStartFragmentIndex(null)
         globalRenderPageMapPromiseRef.current = null
@@ -676,6 +722,9 @@ function TxtReader() {
         setGlobalRenderPages(null)
         setGlobalPaginationStatus('idle')
         setGlobalPaginationError(null)
+        setGlobalPaginationProgress({ phase: 'idle', completedSegments: 0, totalSegments: 0, version: globalRenderPageMapVersionRef.current })
+        queuedNextPageRef.current = null
+        setQueuedNextPage(null)
         globalRenderPageMapPromiseRef.current = null
     }, [viewportMetrics?.charsPerLine, viewportMetrics?.linesPerPage])
 
@@ -731,6 +780,7 @@ function TxtReader() {
                     reason: paginationError?.message || 'unknown',
                 })
                 setGlobalPaginationError(paginationError)
+                setGlobalPaginationProgress((current) => ({ ...current, phase: 'error' }))
                 setGlobalPaginationStatus(paginationError?.name === 'AbortError' ? 'cancelled' : 'recoverable_error')
             })
     }, [
@@ -1048,9 +1098,7 @@ function TxtReader() {
 
         try {
             if (Number.isFinite(targetLocator?.page)) requestedViewportPageRef.current = targetLocator.page
-            const targetPages = hasActiveTransforms || hasGlobalRenderPageMap
-                ? await loadGlobalRenderPages()
-                : null
+            const targetPages = hasGlobalRenderPageMap ? globalRenderPages : null
             if (isStaleRequest()) return
             const candidateGlobalViewportPage = Array.isArray(targetPages) && targetPages.length > 0
                 ? findRenderPageForLocator(targetPages, Number.isFinite(targetLocator) ? { segmentId: rawTarget } : targetLocator)
@@ -1135,8 +1183,8 @@ function TxtReader() {
     }, [
         getSegmentStartOffset,
         currentViewportStartSegment,
-        hasActiveTransforms,
         hasGlobalRenderPageMap,
+        globalRenderPages,
         localRenderPageStartSegments.length,
         loadGlobalRenderPages,
         loadWindow,
@@ -1153,6 +1201,8 @@ function TxtReader() {
     useEffect(() => {
         if (loading || error || renderPages.length === 0 || currentViewportStartSegment != null) return
 
+        if (restoredProgress?.position > 0) return
+
         if (Number.isFinite(currentViewportPage) && currentViewportPage > 0) {
             void goToViewportPage({ page: currentViewportPage })
             return
@@ -1161,7 +1211,22 @@ function TxtReader() {
         const initialStartSegment = getRenderPageStartSegment(renderPages, { page: 0 }, 0)
         setCurrentViewportStartSegment(initialStartSegment)
         setCurrentViewportStartFragmentIndex(getMeasuredPageStartFragmentIndex(renderPages[0]))
-    }, [currentViewportPage, currentViewportStartSegment, error, goToViewportPage, loading, renderPages])
+    }, [currentViewportPage, currentViewportStartSegment, error, goToViewportPage, loading, renderPages, restoredProgress])
+
+    useEffect(() => {
+        if (loading || error || renderPages.length === 0 || !restoredProgress || restoredProgress.position <= 0) return
+        const restoreKey = `${id}:${restoredProgress.updatedAt || ''}:${JSON.stringify(restoredProgress.locator || restoredProgress.position)}`
+        if (appliedRestoreKeyRef.current === restoreKey) return
+        appliedRestoreKeyRef.current = restoreKey
+
+        const target = restoredProgress.locator
+            ? {
+                ...restoredProgress.locator,
+                offset: restoredProgress.locator.sourceOffset ?? restoredProgress.locator.offset,
+            }
+            : { page: restoredProgress.position }
+        void goToViewportPage(target)
+    }, [error, goToViewportPage, id, loading, renderPages.length, restoredProgress])
 
     useEffect(() => {
         if (loading || error || renderPages.length === 0) return
@@ -1188,52 +1253,161 @@ function TxtReader() {
         setCurrentViewportPage,
     ])
 
+    const openAdjacentWindow = useCallback(async (direction, targetPage) => {
+        if (!manifest?.segment_count || !viewportMetrics) return false
+        const adjacentStart = direction === 'next'
+            ? visibleStart + windowSize
+            : Math.max(0, visibleStart - windowSize)
+        if (adjacentStart === visibleStart || adjacentStart >= manifest.segment_count) return false
+
+        const requestId = navigationRequestIdRef.current + 1
+        navigationRequestIdRef.current = requestId
+        const windowData = await loadWindow(adjacentStart)
+        if (!windowData || navigationRequestIdRef.current !== requestId) return false
+
+        const indexedFragments = windowData.displayFragments.map((fragment, fragmentIndex) => ({
+            ...fragment,
+            fragmentIndex: Number.isFinite(fragment?.fragment_index)
+                ? fragment.fragment_index
+                : adjacentStart + fragmentIndex,
+        }))
+        const adjacentPages = buildMeasuredRenderPages(indexedFragments, viewportMetrics)
+        if (adjacentPages.length === 0) return false
+
+        const localPageIndex = direction === 'next'
+            ? 0
+            : Math.max(0, adjacentPages.length - pagesPerView)
+        const startMarker = getRenderPageStartSegment(adjacentPages, { page: localPageIndex }, adjacentStart)
+        const startFragmentIndex = getMeasuredPageStartFragmentIndex(adjacentPages[localPageIndex]) ?? adjacentStart
+        setVisibleStart(adjacentStart)
+        setCurrentViewportStartSegment(startMarker)
+        setCurrentViewportStartFragmentIndex(startFragmentIndex)
+        requestedViewportPageRef.current = targetPage
+        setCurrentViewportPage(targetPage)
+        return true
+    }, [
+        loadWindow,
+        manifest?.segment_count,
+        pagesPerView,
+        setCurrentViewportPage,
+        setVisibleStart,
+        viewportMetrics,
+        visibleStart,
+        windowSize,
+    ])
+
+    useEffect(() => {
+        if (loading || error || hasGlobalRenderPageMap || !manifest?.segment_count) return
+        if (renderPages.length === 0 || currentRenderPageIndex < Math.max(0, renderPages.length - (pagesPerView * 2))) return
+        const nextWindowStart = visibleStart + windowSize
+        if (nextWindowStart >= manifest.segment_count) return
+        void loadWindow(nextWindowStart).catch(() => {})
+    }, [
+        currentRenderPageIndex,
+        error,
+        hasGlobalRenderPageMap,
+        loadWindow,
+        loading,
+        manifest?.segment_count,
+        pagesPerView,
+        renderPages.length,
+        visibleStart,
+        windowSize,
+    ])
+
     const goNext = useCallback(() => {
         const basePage = Number.isFinite(requestedViewportPageRef.current)
             ? requestedViewportPageRef.current
             : effectiveViewportPage
         const nextPage = basePage + pagesPerView
 
-        if (nextPage < totalViewportPages) {
+        const availableViewportPages = hasGlobalRenderPageMap
+            ? totalViewportPages
+            : Math.max(1, localRenderPageStartSegments.length)
+
+        if (nextPage < availableViewportPages) {
             requestedViewportPageRef.current = nextPage
             void goToViewportPage({ page: nextPage })
             return
         }
 
-        if (hasGlobalRenderPageMap) return
+        if (hasGlobalRenderPageMap || globalPaginationStatus === 'recoverable_error' || globalPaginationStatus === 'cancelled') return
+        if (queuedNextPageRef.current != null) return
 
-        void loadGlobalRenderPages()
-            .then((targetPages) => {
-                const targetTotalPages = Math.max(
-                    1,
-                    getRenderPageStartSegments(targetPages).length || localRenderPageStartSegments.length,
-                )
-                if (nextPage >= targetTotalPages) return
-                requestedViewportPageRef.current = nextPage
-                void goToViewportPage({ page: nextPage })
+        const paginationVersion = globalRenderPageMapVersionRef.current
+        queuedNextPageRef.current = nextPage
+        setQueuedNextPage(nextPage)
+
+        void openAdjacentWindow('next', nextPage)
+            .then((moved) => {
+                if (globalRenderPageMapVersionRef.current !== paginationVersion) return
+                if (queuedNextPageRef.current !== nextPage) return
+                if (moved) {
+                    queuedNextPageRef.current = null
+                    setQueuedNextPage(null)
+                    return
+                }
+                return loadGlobalRenderPages().then((targetPages) => {
+                    if (globalRenderPageMapVersionRef.current !== paginationVersion) return
+                    if (queuedNextPageRef.current !== nextPage) return
+                    const targetTotalPages = Math.max(
+                        1,
+                        getRenderPageStartSegments(targetPages).length || localRenderPageStartSegments.length,
+                    )
+                    if (nextPage >= targetTotalPages) return
+                    requestedViewportPageRef.current = nextPage
+                    void goToViewportPage({ page: nextPage })
+                })
+            })
+            .then(() => {
+                if (queuedNextPageRef.current !== nextPage) return
+                queuedNextPageRef.current = null
+                setQueuedNextPage(null)
             })
             .catch((err) => {
+                if (queuedNextPageRef.current === nextPage) {
+                    queuedNextPageRef.current = null
+                    setQueuedNextPage(null)
+                }
                 console.error('Failed to expand TXT render pages for next navigation', err)
             })
     }, [
         effectiveViewportPage,
         goToViewportPage,
         hasGlobalRenderPageMap,
+        globalPaginationStatus,
         loadGlobalRenderPages,
         localRenderPageStartSegments.length,
+        openAdjacentWindow,
         pagesPerView,
         totalViewportPages,
     ])
 
     const goPrev = useCallback(() => {
+        queuedNextPageRef.current = null
+        setQueuedNextPage(null)
         const basePage = Number.isFinite(requestedViewportPageRef.current)
             ? requestedViewportPageRef.current
             : effectiveViewportPage
         if (basePage <= 0) return
         const previousPage = Math.max(0, basePage - pagesPerView)
+        if (!hasGlobalRenderPageMap && currentRenderPageIndex === 0 && visibleStart > 0) {
+            void openAdjacentWindow('previous', previousPage).catch((err) => {
+                console.error('Failed to load the previous TXT window', err)
+            })
+            return
+        }
         requestedViewportPageRef.current = previousPage
         void goToViewportPage({ page: previousPage })
-    }, [effectiveViewportPage, goToViewportPage, pagesPerView])
+    }, [
+        currentRenderPageIndex,
+        effectiveViewportPage,
+        goToViewportPage,
+        hasGlobalRenderPageMap,
+        openAdjacentWindow,
+        pagesPerView,
+        visibleStart,
+    ])
 
     const seekToProgress = useCallback((progressValue) => {
         void (async () => {
@@ -1473,21 +1647,10 @@ function TxtReader() {
         }
     }, [goToViewportPage])
 
-    const handleResume = useCallback(() => {
-        if (!Number.isFinite(resumePrompt?.position)) return
-        const target = resumePrompt.locator
-            ? {
-                ...resumePrompt.locator,
-                offset: resumePrompt.locator.sourceOffset ?? resumePrompt.locator.offset,
-            }
-            : { page: resumePrompt.position }
-        void goToViewportPage(target)
-        dismissResume()
-    }, [dismissResume, goToViewportPage, resumePrompt])
-
     const handleStartOver = useCallback(() => {
+        appliedRestoreKeyRef.current = null
         startOver()
-        void goToViewportPage({ page: 0 })
+        void goToViewportPage({ segmentId: 0, sourceOffset: 0 })
     }, [goToViewportPage, startOver])
 
     const retryGlobalPagination = useCallback(() => {
@@ -1497,32 +1660,31 @@ function TxtReader() {
         setGlobalRenderPages(null)
         setGlobalPaginationError(null)
         setGlobalPaginationStatus('idle')
+        setGlobalPaginationProgress({ phase: 'idle', completedSegments: 0, totalSegments: 0, version: globalRenderPageMapVersionRef.current })
+        queuedNextPageRef.current = null
+        setQueuedNextPage(null)
         setGlobalPaginationRetryToken((value) => value + 1)
     }, [])
 
-    const handleProgressBarVisibilityChange = useCallback(() => {
-        const root = contentRef.current
-        if (!root) return
-        pendingAnchorRestoreCleanupRef.current?.()
-        captureAnchor(root)
-        pendingAnchorRestoreCleanupRef.current = scheduleAfterPaint(() => {
-            pendingAnchorRestoreCleanupRef.current = null
-            restoreAnchor(root)
-        })
-    }, [captureAnchor, restoreAnchor])
-
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: globalPaginationReady, readerRootRef })
+    const partialNavigationReady = !loading && !error && renderPages.length > 0
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: partialNavigationReady, readerRootRef })
 
     const paginationPending = !loading && (
         globalPaginationStatus === 'loading' || globalPaginationStatus === 'recoverable_error'
     )
     const loadingLabel = error || globalPaginationError ? tt('loadContentFailed') : (manifest?.encoding || tt('loading'))
+    const paginationPercent = globalPaginationProgress.totalSegments > 0
+        ? Math.min(99, Math.round((globalPaginationProgress.completedSegments / globalPaginationProgress.totalSegments) * 100))
+        : 0
+    const canShowNextControl = globalPaginationReady
+        ? effectiveViewportPage < totalViewportPages - 1
+        : effectiveViewportPage < localRenderPageStartSegments.length - 1 || globalPaginationStatus === 'loading'
 
     return (
         <div
             ref={readerRootRef}
             tabIndex={-1}
-            className="readerRoot reader-shell h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden"
+            className="readerRoot reader-shell relative h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden"
             style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}
         >
             <div className="reader-ui reader-topbar shrink-0 flex items-center justify-between" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
@@ -1625,12 +1787,13 @@ function TxtReader() {
                     tt={tt}
                 />
                 <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{effectiveViewportPage > 0 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
-                <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{effectiveViewportPage < totalViewportPages - 1 && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
+                <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{canShowNextControl && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
 
                 <div data-testid="txt-reader-stage" className={`reader-stage ${layout === 'dual' ? 'reader-stage-dual' : ''}`} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
                     {loading ? (
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                        <div className="flex h-full flex-col items-center justify-center gap-3">
                             <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
+                            <div className="text-sm opacity-60">{tt('openingBook')}</div>
                         </div>
                     ) : (
                             <div
@@ -1739,28 +1902,50 @@ function TxtReader() {
                             </div>
                         </div>
                     )}
-                    {paginationPending && (
-                        <div
-                            data-testid="txt-pagination-loading"
-                            className="absolute right-3 top-3 z-30 flex items-center justify-center rounded-lg border px-3 py-2 shadow-sm"
-                            style={{ backgroundColor: `${themeStyle.card}ee`, borderColor: themeStyle.border }}
-                        >
-                            {error || globalPaginationError ? (
-                                <div className="flex items-center gap-3">
-                                    <div>{tt('loadContentFailed')}</div>
-                                    {globalPaginationError && (
-                                        <button type="button" onClick={retryGlobalPagination} className="rounded-lg border px-3 py-1.5 text-sm">
-                                            {tt('retry')}
-                                        </button>
-                                    )}
-                                </div>
-                            ) : (
-                                <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
-                            )}
-                        </div>
-                    )}
                 </div>
             </div>
+
+            {paginationPending && (
+                <div
+                    data-testid="txt-pagination-loading"
+                    className="reader-ui reader-progress reader-progress-layer txt-pagination-preparation"
+                    style={{ borderTop: '1px solid var(--panel-border)' }}
+                    aria-live="polite"
+                >
+                    <div className="reader-progress-inner">
+                        {globalPaginationError ? (
+                            <div className="txt-pagination-status-row">
+                                <span>{tt('pagePreparationFailed')}</span>
+                                <button type="button" onClick={retryGlobalPagination} className="rounded-md border px-3 py-1 text-xs" style={{ borderColor: themeStyle.border }}>
+                                    {tt('retry')}
+                                </button>
+                            </div>
+                        ) : globalPaginationProgress.phase === 'layout' ? (
+                            <div className="txt-pagination-status-row justify-center">
+                                <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
+                                <span>{tt('calculatingPageLayout')}</span>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="txt-pagination-status-row tabular-nums">
+                                    <span>{queuedNextPage != null ? tt('preparingNextPage') : tt('preparingPages')}</span>
+                                    <span>{paginationPercent}%</span>
+                                </div>
+                                <div
+                                    className="txt-pagination-track"
+                                    role="progressbar"
+                                    aria-label={tt('preparingPages')}
+                                    aria-valuemin="0"
+                                    aria-valuemax="100"
+                                    aria-valuenow={paginationPercent}
+                                >
+                                    <div className="txt-pagination-fill" style={{ width: `${paginationPercent}%` }} />
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
 
             <div
                 className="shrink-0"
@@ -1778,12 +1963,14 @@ function TxtReader() {
                     onSeekProgress={seekToProgress}
                     extraInfo={manifest ? `TXT ${effectiveViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
                     readerFocusRef={readerRootRef}
-                    onVisibilityChange={handleProgressBarVisibilityChange}
                 />
             </div>
-            {globalPaginationReady && (
-                <ResumeToast resumePrompt={resumePrompt} onResume={handleResume} onDismiss={handleStartOver} tt={tt} />
-            )}
+            <ResumeToast
+                message={restoredProgress ? tt('resumedFromLastPosition') : null}
+                actionLabel={tt('startOver')}
+                onAction={handleStartOver}
+                durationMs={5000}
+            />
         </div>
     )
 }

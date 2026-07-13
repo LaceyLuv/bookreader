@@ -108,6 +108,20 @@ test('hide and show buttons release their own focus after pointer clicks', async
     expect(document.activeElement).toBe(readerRootRef.current)
 })
 
+test('expanded and collapsed progress bars stay in the shared overlay layer', async () => {
+    const user = userEvent.setup()
+
+    render(<ReaderProgressBar currentPage={3} totalPages={10} progress={0.2} />)
+
+    const hideButton = screen.getByRole('button', { name: /hide progress bar/i })
+    expect(hideButton.closest('.reader-progress-layer')).toBeTruthy()
+
+    await user.click(hideButton)
+
+    const showButton = screen.getByRole('button', { name: /show progress bar/i })
+    expect(showButton.closest('.reader-progress-layer')).toBeTruthy()
+})
+
 test('recent pointer interaction prevents Space from re-activating the hide button', async () => {
     const readerRoot = document.createElement('div')
     readerRoot.tabIndex = -1

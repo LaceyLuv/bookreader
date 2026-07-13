@@ -64,9 +64,8 @@ function ZipReader() {
         addBookmark,
         removeBookmark,
         goToBookmark,
-        resumePrompt,
-        resumeReading,
-        dismissResume,
+        restoredProgress,
+        startOver,
     } = progress
 
     const pagesPerView = layout === 'dual' ? 2 : 1
@@ -93,6 +92,11 @@ function ZipReader() {
         if (images.length <= 1) return
         seekToImage(Math.round(p * (images.length - 1)))
     }, [images.length, seekToImage])
+
+    const handleStartOver = useCallback(() => {
+        startOver()
+        seekToImage(0)
+    }, [seekToImage, startOver])
 
     useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: true, readerRootRef })
 
@@ -140,7 +144,7 @@ function ZipReader() {
     }
 
     return (
-        <div ref={readerRootRef} tabIndex={-1} className="readerRoot reader-shell h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}>
+        <div ref={readerRootRef} tabIndex={-1} className="readerRoot reader-shell relative h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}>
             <div className="reader-ui reader-topbar shrink-0 flex items-center justify-between" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
                 <div className="reader-topbar-meta flex items-center gap-3">
                     <button onClick={() => navigate('/')} title={tt('backToLibrary')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg></button>
@@ -186,7 +190,12 @@ function ZipReader() {
             </div>
 
             <ReaderProgressBar currentPage={images.length > 0 ? Math.min(images.length, currentPage + 1) : 1} totalPages={images.length > 0 ? images.length : null} onSeekPage={(p) => seekToImage(p - 1)} progress={images.length > 1 ? currentPage / (images.length - 1) : 0} onSeekProgress={seekToProgress} extraInfo={`ZIP  ${currentPage + 1}${layout === 'dual' && currentPage + 1 < images.length ? `-${currentPage + 2}` : ''}/${images.length || '?'}`} readerFocusRef={readerRootRef} />
-            <ResumeToast resumePrompt={resumePrompt} onResume={resumeReading} onDismiss={dismissResume} tt={tt} />
+            <ResumeToast
+                message={restoredProgress ? tt('resumedFromLastPosition') : null}
+                actionLabel={tt('startOver')}
+                onAction={handleStartOver}
+                durationMs={5000}
+            />
         </div>
     )
 }

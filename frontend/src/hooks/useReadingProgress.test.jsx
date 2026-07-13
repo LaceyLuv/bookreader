@@ -76,14 +76,8 @@ test('restored progress is clamped when pagination shrinks after layout changes'
     const { result } = renderHook(() => useReadingProgress('txt-1', { totalPages: 5, type: 'txt' }))
     await act(async () => { await Promise.resolve() })
 
-    expect(result.current.resumePrompt.position).toBe(4)
-
-    act(() => {
-        result.current.resumeReading()
-        vi.runOnlyPendingTimers()
-    })
-
     expect(result.current.currentPosition).toBe(4)
+    expect(result.current.restoredProgress.position).toBe(12)
 })
 
 test('hydrates position and preserves saved data until pagination is ready', async () => {
@@ -127,7 +121,7 @@ test('hydrates position and preserves saved data until pagination is ready', asy
     expect(JSON.parse(localStorage.getItem('bookreader_progress'))['txt-1'].position).toBe(4)
 })
 
-test('defers TXT restore until the user chooses and exposes the saved locator', async () => {
+test('automatically restores TXT progress and exposes the saved locator', async () => {
     const savedLocator = { version: 1, kind: 'txt', segmentId: 4, sourceOffset: 120, page: 12 }
     localStorage.setItem('bookreader_progress', JSON.stringify({
         'txt-1': {
@@ -143,18 +137,18 @@ test('defers TXT restore until the user chooses and exposes the saved locator', 
     const { result } = renderHook(() => useReadingProgress('txt-1', {
         totalPages: 20,
         type: 'txt',
-        deferInitialPosition: true,
         locatorToPosition: () => 14,
     }))
     await act(async () => { await Promise.resolve() })
 
-    expect(result.current.currentPosition).toBe(0)
-    expect(result.current.resumePrompt).toMatchObject({ position: 14, locator: savedLocator })
+    expect(result.current.currentPosition).toBe(14)
+    expect(result.current.restoredProgress).toMatchObject({ position: 12, locator: savedLocator })
 
     act(() => result.current.startOver())
 
     expect(result.current.currentPosition).toBe(0)
-    expect(result.current.resumePrompt).toBeNull()
+    expect(result.current.restoredProgress).toBeNull()
+    expect(JSON.parse(localStorage.getItem('bookreader_progress'))['txt-1'].position).toBe(0)
 })
 
 test('removeBookProgress deletes current and legacy progress entries', () => {

@@ -69,9 +69,8 @@ function createProgress(overrides = {}) {
         addBookmark: vi.fn(),
         removeBookmark: vi.fn(),
         goToBookmark: vi.fn(),
-        resumePrompt: null,
-        resumeReading: vi.fn(),
-        dismissResume: vi.fn(),
+        restoredProgress: null,
+        startOver: vi.fn(),
         ...overrides,
     }
 }
@@ -166,6 +165,22 @@ test('dual EPUB layout uses the original outer horizontal margin behavior', asyn
     expect(stage.style.paddingLeft).toBe('20px')
     expect(stage.style.paddingRight).toBe('20px')
     expect(content.style.columnGap).toBe('32px')
+})
+
+test('automatically opens the restored EPUB chapter', async () => {
+    mockUseReadingProgress.mockReturnValue(createProgress({
+        currentPosition: 1,
+        restoredProgress: {
+            position: 1,
+            locator: { kind: 'epub', chapterIndex: 1, chapterPage: 0 },
+            updatedAt: '2026-07-12T00:00:00.000Z',
+        },
+    }))
+
+    renderReader()
+
+    expect(await screen.findByText('Second body.')).toBeTruthy()
+    expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1')
 })
 
 test('clicking an internal chapter link loads the mapped chapter', async () => {

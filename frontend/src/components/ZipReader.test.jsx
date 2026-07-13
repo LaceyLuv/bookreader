@@ -62,9 +62,8 @@ function createProgress(overrides = {}) {
         addBookmark: vi.fn(),
         removeBookmark: vi.fn(),
         goToBookmark: setCurrentPosition,
-        resumePrompt: null,
-        resumeReading: vi.fn(),
-        dismissResume: vi.fn(),
+        restoredProgress: null,
+        startOver: vi.fn(),
         ...overrides,
     }
 }
@@ -116,4 +115,20 @@ test('ZIP image load failures show a per-page error without removing the reader'
 
     expect(screen.getByText('imageLoadFailed')).toBeTruthy()
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
+})
+
+test('automatically shows the restored ZIP image', async () => {
+    mockUseReadingProgress.mockImplementation(() => createProgress({
+        currentPosition: 1,
+        restoredProgress: {
+            position: 1,
+            locator: { kind: 'zip', memberName: '2.jpg', page: 1 },
+            updatedAt: '2026-07-12T00:00:00.000Z',
+        },
+    }))
+
+    renderReader()
+
+    expect(await screen.findByAltText('Page 2')).toBeTruthy()
+    expect(screen.getByTestId('progress-extra').textContent).toBe('ZIP  2/3')
 })
