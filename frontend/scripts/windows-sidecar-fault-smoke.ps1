@@ -11,7 +11,12 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FrontendDir = Split-Path -Parent $ScriptDir
 $RootDir = Split-Path -Parent $FrontendDir
-$applicationVersion = [string]((Get-Content -LiteralPath (Join-Path $FrontendDir "src-tauri\tauri.conf.json") -Raw | ConvertFrom-Json).version)
+$tauriConfig = Get-Content -LiteralPath (Join-Path $FrontendDir "src-tauri\tauri.conf.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$applicationVersion = [string]$tauriConfig.version
+$mainBinaryName = [string]$tauriConfig.mainBinaryName
+if ([string]::IsNullOrWhiteSpace($mainBinaryName)) {
+    throw "tauri.conf.json mainBinaryName must identify the packaged desktop executable."
+}
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $script:cases = @()
 $failure = $null
@@ -46,10 +51,12 @@ function Stop-ProcessTree {
     try { $Process.Refresh() } catch { return $true }
     if ($Process.HasExited) { return $true }
     & taskkill.exe /PID $Process.Id /T /F | Out-Null
-    $taskkillExit = $LASTEXITCODE
     try { $Process.WaitForExit(10000) | Out-Null } catch {}
-    try { $Process.Refresh() } catch { return $taskkillExit -eq 0 }
-    return $taskkillExit -eq 0 -and $Process.HasExited
+    try { $Process.Refresh() } catch { return $true }
+    # taskkill can report a nonzero race when a PyInstaller child exits while
+    # the tree is being terminated. The root and captured process snapshot are
+    # the authoritative cleanup boundary, not taskkill's transient exit code.
+    return $Process.HasExited
 }
 
 function Get-ProcessTreeSnapshot {
@@ -150,7 +157,7 @@ if ([string]::IsNullOrWhiteSpace($SidecarPath)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($DesktopPath)) {
-    $desktopCandidate = Join-Path $FrontendDir "src-tauri\target\release\bookreader_desktop.exe"
+    $desktopCandidate = Join-Path $FrontendDir ("src-tauri\target\release\" + $mainBinaryName + ".exe")
     if (Test-Path -LiteralPath $desktopCandidate -PathType Leaf) { $DesktopPath = $desktopCandidate }
 }
 
@@ -222,7 +229,7 @@ try {
     $explicitStopSucceeded = Stop-ProcessTree $healthyProcess
     $healthyProcess.Refresh()
     $healthyTreeStopped = Wait-ForProcessSnapshotExit $healthyTree 15
-    Add-Case "clean_process_tree_shutdown" ($explicitStopSucceeded -and $healthyProcess.HasExited -and $healthyTreeStopped) ("Captured and terminated " + $healthyTree.Count + " sidecar process(es).")
+    Add-Case "clean_process_tree_shutdown" ($explicitStopSucceeded -and $healthyProcess.HasExited -and $healthyTreeStopped) ("Captured " + $healthyTree.Count + " sidecar process(es); root exited: " + $healthyProcess.HasExited + "; captured tree exited: " + $healthyTreeStopped + ".")
 
     $desktopLocalAppData = Join-Path $temporaryRoot "desktop-localappdata"
     $desktopRoamingAppData = Join-Path $temporaryRoot "desktop-appdata"

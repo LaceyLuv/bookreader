@@ -6,6 +6,7 @@ import { createT } from '../i18n'
 import { readErrorDetail } from '../lib/readErrorDetail'
 import DashboardSettingsPanel from '../components/DashboardSettingsPanel'
 import AnnotationExportControls from '../components/AnnotationExportControls'
+import gyeolIcon from '../assets/brand/gyeol-icon.png'
 
 const API = API_BOOKS_BASE
 const FOLDER_API = API_BOOKS_BASE.replace(/\/books$/, '/library/folders')
@@ -1030,8 +1031,8 @@ function Dashboard() {
         <div className="dashboard-page min-h-screen">
             <div className="dashboard-shell">
                 <header className="dashboard-hero">
-                    <div className="dashboard-brand-mark" aria-hidden="true"><span /><span /></div>
-                    <div className="dashboard-brand-copy"><h1>{isKo ? '유니버설 북 리더' : tt('appTitle')}</h1><p>{isKo ? 'TXT · EPUB · ZIP 만화' : 'TXT · EPUB · ZIP Comics'}</p></div>
+                    <img className="dashboard-brand-mark" src={gyeolIcon} alt="" aria-hidden="true" data-testid="dashboard-brand-icon" />
+                    <div className="dashboard-brand-copy"><h1>{tt('appTitle')}</h1><p>{tt('appSubtitle')}</p></div>
                     <button type="button" className="dashboard-settings-button" onClick={() => setSettingsOpen(true)} aria-label={tt('librarySettings')} title={tt('librarySettings')}>⚙</button>
                 </header>
 

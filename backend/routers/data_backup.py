@@ -68,7 +68,7 @@ async def export_backup(payload: BackupRequest):
         )
     except BackupValidationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    filename = f"BookReader-{manifest['kind']}-{manifest['created_at'][:10]}.bookreader-backup"
+    filename = f"Gyeol-{manifest['kind']}-{manifest['created_at'][:10]}.bookreader-backup"
     return FileResponse(
         path,
         filename=filename,

@@ -109,6 +109,30 @@ def test_windows_bundle_policy_blocks_downgrades_and_freezes_current_user_scope(
     assert "createUpdaterArtifacts" not in config["bundle"]
 
 
+def test_private_alpha_brand_keeps_the_existing_data_identity():
+    config = json.loads(read_text(FRONTEND / "src-tauri" / "tauri.conf.json"))
+    source = read_text(FRONTEND / "src-tauri" / "src" / "lib.rs")
+
+    assert config["productName"] == "글결"
+    assert config["mainBinaryName"] == "Gyeol"
+    assert config["identifier"] == "com.bookreader.desktop"
+    assert config["app"]["windows"][0]["title"] == "글결"
+    assert config["bundle"]["windows"]["nsis"]["installerIcon"] == "icons/icon.ico"
+    assert "icons/icon.ico" in config["bundle"]["icon"]
+    assert 'LEGACY_DATA_DIR_NAME: &str = "BookReader"' in source
+
+
+def test_windows_validation_scripts_resolve_the_branded_binary_from_tauri_config():
+    for script_name in [
+        "release-readiness.ps1",
+        "windows-migration-fixtures.ps1",
+        "windows-sidecar-fault-smoke.ps1",
+    ]:
+        script = read_text(FRONTEND / "scripts" / script_name)
+        assert "mainBinaryName" in script
+        assert "bookreader_desktop.exe" not in script
+
+
 def test_release_commands_fail_closed_and_verify_all_windows_artifacts():
     package = json.loads(read_text(FRONTEND / "package.json"))
     release_build = read_text(FRONTEND / "scripts" / "build-windows-release.ps1")

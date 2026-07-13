@@ -4,6 +4,7 @@ import { THEME_PRESETS } from '../constants/themes'
 import { API_FONTS_BASE } from '../lib/apiBase'
 import { emitUserFontsUpdated } from './FontStyleInjector'
 import { readErrorDetail } from '../lib/readErrorDetail'
+import gyeolLockup from '../assets/brand/gyeol-lockup.png'
 
 export function ReaderSettingSlider({ label, value, min, max, step, unit = '', onChange }) {
     const percentage = ((Number(value) - min) / (max - min)) * 100
@@ -272,9 +273,11 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                         style={{ fontFamily: SETTINGS_FONT_FAMILY }}
                     >
                         <header className="flex items-center justify-between border-b border-[#e5dccd] px-6 py-5">
-                            <div>
-                                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#9a8b72]">BOOK READER</p>
-                                <h2 id="reader-settings-title" className="mt-1 text-xl font-semibold">{tt('settings')}</h2>
+                            <div className="flex items-center gap-3">
+                                <div className="reader-settings-brand-lockup" role="img" aria-label={tt('appTitle')}>
+                                    <img src={gyeolLockup} alt="" aria-hidden="true" />
+                                </div>
+                                <h2 id="reader-settings-title" className="text-xl font-semibold">{tt('settings')}</h2>
                             </div>
                             <div className="flex items-center gap-2">
                                 <span className="rounded-full border border-[#ded4c5] px-2.5 py-1 text-[10px] font-semibold text-[#766854]">

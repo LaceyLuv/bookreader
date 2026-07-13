@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-13
 
-BookReader currently ships by manual update. The runtime updater is intentionally not installed or configured. A public installer must be code-signed, fault-tested, and built through the fail-closed release command below; `desktop:build` remains an unsigned developer build.
+Gyeol Reader (`글결`) currently ships by manual update. The runtime updater is intentionally not installed or configured. A public installer must be code-signed, fault-tested, and built through the fail-closed release command below; `desktop:build` remains an unsigned developer build.
 
 Official references:
 
@@ -22,6 +22,10 @@ Before the first public signed beta, choose and keep all of these values stable:
 The repository intentionally does not invent the publisher identity. Public release policy fails until the chosen values are supplied through `BOOKREADER_RELEASE_IDENTIFIER` and `BOOKREADER_RELEASE_PUBLISHER` and match `tauri.conf.json`.
 
 The installer policy explicitly sets `allowDowngrades: false` and `installMode: currentUser`. Changing either after release can break upgrade continuity or permit an older binary to open newer data.
+
+The private-alpha brand is `글결`, with English name `Gyeol Reader` and main executable `Gyeol.exe`. The compatibility identifier remains `com.bookreader.desktop` so existing development data and WebView storage keep the same identity; it is not yet a promise of the final public publisher identity.
+
+An older `BookReader` development install and a `글결` private-alpha install can coexist while sharing that data identity. Do not run both at the same time. Before switching, create a full in-app backup, close both the desktop and sidecar processes, uninstall the old development build without selecting app-data deletion, install `글결`, and verify the library, progress, annotations, fonts, and restore flow.
 
 ## Code-signing inputs
 

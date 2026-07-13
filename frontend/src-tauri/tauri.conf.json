@@ -1,6 +1,7 @@
 {
     "$schema":  "../node_modules/@tauri-apps/cli/config.schema.json",
-    "productName":  "BookReader",
+    "productName":  "글결",
+    "mainBinaryName":  "Gyeol",
     "version":  "0.1.1",
     "identifier":  "com.bookreader.desktop",
     "app":  {
@@ -10,7 +11,7 @@
                 "windows":  [
                                 {
                                     "label":  "main",
-                                    "title":  "BookReader",
+                                    "title":  "글결",
                                     "width":  1440,
                                     "height":  960,
                                     "center":  true,
@@ -27,10 +28,18 @@
     "bundle":  {
                    "active":  true,
                    "targets":  "nsis",
+                   "icon":  [
+                                "icons/32x32.png",
+                                "icons/128x128.png",
+                                "icons/128x128@2x.png",
+                                "icons/icon.icns",
+                                "icons/icon.ico"
+                            ],
                    "windows":  {
                                    "allowDowngrades":  false,
                                    "nsis":  {
-                                                "installMode":  "currentUser"
+                                                "installMode":  "currentUser",
+                                                "installerIcon":  "icons/icon.ico"
                                             }
                                },
                    "externalBin":  [

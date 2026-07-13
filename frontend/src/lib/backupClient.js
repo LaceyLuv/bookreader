@@ -38,7 +38,7 @@ export async function exportBackup(includeBooks = false) {
         body: JSON.stringify({ include_books: includeBooks, client_state: collectBackupClientState() }),
     })
     if (!response.ok) throw new Error(await errorDetail(response, 'Backup failed'))
-    return downloadResponseBlob(response, `BookReader-${includeBooks ? 'full' : 'data'}.bookreader-backup`)
+    return downloadResponseBlob(response, `Gyeol-${includeBooks ? 'full' : 'data'}.bookreader-backup`)
 }
 
 export async function previewRestore(file) {

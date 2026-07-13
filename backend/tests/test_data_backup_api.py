@@ -21,7 +21,7 @@ def test_export_endpoint_streams_generated_bundle(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.content == b"verified bundle"
-    assert "BookReader-data-2026-07-13.bookreader-backup" in response.headers["content-disposition"]
+    assert "Gyeol-data-2026-07-13.bookreader-backup" in response.headers["content-disposition"]
     assert not bundle.exists()
 
 

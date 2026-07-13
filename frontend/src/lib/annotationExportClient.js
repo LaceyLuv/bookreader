@@ -18,5 +18,5 @@ export async function exportBookAnnotations(bookId, format) {
     if (!response.ok) {
         throw new Error(await readErrorDetail(response, 'Annotation export failed'))
     }
-    return downloadResponseBlob(response, `BookReader-annotations.${formatInfo.extension}`)
+    return downloadResponseBlob(response, `Gyeol-annotations.${formatInfo.extension}`)
 }

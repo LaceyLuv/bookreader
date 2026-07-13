@@ -148,7 +148,7 @@ def build_annotation_export(
         "schema": ANNOTATION_EXPORT_SCHEMA,
         "schema_version": ANNOTATION_EXPORT_SCHEMA_VERSION,
         "exported_at": timestamp,
-        "generator": {"name": "BookReader", "version": APP_VERSION},
+        "generator": {"name": "Gyeol Reader", "version": APP_VERSION},
         "book": {
             "id": str(book.get("id") or ""),
             "title": str(book.get("title") or "Untitled"),
@@ -286,5 +286,5 @@ def annotation_export_disposition(filename: str, book_id: str = "book") -> str:
     date_match = re.search(r"(\d{4}-\d{2}-\d{2})", filename)
     date = date_match.group(1) if date_match else "export"
     safe_id = re.sub(r"[^A-Za-z0-9_-]+", "", str(book_id))[:8] or "book"
-    ascii_name = f"BookReader-annotations-{safe_id}-{date}{suffix}"
+    ascii_name = f"Gyeol-annotations-{safe_id}-{date}{suffix}"
     return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename, safe="")}'

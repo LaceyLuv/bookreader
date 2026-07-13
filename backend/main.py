@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title='Universal Book Reader API', version=APP_VERSION, lifespan=lifespan)
+app = FastAPI(title='Gyeol Reader API', version=APP_VERSION, lifespan=lifespan)
 
 SIDECAR_NONCE = os.environ.get('BOOKREADER_SIDECAR_NONCE')
 SIDECAR_ASSET_TOKEN = os.environ.get('BOOKREADER_SIDECAR_ASSET_TOKEN')
@@ -110,4 +110,4 @@ async def health():
 
 @app.get('/')
 async def root():
-    return {'message': 'Universal Book Reader API', 'docs': '/docs'}
+    return {'message': 'Gyeol Reader API', 'docs': '/docs'}

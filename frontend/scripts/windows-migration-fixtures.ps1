@@ -9,15 +9,19 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FrontendDir = Split-Path -Parent $ScriptDir
 $RootDir = Split-Path -Parent $FrontendDir
 $TauriDir = Join-Path $FrontendDir "src-tauri"
+$config = Get-Content -LiteralPath (Join-Path $TauriDir "tauri.conf.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$mainBinaryName = [string]$config.mainBinaryName
+if ([string]::IsNullOrWhiteSpace($mainBinaryName)) {
+    throw "tauri.conf.json mainBinaryName must identify the packaged desktop executable."
+}
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 if ([string]::IsNullOrWhiteSpace($DesktopPath)) {
-    $DesktopPath = Join-Path $TauriDir "target\release\bookreader_desktop.exe"
+    $DesktopPath = Join-Path $TauriDir ("target\release\" + $mainBinaryName + ".exe")
 }
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $RootDir ("reports\release\migration-fixtures-" + $timestamp + ".json")
 }
 
-$config = Get-Content -LiteralPath (Join-Path $TauriDir "tauri.conf.json") -Raw | ConvertFrom-Json
 $requiredCases = @(
     "legacy_data_migration_is_allowlisted_verified_and_non_destructive",
     "legacy_data_migration_rejects_conflicting_destination_data",

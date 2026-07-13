@@ -63,6 +63,13 @@ test('basic and advanced tabs keep typography controls connected', async () => {
     expect(advancedTab.getAttribute('aria-selected')).toBe('true')
 })
 
+test('settings panel presents the supplied Gyeol lockup', () => {
+    renderToolbar()
+
+    const brand = screen.getByRole('img', { name: 'appTitle' })
+    expect(brand.querySelector('img')?.getAttribute('src')).toContain('gyeol-lockup.png')
+})
+
 test('ZIP basic shows only effective theme, layout, and image controls', async () => {
     const user = userEvent.setup()
     const settings = renderToolbar({ readerType: 'zip' })

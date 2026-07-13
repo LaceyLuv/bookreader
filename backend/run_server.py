@@ -1,4 +1,4 @@
-"""Uvicorn entry-point for the BookReader backend."""
+"""Uvicorn entry-point for the Gyeol Reader backend."""
 
 import argparse
 import ctypes
@@ -21,7 +21,7 @@ INFINITE = 0xFFFFFFFF
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="BookReader backend launcher")
+    parser = argparse.ArgumentParser(description="Gyeol Reader backend launcher")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8000, type=int)
     parser.add_argument("--nonce")
@@ -62,7 +62,7 @@ def start_parent_watchdog(parent_pid_value: str | None = None):
         parent_handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
         if not parent_handle:
             error = ctypes.get_last_error()
-            raise RuntimeError(f"Cannot watch BookReader parent process {parent_pid} (Windows error {error}).")
+            raise RuntimeError(f"Cannot watch Gyeol Reader parent process {parent_pid} (Windows error {error}).")
 
         def watch_windows_parent():
             result = kernel32.WaitForSingleObject(parent_handle, INFINITE)
@@ -95,7 +95,7 @@ def run_backend(host: str, port: int, nonce: str | None = None) -> int:
         main.SIDECAR_NONCE = nonce
     if not is_port_available(host, port):
         print(
-            f"BookReader backend cannot start because {host}:{port} is already in use.",
+            f"Gyeol Reader backend cannot start because {host}:{port} is already in use.",
             file=sys.stderr,
         )
         return PORT_IN_USE_EXIT_CODE

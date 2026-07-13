@@ -45,6 +45,17 @@ test('exports through authenticated fetch and downloads the returned bundle', as
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:backup')
 })
 
+test('uses the Gyeol filename when the backup response omits content disposition', async () => {
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        headers: new Headers(),
+        blob: async () => new Blob(['bundle']),
+    })))
+
+    await expect(exportBackup(false)).resolves.toBe('Gyeol-data.bookreader-backup')
+})
+
 test('previews and commits the same restore session', async () => {
     vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce({ ok: true, json: async () => ({ restore_id: 'session-1', kind: 'data' }) })

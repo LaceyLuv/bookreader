@@ -25,6 +25,12 @@ test('requests the canonical server export and uses its UTF-8 filename', async (
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:annotation-export')
 })
 
+test('uses the Gyeol filename when the server omits content disposition', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('# notes', { status: 200 })))
+
+    await expect(exportBookAnnotations('book-1', 'markdown')).resolves.toBe('Gyeol-annotations.md')
+})
+
 test('surfaces the server detail and rejects unsupported formats before fetching', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ detail: 'Export unavailable' }), {
         status: 503,

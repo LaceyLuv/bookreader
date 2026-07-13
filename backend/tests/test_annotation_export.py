@@ -76,7 +76,7 @@ def test_json_export_is_versioned_lossless_ordered_and_excludes_private_paths():
     assert payload["annotations"][1]["selected_text"] == "두 번째\n문장"
     assert payload["annotations"][1]["note_text"] == "메모 내용"
     assert payload["format"] == "bookreader-annotations"
-    assert payload["generator"] == {"name": "BookReader", "version": "0.1.1"}
+    assert payload["generator"] == {"name": "Gyeol Reader", "version": "0.1.1"}
     assert payload["annotations"][1]["anchor"]["status"] == "unknown"
     assert payload["annotations"][1]["anchor"]["locator_v2"]["sourceOffset"] == 200
     assert payload["annotations"][1]["anchor"]["legacy"]["start_offset"] == 200
@@ -115,6 +115,7 @@ def test_export_api_sets_safe_download_headers_and_supports_empty_exports(monkey
     assert json_response.status_code == 200
     assert json_response.json()["annotations"] == []
     assert json_response.headers["cache-control"] == "no-store, max-age=0"
+    assert 'filename="Gyeol-annotations-book-1-2026-07-13.json"' in json_response.headers["content-disposition"]
     assert "filename*=UTF-8''" in json_response.headers["content-disposition"]
     assert json_response.headers["content-type"].startswith("application/json")
     assert markdown_response.status_code == 200

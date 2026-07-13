@@ -13,7 +13,10 @@ vi.mock('../hooks/useReadingProgress', () => ({
 }))
 
 vi.mock('../i18n', () => ({
-    createT: () => (key) => key,
+    createT: () => (key) => ({
+        appTitle: '글결',
+        appSubtitle: '내 파일을, 내 방식으로.',
+    }[key] || key),
 }))
 
 const mockNavigate = vi.fn()
@@ -74,6 +77,14 @@ beforeEach(() => {
 
         throw new Error(`Unexpected fetch call: ${url}`)
     })
+})
+
+test('dashboard presents the Gyeol brand and supplied icon', async () => {
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+
+    expect(await screen.findByRole('heading', { name: '글결' })).toBeTruthy()
+    expect(screen.getByText('내 파일을, 내 방식으로.')).toBeTruthy()
+    expect(screen.getByTestId('dashboard-brand-icon').getAttribute('src')).toContain('gyeol-icon.png')
 })
 
 test('clicking a book cover opens the reader', async () => {

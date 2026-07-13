@@ -3,6 +3,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+const PRODUCT_NAME = '글결'
+const MAIN_BINARY_NAME = 'Gyeol'
 
 function check(name, passed, detail) {
   return { name, passed: Boolean(passed), detail }
@@ -16,6 +18,8 @@ export function validatePolicyData(data, profile = 'development', env = {}) {
 
   const config = data.tauriConfig
   const windows = config.bundle?.windows || {}
+  checks.push(check('product_name_frozen', config.productName === PRODUCT_NAME, `productName must remain ${PRODUCT_NAME}.`))
+  checks.push(check('main_binary_name_frozen', config.mainBinaryName === MAIN_BINARY_NAME, `mainBinaryName must remain ${MAIN_BINARY_NAME}.`))
   checks.push(check('identifier_present', /^[A-Za-z0-9.-]+\.[A-Za-z0-9.-]+$/.test(config.identifier || ''), `Identifier: ${config.identifier || '(missing)'}`))
   checks.push(check('downgrades_blocked', windows.allowDowngrades === false, 'bundle.windows.allowDowngrades must be false.'))
   checks.push(check('install_scope_frozen', windows.nsis?.installMode === 'currentUser', 'NSIS installMode must remain currentUser.'))

@@ -1031,7 +1031,7 @@ pub fn run() {
                             &backend_state,
                             BackendStatus::failed_with_code(
                                 "data_migration_failed",
-                                format!("BookReader could not prepare its data directory: {err}"),
+                                format!("Gyeol Reader could not prepare its data directory: {err}"),
                             ),
                         );
                         return Ok(());

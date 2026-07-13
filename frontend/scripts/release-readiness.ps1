@@ -14,6 +14,11 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FrontendDir = Split-Path -Parent $ScriptDir
 $RootDir = Split-Path -Parent $FrontendDir
 $TauriDir = Join-Path $FrontendDir "src-tauri"
+$tauriConfig = Get-Content -LiteralPath (Join-Path $TauriDir "tauri.conf.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$mainBinaryName = [string]$tauriConfig.mainBinaryName
+if ([string]::IsNullOrWhiteSpace($mainBinaryName)) {
+    throw "tauri.conf.json mainBinaryName must identify the packaged desktop executable."
+}
 $script:checks = @()
 $artifacts = @()
 
@@ -93,7 +98,7 @@ catch {
 
 if ($Profile -ne "Development") {
     $sidecar = Resolve-LatestFile (Join-Path $TauriDir "binaries") "bookreader-backend-*.exe"
-    $desktop = Get-Item -LiteralPath (Join-Path $TauriDir "target\release\bookreader_desktop.exe") -ErrorAction SilentlyContinue
+    $desktop = Get-Item -LiteralPath (Join-Path $TauriDir ("target\release\" + $mainBinaryName + ".exe")) -ErrorAction SilentlyContinue
     $installer = Resolve-LatestFile (Join-Path $TauriDir "target\release\bundle\nsis") "*-setup.exe"
     $artifactItems = @(
         [ordered]@{ name = "sidecar"; item = $sidecar },
@@ -106,13 +111,14 @@ if ($Profile -ne "Development") {
         (Join-Path $RootDir "backend"),
         (Join-Path $FrontendDir "src"),
         (Join-Path $FrontendDir "scripts"),
-        (Join-Path $TauriDir "src")
+        (Join-Path $TauriDir "src"),
+        (Join-Path $TauriDir "icons")
     )) {
         $sourceFiles += Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.FullName -notmatch '\\(build-sidecar|dist-sidecar|books|fonts|__pycache__)\\' -and
                 $_.Name -notin @('library.json', 'annotations.json', 'reading-progress.json', 'delete-journal.json', 'restore-journal.json') -and
-                $_.Extension -in @('.py', '.js', '.jsx', '.mjs', '.rs', '.toml', '.json', '.ps1', '.spec')
+                $_.Extension -in @('.py', '.js', '.jsx', '.mjs', '.rs', '.toml', '.json', '.ps1', '.spec', '.png', '.ico', '.icns')
             }
     }
     foreach ($sourceFile in @(
@@ -135,6 +141,13 @@ if ($Profile -ne "Development") {
         $exists = $null -ne $entry.item
         Add-Check ("artifact_" + $entry.name + "_exists") $exists ($(if ($exists) { $entry.item.FullName } else { "Missing artifact" }))
         if (-not $exists) { continue }
+        if ($entry.name -eq "desktop") {
+            Add-Check "artifact_desktop_filename" ($entry.item.Name -ceq ($mainBinaryName + ".exe")) ("Expected packaged desktop filename: " + $mainBinaryName + ".exe")
+        }
+        if ($entry.name -eq "desktop" -or $entry.name -eq "installer") {
+            $embeddedProductName = [string]$entry.item.VersionInfo.ProductName
+            Add-Check ("artifact_" + $entry.name + "_product_name") ($embeddedProductName -ceq [string]$tauriConfig.productName) ("Embedded ProductName: " + $(if ($embeddedProductName) { $embeddedProductName } else { "(missing)" }) + "; expected: " + [string]$tauriConfig.productName)
+        }
         $fresh = $null -eq $newestSource -or $entry.item.LastWriteTimeUtc -ge $newestSource.LastWriteTimeUtc
         Add-Check ("artifact_" + $entry.name + "_fresh") $fresh ("Built " + $entry.item.LastWriteTimeUtc.ToString('o') + "; newest source " + $newestSource.LastWriteTimeUtc.ToString('o'))
         $artifactSha256 = (Get-FileHash -LiteralPath $entry.item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()

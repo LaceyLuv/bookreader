@@ -73,7 +73,7 @@ and read the `host:` value.
 Outputs:
 - Frontend dist: `frontend/dist/`
 - Sidecar exe: `frontend/src-tauri/binaries/bookreader-backend-<triple>.exe`
-- Desktop app exe: `frontend/src-tauri/target/release/bookreader_desktop.exe`
+- Desktop app exe: `frontend/src-tauri/target/release/Gyeol.exe`
 - NSIS installer: `frontend/src-tauri/target/release/bundle/nsis/*-setup.exe`
 
 Example:
@@ -143,7 +143,7 @@ Fix:
 
 ```powershell
 cd C:\dev\bookreader\frontend
-npm run tauri -- icon app-icon.svg
+npm run tauri -- icon src-tauri/icons/gyeol-icon-master.png
 ```
 
 ### D) Sidecar missing/copy failure

@@ -18,6 +18,16 @@ def test_health_endpoint_reports_ready():
     assert response.json() == {"ok": True, "authenticated": False}
 
 
+def test_backend_api_uses_gyeol_reader_display_name():
+    client = TestClient(main.app)
+
+    response = client.get("/")
+
+    assert main.app.title == "Gyeol Reader API"
+    assert response.status_code == 200
+    assert response.json() == {"message": "Gyeol Reader API", "docs": "/docs"}
+
+
 def test_sidecar_nonce_authenticates_health_and_api_requests(monkeypatch):
     monkeypatch.setattr(main, "SIDECAR_NONCE", "launch-secret")
     client = TestClient(main.app)
@@ -56,6 +66,20 @@ def test_port_available_returns_true_for_free_loopback_port():
         port = listener.getsockname()[1]
 
     assert is_port_available("127.0.0.1", port) is True
+
+
+def test_cli_help_and_port_conflict_use_gyeol_reader_display_name(monkeypatch, capsys):
+    monkeypatch.setattr(run_server.sys, "argv", ["run_server.py", "--help"])
+    with pytest.raises(SystemExit) as help_exit:
+        run_server.parse_args()
+    assert help_exit.value.code == 0
+    assert "Gyeol Reader backend launcher" in capsys.readouterr().out
+
+    monkeypatch.delenv("BOOKREADER_PARENT_PID", raising=False)
+    monkeypatch.setattr(run_server, "is_port_available", lambda _host, _port: False)
+
+    assert run_server.run_backend("127.0.0.1", 8765) == run_server.PORT_IN_USE_EXIT_CODE
+    assert "Gyeol Reader backend cannot start" in capsys.readouterr().err
 
 
 def test_packaged_sidecar_disables_access_logs_that_can_contain_asset_tokens(monkeypatch):

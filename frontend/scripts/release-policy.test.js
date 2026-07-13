@@ -6,8 +6,9 @@ function data(overrides = {}) {
   return {
     versions: { package: '1.2.3', tauri: '1.2.3', cargo: '1.2.3', backend: '1.2.3' },
     tauriConfig: {
-      productName: 'BookReader',
-      identifier: 'com.example.bookreader',
+      productName: '글결',
+      mainBinaryName: 'Gyeol',
+      identifier: 'com.bookreader.desktop',
       bundle: {
         publisher: 'Example Publisher',
         windows: { allowDowngrades: false, nsis: { installMode: 'currentUser' } },
@@ -41,6 +42,30 @@ describe('release policy', () => {
     ]))
   })
 
+  test('rejects product and binary name drift', () => {
+    const fixture = data()
+    fixture.tauriConfig.productName = 'BookReader'
+    fixture.tauriConfig.mainBinaryName = 'bookreader_desktop'
+
+    const result = validatePolicyData(fixture)
+
+    expect(result.ok).toBe(false)
+    expect(result.checks.filter((item) => !item.passed).map((item) => item.name)).toEqual(expect.arrayContaining([
+      'product_name_frozen',
+      'main_binary_name_frozen',
+    ]))
+  })
+
+  test('keeps a valid identifier configurable before public release', () => {
+    const fixture = data()
+    fixture.tauriConfig.identifier = 'kr.example.gyeol'
+
+    const result = validatePolicyData(fixture)
+
+    expect(result.ok).toBe(true)
+    expect(result.checks.find((item) => item.name === 'identifier_present')?.passed).toBe(true)
+  })
+
   test('public release fails closed without a frozen identity and signing inputs', () => {
     const result = validatePolicyData(data(), 'public', {})
 
@@ -51,7 +76,7 @@ describe('release policy', () => {
 
   test('updater readiness requires both trust systems and HTTPS', () => {
     const env = {
-      BOOKREADER_RELEASE_IDENTIFIER: 'com.example.bookreader',
+      BOOKREADER_RELEASE_IDENTIFIER: 'com.bookreader.desktop',
       BOOKREADER_RELEASE_PUBLISHER: 'Example Publisher',
       BOOKREADER_WINDOWS_CERTIFICATE_THUMBPRINT: 'A'.repeat(40),
       BOOKREADER_WINDOWS_TIMESTAMP_URL: 'https://timestamp.example.test',

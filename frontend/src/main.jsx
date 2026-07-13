@@ -66,5 +66,5 @@ async function boot() {
 
 boot().catch((error) => {
     console.error('[boot]', error)
-    document.getElementById('root').textContent = `BookReader failed to initialize: ${error?.message || error}`
+    document.getElementById('root').textContent = `Gyeol Reader failed to initialize: ${error?.message || error}`
 })

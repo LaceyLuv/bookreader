@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ($env:OS -ne "Windows_NT") {
-    throw "Signed BookReader releases must be built on Windows."
+    throw "Signed Gyeol Reader releases must be built on Windows."
 }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path

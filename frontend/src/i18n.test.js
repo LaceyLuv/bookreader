@@ -2,6 +2,13 @@ import { expect, test } from 'vitest'
 import { t } from './i18n'
 import { THEME_PRESETS } from './constants/themes'
 
+test('product branding is localized with the chosen name and tagline', () => {
+    expect(t('appTitle', 'ko')).toBe('글결')
+    expect(t('appTitle', 'en')).toBe('Gyeol Reader')
+    expect(t('appSubtitle', 'ko')).toBe('내 파일을, 내 방식으로.')
+    expect(t('appSubtitle', 'en')).toBe('My files, my way.')
+})
+
 test('Korean reader/search labels render as readable Korean text', () => {
     expect(t('search', 'ko')).toBe('검색')
     expect(t('insideThisBook', 'ko')).toBe('현재 책에서 검색')
@@ -51,15 +58,21 @@ test('packaged backend recovery guidance is translated in both languages', () =>
         'backendUnavailable',
         'backendUnavailableRecovery',
         'backendSidecarMissing',
+        'backendSidecarMissingRecovery',
         'backendSidecarBlocked',
         'backendSidecarExited',
+        'backendSidecarExitedRecovery',
         'backendDataMigrationFailed',
+        'backendDataMigrationRecovery',
         'restartBookReader',
+        'backendRestartFailed',
     ]
 
     for (const key of keys) {
         expect(t(key, 'en')).not.toBe(key)
         expect(t(key, 'ko')).not.toBe(key)
+        expect(t(key, 'en')).not.toContain('BookReader')
+        expect(t(key, 'ko')).not.toContain('BookReader')
     }
 })
 
