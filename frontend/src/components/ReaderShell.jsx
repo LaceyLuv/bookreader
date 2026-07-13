@@ -58,6 +58,7 @@ function ReaderTopBar({
                 <div className="h-5 w-px opacity-20" style={{ backgroundColor: themeStyle.text }} />
                 {meta}
             </div>
+            <div data-tauri-drag-region className="min-w-4 flex-1 self-stretch" aria-hidden="true" />
             <div className="reader-topbar-actions flex items-center gap-2">
                 {actions}
             </div>

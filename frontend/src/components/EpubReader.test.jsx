@@ -32,7 +32,7 @@ vi.mock('./ReaderProgressBar', () => ({
 }))
 vi.mock('./ResumeToast', () => ({ default: () => null }))
 
-import EpubReader from './EpubReader'
+import EpubReader, { getEpubSpreadNavigationGap } from './EpubReader'
 
 function createSettings(overrides = {}) {
     return {
@@ -157,6 +157,16 @@ test('loads toc and renders sanitized chapter html', async () => {
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
 })
 
+test('does not reload annotations when reader settings return a new translation function', async () => {
+    mockUseReaderSettings.mockImplementation(() => createSettings())
+    renderReader()
+
+    await screen.findByText('Chapter One')
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    const annotationCalls = global.fetch.mock.calls.filter(([url]) => String(url).endsWith('/api/books/epub-1/annotations'))
+    expect(annotationCalls).toHaveLength(1)
+})
+
 test('shows a non-blocking warning for EPUB features limited by safe rendering', async () => {
     const regularFetch = global.fetch.getMockImplementation()
     global.fetch.mockImplementation((url, options = {}) => {
@@ -240,7 +250,7 @@ test('keeps the last good EPUB chapter when the next chapter fails and retries i
     expect(screen.queryByRole('alert')).toBeNull()
 })
 
-test('dual EPUB layout uses the original outer horizontal margin behavior', async () => {
+test('dual EPUB layout applies horizontal margins to both pages around one center gutter', async () => {
     mockUseReaderSettings.mockReturnValue(createSettings({ layout: 'dual', hMargin: 20, columnGap: 32 }))
     renderReader()
 
@@ -248,9 +258,24 @@ test('dual EPUB layout uses the original outer horizontal margin behavior', asyn
     const stage = screen.getByTestId('epub-reader-stage')
     const content = document.querySelector('.epub-content')
 
-    expect(stage.style.paddingLeft).toBe('20px')
-    expect(stage.style.paddingRight).toBe('20px')
-    expect(content.style.columnGap).toBe('32px')
+    expect(stage.style.paddingLeft).toBe('0px')
+    expect(stage.style.paddingRight).toBe('0px')
+    expect(content.style.paddingLeft).toBe('20px')
+    expect(content.style.paddingRight).toBe('20px')
+    expect(content.style.columnGap).toBe('72px')
+    expect(content.style.getPropertyPriority('padding')).toBe('important')
+    expect(content.style.getPropertyPriority('column-gap')).toBe('important')
+})
+
+test('dual EPUB navigation removes per-page margins from the spread step', () => {
+    const viewportWidth = 1000
+    const effectiveGap = 72
+    const navigationGap = getEpubSpreadNavigationGap(effectiveGap, true, 20)
+
+    expect(navigationGap).toBe(32)
+    expect(viewportWidth + navigationGap).toBe(1032)
+    expect(Math.ceil((2032 + navigationGap) / (viewportWidth + navigationGap))).toBe(2)
+    expect(getEpubSpreadNavigationGap(effectiveGap, false, 20)).toBe(effectiveGap)
 })
 
 test('automatically opens the restored EPUB chapter', async () => {

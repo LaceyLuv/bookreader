@@ -467,6 +467,7 @@ test('TXT reader renders a shared dual spread with two page surfaces and no segm
 
     const spread = await screen.findByTestId('txt-spread')
     const pageSurfaces = within(spread).getAllByTestId('txt-page-surface')
+    const pageContents = within(spread).getAllByTestId('txt-page-content')
     const stage = screen.getByTestId('txt-reader-stage')
 
     expect(pageSurfaces).toHaveLength(2)
@@ -474,10 +475,13 @@ test('TXT reader renders a shared dual spread with two page surfaces and no segm
     expect(pageSurfaces[1].textContent).toBe(getMeasuredPageText(expectedPages[1]))
     expect(within(spread).queryByText(getMeasuredPageText(expectedPages[2]))).toBeNull()
     expect(screen.queryByTestId('txt-segment-card')).toBeNull()
-    expect(stage.style.paddingLeft).toBe('20px')
-    expect(stage.style.paddingRight).toBe('20px')
+    expect(stage.style.paddingLeft).toBe('0px')
+    expect(stage.style.paddingRight).toBe('0px')
     expect(spread.style.gap).toBe('32px')
     expect(pageSurfaces.every((surface) => surface.style.paddingLeft === '20px' && surface.style.paddingRight === '20px')).toBe(true)
+    expect(pageContents.every((content) => content.style.width === 'calc(100% - 44px)')).toBe(true)
+    expect(pageContents[0].style.marginLeft).toBe('auto')
+    expect(pageContents[1].style.marginRight).toBe('auto')
     expect(pageSurfaces.every((surface) => !surface.style.borderRight || surface.style.borderRight === 'none')).toBe(true)
 })
 
@@ -665,6 +669,7 @@ test('TXT reader recalculates measured pages when vertical margin changes', asyn
             </MemoryRouter>,
         )
 
+        expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
         await waitFor(() => {
             expect(screen.getByTestId('progress-total-pages').textContent).toBe('3')
         })
@@ -882,7 +887,7 @@ test('TXT reader shows the first page while the full-book page map is still pend
     expect(screen.getByTestId('txt-pagination-loading')).toBeTruthy()
     expect(screen.getByTestId('txt-page-surface').textContent).toBe('A'.repeat(24))
     expect(screen.getByTestId('txt-pagination-loading').className).not.toContain('inset-0')
-    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('hidden')
+    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
     expect(mockUseKeyboardNav.mock.lastCall[0].enabled).toBe(true)
     expect(Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))).toBeGreaterThan(0)
 
@@ -1016,6 +1021,7 @@ test('TXT reader keeps partial reading available after pagination fails and retr
     renderReader()
     await screen.findByText('A'.repeat(24))
     await screen.findByText('pagePreparationFailed')
+    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
     expect(mockUseKeyboardNav.mock.lastCall[0].enabled).toBe(true)
 
     await act(async () => mockUseKeyboardNav.mock.lastCall[0].onNext())
@@ -1025,10 +1031,9 @@ test('TXT reader keeps partial reading available after pagination fails and retr
     await userEvent.click(screen.getByRole('button', { name: 'retry' }))
 
     await waitFor(() => {
-        expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
+        expect(screen.getByTestId('progress-total-pages').textContent).toBe('3')
     })
     expect(screen.queryByText('pagePreparationFailed')).toBeNull()
-    expect(screen.getByTestId('progress-total-pages').textContent).toBe('3')
     expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to prepare TXT pagination', expect.any(Error))
     consoleErrorSpy.mockRestore()
 })
@@ -1750,9 +1755,8 @@ test('progress bar uses render-page totals and seeks by render-page progress', a
 
     renderReader()
 
-    await waitFor(() => expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible'))
+    await waitFor(() => expect(screen.getByTestId('progress-total-pages').textContent).toBe('2'))
     expect(screen.getByTestId('progress-current-page').textContent).toBe('1')
-    expect(screen.getByTestId('progress-total-pages').textContent).toBe('2')
     expect(screen.getByTestId('progress-value').textContent).toBe('0')
 
     await user.click(screen.getByRole('button', { name: 'seek-to-progress-mid' }))
@@ -1808,11 +1812,10 @@ test('trimSpaces updates TXT pagination totals and grouping to match transformed
 
     renderReader()
 
-    await waitFor(() => expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible'))
+    await waitFor(() => expect(screen.getByTestId('progress-total-pages').textContent).toBe(String(buildExpectedMeasuredPages(rawSegments).length)))
     const spread = screen.getByTestId('txt-spread')
     const firstPageSurface = within(spread).getAllByTestId('txt-page-surface')[0]
     expect(firstPageSurface.textContent).toContain('alpha          beta')
-    expect(screen.getByTestId('progress-total-pages').textContent).toBe(String(buildExpectedMeasuredPages(rawSegments).length))
     expect(within(spread).getAllByTestId('txt-page-surface')).toHaveLength(1)
     expect(within(spread).getByText('gamma')).toBeTruthy()
 
@@ -1820,7 +1823,7 @@ test('trimSpaces updates TXT pagination totals and grouping to match transformed
 
     await waitFor(() => expect(screen.getByTestId('txt-page-surface').textContent).toBe(getMeasuredPageText(buildExpectedMeasuredPages(transformedFragments)[0])))
     await waitFor(() => expect(screen.getByText('gamma')).toBeTruthy())
-    expect(screen.getByTestId('progress-total-pages').textContent).toBe('1')
+    await waitFor(() => expect(screen.getByTestId('progress-total-pages').textContent).toBe('1'))
     expect(within(screen.getByTestId('txt-spread')).getAllByTestId('txt-page-surface')).toHaveLength(1)
 })
 
@@ -2863,7 +2866,7 @@ test('stale eager global render-page loads do not apply after the reader switche
         await waitFor(() => {
             expect(countFetchCalls(fetchSpy, '/txt-1/txt-segments?start=40&limit=40')).toBeGreaterThanOrEqual(1)
         })
-        expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('hidden')
+        expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
 
         await user.click(screen.getByRole('button', { name: 'open-book-2' }))
         await screen.findByText('book two')

@@ -14,6 +14,13 @@ function KeyboardHarness({ onNext, onPrev, readerRootRef }) {
     )
 }
 
+test('keeps the progress control visible but disables seeking until pagination is ready', () => {
+    render(<ReaderProgressBar currentPage={1} totalPages={null} progress={0} />)
+
+    expect(screen.getByRole('slider').disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Edit page number' }).textContent).toContain('? / ?')
+})
+
 test('collapse button returns focus to reader root after pointer interaction', async () => {
     const user = userEvent.setup()
     const readerRoot = document.createElement('div')

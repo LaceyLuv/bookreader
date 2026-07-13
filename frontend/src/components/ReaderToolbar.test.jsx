@@ -14,6 +14,9 @@ function createSettings(overrides = {}) {
         setHMargin: vi.fn(), vMargin: 32, setVMargin: vi.fn(), columnGap: 64, setColumnGap: vi.fn(),
         zipImageScale: 1, setZipImageScale: vi.fn(), bgColor: '#fbfaf6', setBgColor: vi.fn(),
         textColor: '#38342f', setTextColor: vi.fn(), showTitleBar: true, toggleTitleBar: vi.fn(),
+        showZipBookmarkBar: true, setShowZipBookmarkBar: vi.fn(), showWindowFrame: true,
+        setShowWindowFrame: vi.fn(), isFullscreen: false, toggleFullscreen: vi.fn(),
+        frameControlSupported: true, fullscreenSupported: true, windowDisplayBusy: false, windowDisplayError: '',
         lang: 'ko', setLang: vi.fn(), resetDefaults: vi.fn(), resetToast: false, settingsOpen: true,
         toggleSettings: vi.fn(), THEMES: { light: { text: '#38342f' } },
         FONTS: { system: { family: 'system-ui' } },
@@ -92,6 +95,22 @@ test('ZIP basic shows only effective theme, layout, and image controls', async (
     expect(screen.queryByText('fontManagement')).toBeNull()
 })
 
+test('window, fullscreen, and ZIP bookmark-bar controls call their display actions', async () => {
+    const user = userEvent.setup()
+    const settings = renderToolbar({ readerType: 'zip' })
+
+    await user.click(screen.getByRole('checkbox', { name: 'showWindowFrame' }))
+    await user.click(screen.getByRole('checkbox', { name: 'showZipBookmarkBar' }))
+    await user.click(screen.getByRole('button', { name: 'hideZipBookmarkBar' }))
+    await user.click(screen.getAllByRole('button', { name: 'enterFullscreen' })[0])
+
+    expect(settings.setShowWindowFrame).toHaveBeenCalledWith(false)
+    expect(settings.setShowZipBookmarkBar).toHaveBeenCalledTimes(2)
+    expect(settings.setShowZipBookmarkBar).toHaveBeenNthCalledWith(1, false)
+    expect(settings.setShowZipBookmarkBar).toHaveBeenNthCalledWith(2, false)
+    expect(settings.toggleFullscreen).toHaveBeenCalledOnce()
+})
+
 test('shared preview reflects settings on basic and is hidden on advanced', async () => {
     const user = userEvent.setup()
     const settings = createSettings({
@@ -109,6 +128,16 @@ test('shared preview reflects settings on basic and is hidden on advanced', asyn
     expect(page.style.lineHeight).toBe('2.1')
     expect(page.style.letterSpacing).toBe('0.08em')
     expect(page.style.columnGap).toBe('8.64px')
+    expect(page.style.paddingLeft).toBe('0px')
+    expect(page.style.paddingRight).toBe('0px')
+    const leftPreviewPage = screen.getByTestId('reader-settings-preview-left-page')
+    const rightPreviewPage = screen.getByTestId('reader-settings-preview-right-page')
+    expect(leftPreviewPage.style.paddingLeft).toBe('12.8px')
+    expect(rightPreviewPage.style.paddingRight).toBe('12.8px')
+    expect(leftPreviewPage.style.width).toBe('calc(100% - 2.88px)')
+    expect(leftPreviewPage.style.justifySelf).toBe('end')
+    expect(rightPreviewPage.style.width).toBe('calc(100% - 2.88px)')
+    expect(rightPreviewPage.style.justifySelf).toBe('start')
 
     await user.click(screen.getByRole('tab', { name: 'settingsAdvancedTab' }))
     expect(screen.queryByTestId('reader-settings-preview')).toBeNull()

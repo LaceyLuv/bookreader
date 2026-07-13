@@ -23,6 +23,7 @@ import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annota
 import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
 import { API_BOOKS_BASE } from '../lib/apiBase'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
+import { getDualPageOuterInset, MAX_SPLIT_MARGIN_PX } from '../lib/dualPageLayout'
 import { clearSearchHighlights } from '../lib/searchHighlighter'
 import {
     findDisplayRangeForSourceLocator,
@@ -187,6 +188,8 @@ function TxtReader() {
 
     const [compactWhitespace, setCompactWhitespace] = useState(false)
     const layout = useResponsiveReaderLayout(preferredLayout)
+    const dualPageOuterInset = layout === 'dual' ? getDualPageOuterInset(columnGap) : 0
+    const paginationColumnGap = layout === 'dual' ? MAX_SPLIT_MARGIN_PX : 0
     const [splitParagraphs, setSplitParagraphs] = useState(false)
     const [encodingDialogOpen, setEncodingDialogOpen] = useState(false)
     const [encodingContentVersion, setEncodingContentVersion] = useState(0)
@@ -226,6 +229,7 @@ function TxtReader() {
     const pendingAnchorRestoreCleanupRef = useRef(null)
     const globalRenderPageMapPromiseRef = useRef(null)
     const globalRenderPageMapVersionRef = useRef(0)
+    const lastReadyTotalPagesRef = useRef(null)
     const navigationRequestIdRef = useRef(0)
     const requestedViewportPageRef = useRef(0)
     const queuedNextPageRef = useRef(null)
@@ -470,6 +474,9 @@ function TxtReader() {
         hasGlobalRenderPageMap ? globalRenderPageStartSegments.length : 1,
     )
     const globalPaginationReady = globalPaginationStatus === 'ready' && Array.isArray(globalRenderPages)
+    useEffect(() => {
+        if (globalPaginationReady) lastReadyTotalPagesRef.current = totalViewportPages
+    }, [globalPaginationReady, totalViewportPages])
     const progress = useReadingProgress(id, {
         totalPages: totalViewportPages,
         type: 'txt',
@@ -720,6 +727,7 @@ function TxtReader() {
     useEffect(() => {
         globalRenderPageMapVersionRef.current += 1
         navigationRequestIdRef.current += 1
+        lastReadyTotalPagesRef.current = null
         setGlobalRenderPages(null)
         setGlobalPaginationStatus('idle')
         setGlobalPaginationError(null)
@@ -806,6 +814,7 @@ function TxtReader() {
     }, [
         error,
         globalPaginationRetryToken,
+        globalPaginationStatus,
         globalRenderPages,
         loadGlobalRenderPages,
         loading,
@@ -839,10 +848,10 @@ function TxtReader() {
                 viewportWidth,
                 viewportHeight,
                 pagesPerView,
-                columnGap,
+                columnGap: paginationColumnGap,
                 fontSizePx,
                 lineHeight,
-                pageHorizontalPaddingPx: TXT_PAGE_PADDING_PX,
+                pageHorizontalPaddingPx: layout === 'dual' ? hMargin : TXT_PAGE_PADDING_PX,
                 pageVerticalPaddingPx: TXT_PAGE_PADDING_PX + TXT_PAGE_VERTICAL_SAFETY_PX,
                 paragraphGapLines: TXT_PARAGRAPH_GAP_LINES,
                 linesPerPageAdjustment: TXT_BOTTOM_WHITESPACE_RECLAIM_LINES,
@@ -869,7 +878,6 @@ function TxtReader() {
         if (scrollerRef.current) observer.observe(scrollerRef.current)
         return () => observer.disconnect()
     }, [
-        columnGap,
         contentStyle.fontFamily,
         contentStyle.fontSize,
         contentStyle.fontWeight,
@@ -878,6 +886,7 @@ function TxtReader() {
         lineHeight,
         loading,
         pagesPerView,
+        paginationColumnGap,
         vMargin,
     ])
 
@@ -1780,6 +1789,15 @@ function TxtReader() {
     const canShowNextControl = globalPaginationReady
         ? effectiveViewportPage < totalViewportPages - 1
         : effectiveViewportPage < localRenderPageStartSegments.length - 1 || globalPaginationStatus === 'loading'
+    const progressTotalPages = globalPaginationReady
+        ? totalViewportPages
+        : lastReadyTotalPagesRef.current
+    const progressCurrentPage = Number.isFinite(progressTotalPages)
+        ? Math.max(1, Math.min(effectiveViewportPage + 1, progressTotalPages))
+        : Math.max(1, effectiveViewportPage + 1)
+    const progressValue = Number.isFinite(progressTotalPages) && progressTotalPages > 1
+        ? (progressCurrentPage - 1) / (progressTotalPages - 1)
+        : 0
     const encodingSourceLabel = manifest?.encoding_source === 'override' ? tt('manualEncoding') : tt('automaticEncoding')
     const encodingConfidenceLabel = manifest?.encoding_source === 'override' || !Number.isFinite(manifest?.encoding_confidence)
         ? null
@@ -1926,7 +1944,7 @@ function TxtReader() {
                     nextLabel={tt('next')}
                 />
 
-                <div data-testid="txt-reader-stage" className={`reader-stage ${layout === 'dual' ? 'reader-stage-dual' : ''}`} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
+                <div data-testid="txt-reader-stage" className={`reader-stage ${layout === 'dual' ? 'reader-stage-dual' : ''}`} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${layout === 'dual' ? 0 : hMargin}px`, boxSizing: 'border-box' }}>
                     {loading ? (
                         <div className="flex h-full flex-col items-center justify-center gap-3">
                             <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
@@ -1987,7 +2005,7 @@ function TxtReader() {
                                                     minHeight: 0,
                                                     maxHeight: '100%',
                                                     margin: 0,
-                                                    padding: `${TXT_PAGE_PADDING_PX + TXT_PAGE_VERTICAL_SAFETY_PX}px ${TXT_PAGE_PADDING_PX}px`,
+                                                    padding: `${TXT_PAGE_PADDING_PX + TXT_PAGE_VERTICAL_SAFETY_PX}px ${layout === 'dual' ? hMargin : TXT_PAGE_PADDING_PX}px`,
                                                     border: 'none',
                                                     borderRadius: 0,
                                                     backgroundColor: `${themeStyle.card}66`,
@@ -1995,26 +2013,36 @@ function TxtReader() {
                                                     overflow: 'visible',
                                                 }}
                                             >
-                                                {page.segments.map((segment, segmentIndex) => (
-                                                    <div
-                                                        key={segment.fragmentKey
-                                                            ?? `${segment.segmentId}-${segment.startOffset}-${segment.endOffset}-${segment.sliceStart ?? 0}-${segment.sliceEnd ?? 0}`}
-                                                        data-fragment-index={segment.fragmentIndex ?? undefined}
-                                                        data-segment-id={segment.segmentId}
-                                                        data-segment-start={segment.startOffset}
-                                                        data-segment-end={segment.endOffset}
-                                                        style={{
-                                                            margin: 0,
-                                                            marginBottom: segmentIndex === page.segments.length - 1
-                                                            || isContinuationRenderSegment(segment, page.segments[segmentIndex + 1])
-                                                                ? 0
-                                                                : TXT_PARAGRAPH_GAP,
-                                                            padding: 0,
-                                                        }}
-                                                    >
-                                                        {segment.displayText}
-                                                    </div>
-                                                ))}
+                                                <div
+                                                    data-testid="txt-page-content"
+                                                    style={{
+                                                        width: layout === 'dual' ? `calc(100% - ${dualPageOuterInset}px)` : '100%',
+                                                        marginLeft: layout === 'dual' && pageIndex === 0 ? 'auto' : 0,
+                                                        marginRight: layout === 'dual' && pageIndex === 1 ? 'auto' : 0,
+                                                        minWidth: 0,
+                                                    }}
+                                                >
+                                                    {page.segments.map((segment, segmentIndex) => (
+                                                        <div
+                                                            key={segment.fragmentKey
+                                                                ?? `${segment.segmentId}-${segment.startOffset}-${segment.endOffset}-${segment.sliceStart ?? 0}-${segment.sliceEnd ?? 0}`}
+                                                            data-fragment-index={segment.fragmentIndex ?? undefined}
+                                                            data-segment-id={segment.segmentId}
+                                                            data-segment-start={segment.startOffset}
+                                                            data-segment-end={segment.endOffset}
+                                                            style={{
+                                                                margin: 0,
+                                                                marginBottom: segmentIndex === page.segments.length - 1
+                                                                || isContinuationRenderSegment(segment, page.segments[segmentIndex + 1])
+                                                                    ? 0
+                                                                    : TXT_PARAGRAPH_GAP,
+                                                                padding: 0,
+                                                            }}
+                                                        >
+                                                            {segment.displayText}
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
@@ -2047,7 +2075,7 @@ function TxtReader() {
                     {paginationPending && (
                         <div
                             data-testid="txt-pagination-loading"
-                            className="reader-ui reader-progress reader-progress-layer txt-pagination-preparation"
+                            className={`reader-ui reader-progress reader-progress-layer txt-pagination-preparation ${partialNavigationReady ? 'txt-pagination-preparation-with-progress' : ''}`}
                             style={{ borderTop: '1px solid var(--panel-border)' }}
                             aria-live="polite"
                         >
@@ -2088,19 +2116,19 @@ function TxtReader() {
 
                     <div
                         className="shrink-0"
-                        aria-hidden={!globalPaginationReady}
+                        aria-hidden={!partialNavigationReady}
                         style={{
-                            visibility: globalPaginationReady ? 'visible' : 'hidden',
-                            pointerEvents: globalPaginationReady ? 'auto' : 'none',
+                            visibility: partialNavigationReady ? 'visible' : 'hidden',
+                            pointerEvents: partialNavigationReady ? 'auto' : 'none',
                         }}
                     >
                         <ReaderProgressBar
-                            currentPage={effectiveViewportPage + 1}
-                            totalPages={totalViewportPages}
-                            onSeekPage={(page) => { void goToViewportPage({ page: page - 1 }) }}
-                            progress={totalViewportPages > 1 ? effectiveViewportPage / (totalViewportPages - 1) : 0}
-                            onSeekProgress={seekToProgress}
-                            extraInfo={manifest ? `TXT ${effectiveViewportPage + 1}/${totalViewportPages}` : `TXT | ${loadingLabel}`}
+                            currentPage={progressCurrentPage}
+                            totalPages={progressTotalPages}
+                            onSeekPage={globalPaginationReady ? (page) => { void goToViewportPage({ page: page - 1 }) } : undefined}
+                            progress={progressValue}
+                            onSeekProgress={globalPaginationReady ? seekToProgress : undefined}
+                            extraInfo={manifest ? `TXT ${progressCurrentPage}/${progressTotalPages || '?'}` : `TXT | ${loadingLabel}`}
                             readerFocusRef={readerRootRef}
                         />
                     </div>

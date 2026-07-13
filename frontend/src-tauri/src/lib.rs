@@ -195,6 +195,77 @@ fn data_root_has_content(root: &Path) -> Result<bool, String> {
     Ok(false)
 }
 
+fn is_pristine_json_store(path: &Path, expected: &serde_json::Value) -> Result<bool, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|err| format!("failed to inspect {}: {err}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "refusing symlink in data migration: {}",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+    let payload =
+        fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    Ok(serde_json::from_slice::<serde_json::Value>(&payload)
+        .map(|value| value == *expected)
+        .unwrap_or(false))
+}
+
+fn clear_pristine_destination_scaffold(root: &Path) -> Result<bool, String> {
+    for name in LEGACY_DATA_ENTRIES {
+        let entry = root.join(name);
+        if !entry.exists() {
+            continue;
+        }
+        let is_pristine = match *name {
+            "library.json" | "library.json.bak" => is_pristine_json_store(
+                &entry,
+                &serde_json::json!({"version": 4, "books": [], "folders": []}),
+            )?,
+            "annotations.json" | "annotations.json.bak" => is_pristine_json_store(
+                &entry,
+                &serde_json::json!({"version": 1, "annotations": []}),
+            )?,
+            "reading-progress.json" | "reading-progress.json.bak" => {
+                is_pristine_json_store(&entry, &serde_json::json!({"version": 1, "progress": {}}))?
+            }
+            "books" | "fonts" | "backups" | ".restore-sessions" => {
+                let metadata = fs::symlink_metadata(&entry)
+                    .map_err(|err| format!("failed to inspect {}: {err}", entry.display()))?;
+                !metadata.file_type().is_symlink()
+                    && metadata.is_dir()
+                    && measure_regular_tree(&entry)?.files == 0
+            }
+            _ => false,
+        };
+        if !is_pristine {
+            return Ok(false);
+        }
+    }
+
+    // Validate the complete scaffold before removing any part of it. These are
+    // only the backend's known empty defaults; any user content fails closed.
+    for name in LEGACY_DATA_ENTRIES {
+        let entry = root.join(name);
+        if !entry.exists() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&entry)
+            .map_err(|err| format!("failed to inspect {}: {err}", entry.display()))?;
+        if metadata.is_dir() {
+            fs::remove_dir_all(&entry)
+                .map_err(|err| format!("failed to remove empty {}: {err}", entry.display()))?;
+        } else {
+            fs::remove_file(&entry)
+                .map_err(|err| format!("failed to remove empty {}: {err}", entry.display()))?;
+        }
+    }
+    Ok(true)
+}
+
 fn copy_verified(source: &Path, destination: &Path) -> Result<CopyStats, String> {
     let metadata = fs::symlink_metadata(source)
         .map_err(|err| format!("failed to inspect {}: {err}", source.display()))?;
@@ -646,7 +717,7 @@ fn migrate_legacy_data(source: &Path, destination: &Path) -> Result<Option<CopyS
         if !source_has_content {
             return Ok(None);
         }
-        if destination_has_content {
+        if destination_has_content && !clear_pristine_destination_scaffold(destination)? {
             return Err(format!(
                 "legacy and destination data both exist; refusing to hide or overwrite data (source: {}, destination: {})",
                 source.display(),
@@ -927,6 +998,58 @@ fn backend_connection(state: tauri::State<'_, BackendState>) -> BackendConnectio
         })
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowDisplayState {
+    frame_visible: bool,
+    fullscreen: bool,
+}
+
+fn window_display_state(window: &tauri::WebviewWindow) -> Result<WindowDisplayState, String> {
+    Ok(WindowDisplayState {
+        frame_visible: window
+            .is_decorated()
+            .map_err(|err| format!("failed to read window frame state: {err}"))?,
+        fullscreen: window
+            .is_fullscreen()
+            .map_err(|err| format!("failed to read fullscreen state: {err}"))?,
+    })
+}
+
+fn main_webview_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "main window is unavailable".to_string())
+}
+
+#[tauri::command]
+fn get_window_display_state(app: tauri::AppHandle) -> Result<WindowDisplayState, String> {
+    window_display_state(&main_webview_window(&app)?)
+}
+
+#[tauri::command]
+fn set_window_frame_visible(
+    app: tauri::AppHandle,
+    visible: bool,
+) -> Result<WindowDisplayState, String> {
+    let window = main_webview_window(&app)?;
+    window
+        .set_decorations(visible)
+        .map_err(|err| format!("failed to update window frame: {err}"))?;
+    window_display_state(&window)
+}
+
+#[tauri::command]
+fn set_window_fullscreen(
+    app: tauri::AppHandle,
+    fullscreen: bool,
+) -> Result<WindowDisplayState, String> {
+    let window = main_webview_window(&app)?;
+    window
+        .set_fullscreen(fullscreen)
+        .map_err(|err| format!("failed to update fullscreen state: {err}"))?;
+    window_display_state(&window)
+}
+
 #[tauri::command]
 fn restart_application(
     app: tauri::AppHandle,
@@ -979,6 +1102,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             backend_status,
             backend_connection,
+            get_window_display_state,
+            set_window_frame_visible,
+            set_window_fullscreen,
             restart_application
         ])
         .setup(|app| {
@@ -1373,6 +1499,94 @@ mod tests {
         );
         assert!(!destination.join(LEGACY_MIGRATION_PENDING).exists());
         fs::remove_dir_all(root).expect("cleanup conflict test");
+    }
+
+    #[test]
+    fn legacy_data_migration_replaces_only_pristine_destination_scaffold() {
+        let root = std::env::temp_dir().join(format!(
+            "bookreader-migration-pristine-test-{}-{}",
+            std::process::id(),
+            generate_nonce().chars().take(8).collect::<String>()
+        ));
+        let source = root.join("legacy-install");
+        let destination = root.join("app-data");
+        fs::create_dir_all(source.join("books")).expect("source books");
+        fs::create_dir_all(destination.join("books")).expect("destination books");
+        fs::create_dir_all(destination.join("fonts")).expect("destination fonts");
+        fs::write(
+            source.join("library.json"),
+            br#"{"version":4,"books":[{"id":"book-1"}],"folders":[]}"#,
+        )
+        .expect("source library");
+        fs::write(source.join("books").join("book.txt"), b"book bytes").expect("source book");
+        fs::write(
+            destination.join("library.json"),
+            br#"{"version":4,"books":[],"folders":[]}"#,
+        )
+        .expect("empty destination library");
+        fs::write(
+            destination.join("annotations.json"),
+            br#"{"version":1,"annotations":[]}"#,
+        )
+        .expect("empty destination annotations");
+        fs::write(
+            destination.join("reading-progress.json"),
+            br#"{"version":1,"progress":{}}"#,
+        )
+        .expect("empty destination progress");
+
+        let stats = migrate_legacy_data(&source, &destination)
+            .expect("pristine destination migration")
+            .expect("migration performed");
+
+        assert_eq!(stats.files, 2);
+        assert_eq!(
+            fs::read(destination.join("library.json")).expect("migrated library"),
+            fs::read(source.join("library.json")).expect("source library")
+        );
+        assert_eq!(
+            fs::read(destination.join("books").join("book.txt")).expect("migrated book"),
+            b"book bytes"
+        );
+        assert!(!destination.join("reading-progress.json").exists());
+        assert!(destination.join(LEGACY_MIGRATION_MARKER).is_file());
+        assert!(source.join("library.json").is_file());
+
+        fs::remove_dir_all(root).expect("cleanup pristine migration test");
+    }
+
+    #[test]
+    fn legacy_data_migration_does_not_partially_clear_non_pristine_scaffold() {
+        let root = std::env::temp_dir().join(format!(
+            "bookreader-migration-non-pristine-test-{}-{}",
+            std::process::id(),
+            generate_nonce().chars().take(8).collect::<String>()
+        ));
+        let source = root.join("legacy-install");
+        let destination = root.join("app-data");
+        fs::create_dir_all(&source).expect("source");
+        fs::create_dir_all(&destination).expect("destination");
+        fs::write(source.join("library.json"), b"legacy").expect("legacy store");
+        fs::write(
+            destination.join("library.json"),
+            br#"{"version":4,"books":[],"folders":[]}"#,
+        )
+        .expect("empty destination library");
+        fs::write(
+            destination.join("reading-progress.json"),
+            br#"{"version":1,"progress":{"book-1":{"position":12}}}"#,
+        )
+        .expect("real destination progress");
+
+        let error = migrate_legacy_data(&source, &destination)
+            .expect_err("non-pristine destination must fail closed");
+
+        assert!(error.contains("both exist"));
+        assert!(destination.join("library.json").is_file());
+        assert!(destination.join("reading-progress.json").is_file());
+        assert!(source.join("library.json").is_file());
+
+        fs::remove_dir_all(root).expect("cleanup non-pristine migration test");
     }
 
     #[test]

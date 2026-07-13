@@ -7,6 +7,7 @@ import { IS_TAURI_RUNTIME } from './lib/apiBase'
 import { useBackendStartup } from './hooks/useBackendStartup'
 import { createT } from './i18n'
 import { restartBookReader } from './lib/backendStartup'
+import { WindowDisplayProvider } from './hooks/useWindowDisplay'
 
 const TxtReader = lazy(() => import('./components/TxtReader'))
 const EpubReader = lazy(() => import('./components/EpubReader'))
@@ -47,10 +48,11 @@ function App() {
     }
 
     return (
-        <BrowserRouter>
-            {!backendBlocked && <FontStyleInjector />}
-            <div>
-                {backendBlocked ? (
+        <WindowDisplayProvider>
+            <BrowserRouter>
+                {!backendBlocked && <FontStyleInjector />}
+                <div>
+                    {backendBlocked ? (
                     <div style={{ display: 'flex', minHeight: '60vh', alignItems: 'center', justifyContent: 'center', padding: '24px', color: 'var(--app-fg)' }}>
                         <div style={{ maxWidth: '520px', textAlign: 'center' }}>
                             <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>
@@ -76,7 +78,7 @@ function App() {
                             )}
                         </div>
                     </div>
-                ) : (
+                    ) : (
                     <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh', color: 'var(--app-fg)', opacity: 0.5 }}>{tt('loading')}</div>}>
                         <Routes>
                             <Route path="/" element={<Dashboard />} />
@@ -85,9 +87,10 @@ function App() {
                             <Route path="/read/zip/:id" element={<ZipReader />} />
                         </Routes>
                     </Suspense>
-                )}
-            </div>
-        </BrowserRouter>
+                    )}
+                </div>
+            </BrowserRouter>
+        </WindowDisplayProvider>
     )
 }
 

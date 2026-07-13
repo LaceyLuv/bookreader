@@ -192,6 +192,13 @@ body {
   align-items: center;
 }
 
+.txt-pagination-preparation-with-progress {
+  bottom: 80px;
+  min-height: 54px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
 .txt-pagination-status-row {
   display: flex;
   min-height: 26px;
@@ -319,6 +326,10 @@ body {
 
   .reader-progress-inner {
     padding: 0 30px;
+  }
+
+  .txt-pagination-preparation-with-progress {
+    bottom: 70px;
   }
 
 }

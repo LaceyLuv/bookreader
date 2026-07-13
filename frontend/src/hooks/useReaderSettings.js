@@ -7,6 +7,7 @@ import {
     SAFE_APP_FG,
     setAppThemeVars,
 } from '../lib/appChrome'
+import { useWindowDisplay } from './useWindowDisplay'
 
 const THEMES = {
     dark: withThemeVars({ name: 'dark', bg: '#1a1b1e', text: '#d1d5db', card: '#25262b', border: '#373a40', accent: '#5c7cfa' }),
@@ -52,6 +53,7 @@ const DEFAULTS = {
     bgColor: '#fbfaf6',
     textColor: '#38342f',
     showTitleBar: false,
+    showZipBookmarkBar: true,
     lang: 'en',
 }
 
@@ -78,6 +80,7 @@ function loadSaved() {
                 : DEFAULTS.zipImageScale
             merged.layout = merged.layout === 'dual' || merged.layout === 'spread' ? 'dual' : 'single'
             merged.showTitleBar = false
+            merged.showZipBookmarkBar = merged.showZipBookmarkBar !== false
             if (safeMode) {
                 return { ...merged, theme: 'light', bgColor: SAFE_APP_BG, textColor: SAFE_APP_FG }
             }
@@ -91,6 +94,7 @@ function loadSaved() {
 }
 
 export function useReaderSettings() {
+    const windowDisplay = useWindowDisplay()
     const [s, setS] = useState(loadSaved)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [resetToast, setResetToast] = useState(false)
@@ -188,11 +192,14 @@ export function useReaderSettings() {
         bgColor, setBgColor: v => set('bgColor', v),
         textColor, setTextColor: v => set('textColor', v),
         showTitleBar: false,
+        showZipBookmarkBar: s.showZipBookmarkBar !== false,
+        setShowZipBookmarkBar: v => set('showZipBookmarkBar', !!v),
         lang: s.lang, setLang: v => set('lang', v),
         resetDefaults, resetToast,
         settingsOpen, toggleSettings,
         themeStyle, fontFamily, contentStyle,
         THEMES, FONTS,
         tt,
+        ...windowDisplay,
     }
 }

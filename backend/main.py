@@ -43,14 +43,14 @@ async def authenticate_sidecar_requests(request: Request, call_next):
     """Require a per-launch secret only in the packaged sidecar process."""
     if SIDECAR_NONCE and request.method != 'OPTIONS' and request.url.path.startswith('/api/'):
         supplied = request.headers.get('x-bookreader-nonce', '')
-        asset_path = (
+        binary_asset_path = (
             request.method == 'GET'
             and request.url.path.startswith('/api/books/')
-            and '/asset/' in request.url.path
+            and ('/asset/' in request.url.path or '/image/' in request.url.path)
         )
-        supplied_asset_token = request.query_params.get('asset_token', '') if asset_path else ''
+        supplied_asset_token = request.query_params.get('asset_token', '') if binary_asset_path else ''
         asset_authorized = bool(
-            asset_path
+            binary_asset_path
             and SIDECAR_ASSET_TOKEN
             and hmac.compare_digest(supplied_asset_token, SIDECAR_ASSET_TOKEN)
         )

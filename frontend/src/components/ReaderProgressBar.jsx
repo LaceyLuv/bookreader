@@ -248,6 +248,7 @@ function ReaderProgressBar({
                 <input
                     type="range" min={0} max={100}
                     data-reader-progress-control="true"
+                    disabled={!canSeekProgress}
                     value={Math.round(draftProgress * 100)}
                     onInput={handleRangeInput}
                     onChange={commitProgressSeek}

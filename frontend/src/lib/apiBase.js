@@ -65,7 +65,9 @@ export function configureDesktopBackend({ apiBase, nonce, assetToken }, windowLi
 export function authenticateAssetUrl(url) {
     if (!desktopAssetToken) return url
     const parsed = new URL(url, desktopApiBase)
-    if (parsed.origin !== desktopApiBase || !parsed.pathname.includes('/asset/')) return url
+    const isBookBinary = parsed.pathname.startsWith('/api/books/')
+        && (parsed.pathname.includes('/asset/') || parsed.pathname.includes('/image/'))
+    if (parsed.origin !== desktopApiBase || !isBookBinary) return url
     parsed.searchParams.set('asset_token', desktopAssetToken)
     return parsed.toString()
 }

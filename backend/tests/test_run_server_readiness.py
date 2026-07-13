@@ -39,7 +39,7 @@ def test_sidecar_nonce_authenticates_health_and_api_requests(monkeypatch):
     assert response.json() == {"ok": True, "authenticated": True}
 
 
-def test_asset_token_is_limited_to_get_asset_routes(monkeypatch):
+def test_asset_token_is_limited_to_get_book_binary_routes(monkeypatch):
     monkeypatch.setattr(main, "SIDECAR_NONCE", "launch-secret")
     monkeypatch.setattr(main, "SIDECAR_ASSET_TOKEN", "asset-secret")
     client = TestClient(main.app)
@@ -48,7 +48,10 @@ def test_asset_token_is_limited_to_get_asset_routes(monkeypatch):
     # not-found for this synthetic book) rather than being rejected as 401.
     asset = client.get("/api/books/missing/asset/cover.png?asset_token=asset-secret")
     assert asset.status_code != 401
+    image = client.get("/api/books/missing/image/page.jpg?asset_token=asset-secret")
+    assert image.status_code != 401
     assert client.get("/api/health?asset_token=asset-secret").status_code == 401
+    assert client.post("/api/books/missing/image/page.jpg?asset_token=asset-secret").status_code == 401
 
 
 def test_port_available_returns_false_when_port_is_bound():

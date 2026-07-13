@@ -24,6 +24,8 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 
 $requiredCases = @(
     "legacy_data_migration_is_allowlisted_verified_and_non_destructive",
+    "legacy_data_migration_replaces_only_pristine_destination_scaffold",
+    "legacy_data_migration_does_not_partially_clear_non_pristine_scaffold",
     "legacy_data_migration_rejects_conflicting_destination_data",
     "legacy_data_migration_rejects_same_size_staged_tampering",
     "legacy_data_migration_rejects_invalid_completed_marker"

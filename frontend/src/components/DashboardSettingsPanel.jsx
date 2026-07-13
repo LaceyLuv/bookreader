@@ -2,8 +2,19 @@ import { useEffect, useRef, useState } from 'react'
 import { API_FONTS_BASE } from '../lib/apiBase'
 import { emitUserFontsUpdated } from './FontStyleInjector'
 import { applyRestoredClientState, commitRestore, discardRestore, exportBackup, previewRestore } from '../lib/backupClient'
+import { useWindowDisplay } from '../hooks/useWindowDisplay'
 
 export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, onDataRestored, tt, filters, folders, folderColors, getDefaultFolderColor, onFolderColorChange, folderDraft, setFolderDraft, folderSaving, onAddFolder, onRenameFolder, onRemoveFolder, folderStatsById, selection }) {
+    const {
+        showWindowFrame,
+        setShowWindowFrame,
+        isFullscreen,
+        toggleFullscreen,
+        frameControlSupported,
+        fullscreenSupported,
+        windowDisplayBusy,
+        windowDisplayError,
+    } = useWindowDisplay()
     const panelRef = useRef(null)
     const fontInputRef = useRef(null)
     const restoreInputRef = useRef(null)
@@ -149,6 +160,32 @@ export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, o
                     <button type="button" onClick={onClose} aria-label={tt('close')}>×</button>
                 </header>
                 <div className="dashboard-settings-scroll">
+                    <section>
+                        <h3>{tt('windowAndFullscreen')}</h3>
+                        <p className="dashboard-settings-help">{tt('fullscreenHint')}</p>
+                        <div className="dashboard-settings-stack">
+                            <label className="dashboard-settings-switch">
+                                <span>{tt('showWindowFrame')}</span>
+                                <input
+                                    type="checkbox"
+                                    checked={showWindowFrame}
+                                    disabled={!frameControlSupported || windowDisplayBusy}
+                                    onChange={(event) => void setShowWindowFrame(event.target.checked)}
+                                />
+                            </label>
+                            <button
+                                className="dashboard-primary-button"
+                                type="button"
+                                aria-pressed={isFullscreen}
+                                disabled={!fullscreenSupported || windowDisplayBusy}
+                                onClick={() => void toggleFullscreen()}
+                            >
+                                {isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
+                            </button>
+                        </div>
+                        {!frameControlSupported && <p className="dashboard-settings-help">{tt('windowFrameDesktopOnly')}</p>}
+                        {windowDisplayError && <p className="dashboard-settings-error" role="alert">{tt('windowDisplayFailed')}</p>}
+                    </section>
                     <section>
                         <h3>{tt('searchAndFilter')}</h3>
                         <input

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
@@ -113,6 +113,29 @@ test('file info keeps the original filename visible and hides storage-only detai
     expect(screen.getByText('Clean Upload.epub')).toBeTruthy()
     expect(screen.queryByText('9f3c2a1b-Clean Upload.epub')).toBeNull()
     expect(screen.queryByText('/books/9f3c2a1b-Clean Upload.epub')).toBeNull()
+})
+
+test('dropping a TXT file uploads it and refreshes the library', async () => {
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+
+    await screen.findByText('Clean Upload')
+    const file = new File(['dropped text'], 'Dropped Book.txt', { type: 'text/plain' })
+    const uploadArea = screen.getByText('uploadPrompt').closest('.dashboard-upload')
+
+    fireEvent.drop(uploadArea, { dataTransfer: { files: [file] } })
+
+    await waitFor(() => {
+        const uploadCall = globalThis.fetch.mock.calls.find(([, init]) => init?.method === 'POST')
+        expect(uploadCall).toBeTruthy()
+        expect(uploadCall[1].body.get('file')).toBe(file)
+    })
+
+    await waitFor(() => {
+        const libraryRequests = globalThis.fetch.mock.calls.filter(([input, init]) => (
+            String(input).endsWith('/api/books') && !init?.method
+        ))
+        expect(libraryRequests).toHaveLength(2)
+    })
 })
 
 test('library controls live in the settings panel and selection mode reveals book checkboxes', async () => {

@@ -2,6 +2,7 @@
 import ResumeToast from './ResumeToast'
 import { THEME_PRESETS } from '../constants/themes'
 import { API_FONTS_BASE } from '../lib/apiBase'
+import { MAX_SPLIT_MARGIN_PX } from '../lib/dualPageLayout'
 import { emitUserFontsUpdated } from './FontStyleInjector'
 import { readErrorDetail } from '../lib/readErrorDetail'
 import gyeolLockup from '../assets/brand/gyeol-lockup.png'
@@ -65,6 +66,16 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
         setBgColor,
         textColor,
         setTextColor,
+        showZipBookmarkBar = true,
+        setShowZipBookmarkBar = () => {},
+        showWindowFrame = true,
+        setShowWindowFrame = async () => {},
+        isFullscreen = false,
+        toggleFullscreen = async () => {},
+        frameControlSupported = false,
+        fullscreenSupported = false,
+        windowDisplayBusy = false,
+        windowDisplayError = '',
         lang,
         setLang,
         resetDefaults,
@@ -215,6 +226,10 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
     const isBuiltinSelectedValue = selectedFontValue.startsWith('__builtin:')
     const hasDetachedFontValue = !isBuiltinSelectedValue && !userFonts.some((f) => `UserFont_${f.id}` === selectedFontValue) && !isBuiltinFontFamily
     const isTextReader = readerType !== 'zip'
+    const previewHorizontalMargin = Math.max(8, hMargin * 0.16)
+    const previewVerticalMargin = Math.max(6, vMargin * 0.18)
+    const previewColumnGap = Math.max(4, columnGap * 0.12)
+    const previewOuterInset = Math.max(0, ((MAX_SPLIT_MARGIN_PX * 0.12) - previewColumnGap) / 2)
 
     const handleFontSelectChange = (nextValue) => {
         if (!nextValue) return
@@ -245,7 +260,43 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
     }
 
     return (
-        <div className="relative">
+        <div className="relative flex items-center gap-1">
+            {readerType === 'zip' && (
+                <button
+                    type="button"
+                    onClick={() => setShowZipBookmarkBar(!showZipBookmarkBar)}
+                    title={showZipBookmarkBar ? tt('hideZipBookmarkBar') : tt('showZipBookmarkBar')}
+                    aria-label={showZipBookmarkBar ? tt('hideZipBookmarkBar') : tt('showZipBookmarkBar')}
+                    aria-pressed={showZipBookmarkBar}
+                    className="reader-toolbar-button flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:opacity-60"
+                    style={{ color: t.text }}
+                >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M6 4h12v16l-6-4-6 4z" />
+                        <path d="M9 8h6M9 11h6" opacity={showZipBookmarkBar ? 1 : 0.35} />
+                    </svg>
+                </button>
+            )}
+            <button
+                type="button"
+                onClick={() => void toggleFullscreen()}
+                title={isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
+                aria-label={isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
+                aria-pressed={isFullscreen}
+                disabled={!fullscreenSupported || windowDisplayBusy}
+                className="reader-toolbar-button flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:opacity-60 disabled:cursor-not-allowed disabled:opacity-30"
+                style={{ color: t.text }}
+            >
+                {isFullscreen ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5" />
+                    </svg>
+                ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+                    </svg>
+                )}
+            </button>
             <button
                 ref={triggerRef}
                 onClick={toggleSettings}
@@ -327,8 +378,8 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                     data-testid="reader-settings-preview-page"
                                     className={`grid min-h-16 ${layout === 'dual' ? 'grid-cols-2' : 'grid-cols-1'} overflow-hidden rounded-lg bg-white/20 shadow-sm`}
                                     style={{
-                                        columnGap: `${Math.max(4, columnGap * 0.12)}px`,
-                                        padding: `${Math.max(6, vMargin * 0.18)}px ${Math.max(8, hMargin * 0.16)}px`,
+                                        columnGap: `${previewColumnGap}px`,
+                                        padding: `${previewVerticalMargin}px ${layout === 'dual' ? 0 : previewHorizontalMargin}px`,
                                         fontFamily: selectedFontPreviewFamily,
                                         fontWeight,
                                         fontSize: `${Math.max(10, fontSize * 0.58)}px`,
@@ -336,8 +387,31 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                         letterSpacing: `${letterSpacing}em`,
                                     }}
                                 >
-                                    <p className={layout === 'dual' ? 'border-r border-current/20 pr-2' : ''}>{tt('previewText')}</p>
-                                    {layout === 'dual' && <p className="pl-2">{tt('previewTextAlt')}</p>}
+                                    <p
+                                        data-testid="reader-settings-preview-left-page"
+                                        className={layout === 'dual' ? 'border-r border-current/20' : ''}
+                                        style={layout === 'dual' ? {
+                                            width: `calc(100% - ${previewOuterInset}px)`,
+                                            justifySelf: 'end',
+                                            paddingLeft: previewHorizontalMargin,
+                                            paddingRight: previewHorizontalMargin,
+                                        } : undefined}
+                                    >
+                                        {tt('previewText')}
+                                    </p>
+                                    {layout === 'dual' && (
+                                        <p
+                                            data-testid="reader-settings-preview-right-page"
+                                            style={{
+                                                width: `calc(100% - ${previewOuterInset}px)`,
+                                                justifySelf: 'start',
+                                                paddingLeft: previewHorizontalMargin,
+                                                paddingRight: previewHorizontalMargin,
+                                            }}
+                                        >
+                                            {tt('previewTextAlt')}
+                                        </p>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -430,6 +504,45 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                         </div>
                                     </section>
 
+                                    <section className="space-y-3 rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
+                                        <div>
+                                            <h3 className="text-[12px] font-semibold">{tt('windowAndFullscreen')}</h3>
+                                            <p className="mt-1 text-[10px] leading-relaxed text-[#8a7c66]">{tt('fullscreenHint')}</p>
+                                        </div>
+                                        <label className={`flex items-center justify-between rounded-xl border border-[#ded4c5] bg-[#fffdf9] px-3 py-2.5 text-[11px] font-semibold ${frameControlSupported ? '' : 'opacity-50'}`}>
+                                            <span>{tt('showWindowFrame')}</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={showWindowFrame}
+                                                disabled={!frameControlSupported || windowDisplayBusy}
+                                                onChange={(event) => void setShowWindowFrame(event.target.checked)}
+                                                className="h-4 w-4 accent-[#b7864b]"
+                                            />
+                                        </label>
+                                        {readerType === 'zip' && (
+                                            <label className="flex items-center justify-between rounded-xl border border-[#ded4c5] bg-[#fffdf9] px-3 py-2.5 text-[11px] font-semibold">
+                                                <span>{tt('showZipBookmarkBar')}</span>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={showZipBookmarkBar}
+                                                    onChange={(event) => setShowZipBookmarkBar(event.target.checked)}
+                                                    className="h-4 w-4 accent-[#b7864b]"
+                                                />
+                                            </label>
+                                        )}
+                                        <button
+                                            type="button"
+                                            aria-pressed={isFullscreen}
+                                            disabled={!fullscreenSupported || windowDisplayBusy}
+                                            onClick={() => void toggleFullscreen()}
+                                            className="w-full rounded-xl border border-[#b7864b] bg-[#f5eadc] px-3 py-2.5 text-[11px] font-semibold text-[#765022] disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
+                                        </button>
+                                        {!frameControlSupported && <p className="text-[10px] text-[#8a7c66]">{tt('windowFrameDesktopOnly')}</p>}
+                                        {windowDisplayError && <p role="alert" className="text-[10px] text-red-600">{tt('windowDisplayFailed')}</p>}
+                                    </section>
+
                                     {readerType === 'zip' && (
                                         <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">
                                             <ReaderSettingSlider label={tt('zipImageScale')} value={Number((zipImageScale || 1).toFixed(1))} min={0.5} max={2.5} step={0.1} unit="x" onChange={setZipImageScale} />
@@ -492,7 +605,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                                 <ReaderSettingSlider label={tt('letterSpacing')} value={letterSpacing} min={-0.05} max={0.2} step={0.01} unit=" em" onChange={setLetterSpacing} />
                                                 <ReaderSettingSlider label={tt('hMargin')} value={hMargin} min={16} max={120} step={4} unit=" px" onChange={setHMargin} />
                                                 <ReaderSettingSlider label={tt('vMargin')} value={vMargin} min={8} max={80} step={4} unit=" px" onChange={setVMargin} />
-                                                <ReaderSettingSlider label={tt('splitMargin')} value={columnGap} min={16} max={120} step={4} unit=" px" onChange={setColumnGap} />
+                                                <ReaderSettingSlider label={tt('splitMargin')} value={columnGap} min={16} max={MAX_SPLIT_MARGIN_PX} step={4} unit=" px" onChange={setColumnGap} />
                                             </section>
 
                                             <section className="rounded-2xl border border-[#e2d9cb] bg-white/70 p-4">

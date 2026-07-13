@@ -51,7 +51,7 @@ Runtime data:
 - Source/dev runs use `backend/books`, `backend/fonts`, `backend/library.json`, and `backend/annotations.json`.
 - Tauri packaged runs explicitly pass `app_local_data_dir()` as `BOOKREADER_DATA_DIR`; mutable data never belongs beside installed binaries.
 - Standalone sidecar smokes must always set an isolated `BOOKREADER_DATA_DIR`.
-- Existing `%LOCALAPPDATA%\BookReader` data is allowlist-copied through a resumable, source-preserving one-time migration with a per-file SHA-256 journal. Conflicting roots or invalid journals fail closed.
+- Existing `%LOCALAPPDATA%\BookReader` data is allowlist-copied through a resumable, source-preserving one-time migration with a per-file SHA-256 journal. A destination containing only the backend's exact empty default stores is safely cleared before migration; real conflicting data or invalid journals fail closed.
 - Local `books/` and `fonts/` folders are not bundled into the sidecar.
 
 ## 4) Where to find build outputs

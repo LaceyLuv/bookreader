@@ -32,6 +32,18 @@ const PAGE_COUNT_START_DELAY_MS = 2200
 const PAGE_COUNT_IDLE_TIMEOUT_MS = 1500
 const EPUB_CONTENT_CLASS_NAME = 'select-text epub-content [&_p]:mb-4 [&_h1]:text-2xl [&_h1]:mb-5 [&_h1]:break-after-avoid [&_h2]:text-xl [&_h2]:mb-4 [&_h2]:break-after-avoid [&_h3]:text-lg [&_h3]:mb-3 [&_h3]:break-after-avoid [&_img]:max-w-full [&_img]:max-h-full [&_img]:rounded-lg [&_img]:mx-auto [&_img]:my-4 [&_img]:break-inside-avoid [&_img]:cursor-zoom-in [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:opacity-80 [&_blockquote]:break-inside-avoid'
 
+export function getEpubSpreadNavigationGap(measuredColumnGap, isDualLayout, horizontalMargin) {
+    const measuredGap = Math.max(0, Number(measuredColumnGap) || 0)
+    if (!isDualLayout) return measuredGap
+    return Math.max(0, measuredGap - (Math.max(0, Number(horizontalMargin) || 0) * 2))
+}
+
+function applyEpubOwnedLayoutStyles(contentEl, { columnGap, horizontalMargin, isDualLayout }) {
+    if (!contentEl) return
+    contentEl.style.setProperty('column-gap', `${columnGap}px`, 'important')
+    contentEl.style.setProperty('padding', isDualLayout ? `0 ${horizontalMargin}px` : '0', 'important')
+}
+
 function normalizeEpubHrefPath(href) {
     if (!href || href.startsWith('#')) return ''
     try {
@@ -194,6 +206,7 @@ function EpubReader() {
         bookmarks, addBookmark, removeBookmark, goToBookmark,
         restoredProgress, startOver } = progress
     const isDualLayout = layout === 'dual'
+    const effectiveColumnGap = isDualLayout ? columnGap + (hMargin * 2) : columnGap
     const useEmbeddedFonts = fontMode === 'embedded'
     const isSearchActive = searchOpen && !!searchQuery.trim()
     const shouldRenderSearchHighlight = isSearchActive && activeChapterMatchIndex != null
@@ -265,7 +278,8 @@ function EpubReader() {
     const paginationSignature = useMemo(() => JSON.stringify({
         id,
         layout,
-        columnGap,
+        columnGap: effectiveColumnGap,
+        hMargin,
         lineHeight,
         letterSpacing,
         fontMode,
@@ -278,7 +292,8 @@ function EpubReader() {
     }), [
         id,
         layout,
-        columnGap,
+        effectiveColumnGap,
+        hMargin,
         lineHeight,
         letterSpacing,
         fontMode,
@@ -345,7 +360,7 @@ function EpubReader() {
             setAnnotations([])
         }
         setAnnotationsLoading(false)
-    }, [id, tt])
+    }, [id])
 
     useEffect(() => {
         loadAnnotations()
@@ -638,7 +653,11 @@ function EpubReader() {
         contentEl.style.wordBreak = 'break-word'
         contentEl.style.overflowWrap = 'break-word'
         contentEl.style.columnCount = isDualLayout ? '2' : '1'
-        contentEl.style.columnGap = `${columnGap}px`
+        applyEpubOwnedLayoutStyles(contentEl, {
+            columnGap: effectiveColumnGap,
+            horizontalMargin: hMargin,
+            isDualLayout,
+        })
         contentEl.style.columnFill = 'auto'
         contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
         contentEl.style.breakInside = 'avoid-column'
@@ -658,7 +677,8 @@ function EpubReader() {
         const rawGap = cs.columnGap
         const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const colW = isDualLayout ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
+        const contentWidth = isDualLayout ? Math.max(1, W - (hMargin * 2)) : W
+        const colW = isDualLayout ? Math.max(1, Math.floor((contentWidth - gap) / 2)) : Math.max(1, Math.floor(contentWidth))
 
         contentEl.style.columnWidth = `${colW}px`
         contentEl.style.columnCount = isDualLayout ? '2' : '1'
@@ -674,12 +694,13 @@ function EpubReader() {
         const measuredRawGap = finalStyles.columnGap
         const measuredFallbackGap = parseFloat(finalStyles.fontSize) || 16
         const measuredGap = measuredRawGap === 'normal' ? measuredFallbackGap : (parseFloat(measuredRawGap) || 0)
-        const step = W + measuredGap
-        const pages = step > 0 ? Math.max(1, Math.ceil((scroller.scrollWidth + measuredGap) / step)) : 1
+        const navigationGap = getEpubSpreadNavigationGap(measuredGap, isDualLayout, hMargin)
+        const step = W + navigationGap
+        const pages = step > 0 ? Math.max(1, Math.ceil((scroller.scrollWidth + navigationGap) / step)) : 1
 
         host.innerHTML = ''
         return pages
-    }, [columnGap, contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, epubTypographyCss, isDualLayout, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
+    }, [contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, effectiveColumnGap, epubTypographyCss, hMargin, isDualLayout, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
 
     const measure = useCallback(() => {
         const scroller = scrollerRef.current; const contentEl = contentRef.current
@@ -687,15 +708,17 @@ function EpubReader() {
         const W = scroller.clientWidth; const cs = getComputedStyle(contentEl)
         const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const colW = isDualLayout ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
+        const contentWidth = isDualLayout ? Math.max(1, W - (hMargin * 2)) : W
+        const colW = isDualLayout ? Math.max(1, Math.floor((contentWidth - gap) / 2)) : Math.max(1, Math.floor(contentWidth))
         const H = Math.max(1, Math.floor(scroller.clientHeight))
         contentEl.style.columnWidth = `${colW}px`; contentEl.style.columnCount = isDualLayout ? '2' : '1'
         contentEl.style.columnFill = 'auto'; contentEl.style.height = `${H}px`; contentEl.style.display = 'block'
         contentEl.style.textAlign = 'left'; contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
-        const step = W + gap; if (step <= 0) return
+        const navigationGap = getEpubSpreadNavigationGap(gap, isDualLayout, hMargin)
+        const step = W + navigationGap; if (step <= 0) return
         const oldStep = stepRef.current > 0 ? stepRef.current : step; const oldLeft = scroller.scrollLeft
         stepRef.current = step; setPageWidth(W); setPageHeight(H)
-        const pages = Math.max(1, Math.ceil((scroller.scrollWidth + gap) / step)); initialMeasureDoneRef.current = true; setChapterPaginationReady(true); setChapterTotalPages(pages)
+        const pages = Math.max(1, Math.ceil((scroller.scrollWidth + navigationGap) / step)); initialMeasureDoneRef.current = true; setChapterPaginationReady(true); setChapterTotalPages(pages)
         const pendingPage = getPendingPage()
         const requestedChapterPage = pendingChapterPageRef.current
         if (requestedChapterPage != null) pendingChapterPageRef.current = null
@@ -705,7 +728,7 @@ function EpubReader() {
         const clamped = Math.max(0, Math.min(idxFromScroll, pages - 1))
         scroller.scrollTo({ left: Math.round(clamped * step), behavior: 'auto' })
         setChapterPage(prev => (prev === clamped ? prev : clamped))
-    }, [getPendingPage, isDualLayout])
+    }, [effectiveColumnGap, getPendingPage, hMargin, isDualLayout])
 
     useEffect(() => {
         if (chapter?.index == null || !Number.isFinite(chapterTotalPages) || chapterTotalPages < 1) return
@@ -769,10 +792,11 @@ function EpubReader() {
         const W = s.clientWidth; const cs = getComputedStyle(c)
         const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const step = W + gap; if (step <= 0) return; stepRef.current = step
+        const navigationGap = getEpubSpreadNavigationGap(gap, isDualLayout, hMargin)
+        const step = W + navigationGap; if (step <= 0) return; stepRef.current = step
         lockPendingPage(target)
         s.scrollTo({ left: Math.round(target * step), behavior: 'auto' }); setChapterPage(target)
-    }, [chapterTotalPages, lockPendingPage])
+    }, [chapterTotalPages, hMargin, isDualLayout, lockPendingPage])
 
     const goToOverallPage = useCallback((overallPage) => {
         if (!overallPagination.ready || overallPagination.totalPages <= 0) return
@@ -794,13 +818,24 @@ function EpubReader() {
         goToOverallPage(Math.round(progressValue * (overallPagination.totalPages - 1)))
     }, [goToOverallPage, overallPagination])
 
-    useEffect(() => { const s = scrollerRef.current; const c = contentRef.current; if (!s || !c) return; const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const step = W + gap; if (step <= 0) return; stepRef.current = step; s.scrollTo({ left: Math.round(chapterPage * step), behavior: 'auto' }) }, [chapterPage])
+    useEffect(() => {
+        const s = scrollerRef.current; const c = contentRef.current
+        if (!s || !c) return
+        const W = s.clientWidth; const cs = getComputedStyle(c)
+        const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
+        const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
+        const navigationGap = getEpubSpreadNavigationGap(gap, isDualLayout, hMargin)
+        const step = W + navigationGap
+        if (step <= 0) return
+        stepRef.current = step
+        s.scrollTo({ left: Math.round(chapterPage * step), behavior: 'auto' })
+    }, [chapterPage, effectiveColumnGap, hMargin, isDualLayout])
 
     useEffect(() => {
         const s = scrollerRef.current; const c = contentRef.current; if (!s || !c) return; let timer = null
-        const onScroll = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const step = W + gap; if (step <= 0) return; stepRef.current = step; const pendingPage = getPendingPage(); const idx = pendingPage ?? Math.round(s.scrollLeft / step); const snapLeft = Math.round(idx * step); if (Math.abs(s.scrollLeft - snapLeft) >= 1) s.scrollTo({ left: snapLeft, behavior: 'auto' }); const clamped = Math.max(0, Math.min(idx, chapterTotalPages - 1)); setChapterPage(prev => (prev === clamped ? prev : clamped)) }, 120) }
+        const onScroll = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const navigationGap = getEpubSpreadNavigationGap(gap, isDualLayout, hMargin); const step = W + navigationGap; if (step <= 0) return; stepRef.current = step; const pendingPage = getPendingPage(); const idx = pendingPage ?? Math.round(s.scrollLeft / step); const snapLeft = Math.round(idx * step); if (Math.abs(s.scrollLeft - snapLeft) >= 1) s.scrollTo({ left: snapLeft, behavior: 'auto' }); const clamped = Math.max(0, Math.min(idx, chapterTotalPages - 1)); setChapterPage(prev => (prev === clamped ? prev : clamped)) }, 120) }
         s.addEventListener('scroll', onScroll, { passive: true }); return () => { if (timer) clearTimeout(timer); s.removeEventListener('scroll', onScroll) }
-    }, [chapterTotalPages, getPendingPage])
+    }, [chapterTotalPages, effectiveColumnGap, getPendingPage, hMargin, isDualLayout])
 
     useEffect(() => {
         if (loading || !chapterPaginationReady || totalChapters <= 0 || pageWidth <= 0 || pageHeight <= 0) return
@@ -987,8 +1022,15 @@ function EpubReader() {
         const previous = contentRef.current
         if (previous) previous.removeEventListener('click', handleEpubContentClick)
         contentRef.current = node
-        if (node) node.addEventListener('click', handleEpubContentClick)
-    }, [handleEpubContentClick])
+        if (node) {
+            applyEpubOwnedLayoutStyles(node, {
+                columnGap: effectiveColumnGap,
+                horizontalMargin: hMargin,
+                isDualLayout,
+            })
+            node.addEventListener('click', handleEpubContentClick)
+        }
+    }, [effectiveColumnGap, hMargin, handleEpubContentClick, isDualLayout])
 
     useEffect(() => {
         if (loading) return
@@ -1273,7 +1315,7 @@ function EpubReader() {
                         nextLabel={tt('next')}
                     />
 
-                    <div data-testid="epub-reader-stage" ref={frameRef} aria-busy={loading} className={`reader-stage ${layout === 'dual' ? 'reader-stage-dual' : ''}`} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
+                    <div data-testid="epub-reader-stage" ref={frameRef} aria-busy={loading} className={`reader-stage ${layout === 'dual' ? 'reader-stage-dual' : ''}`} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${isDualLayout ? 0 : hMargin}px`, boxSizing: 'border-box' }}>
                         {loading ? (
                             <div role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}><div className="text-sm opacity-60">{tt('loading')}</div></div>
                         ) : initialProblem ? (
@@ -1291,7 +1333,7 @@ function EpubReader() {
                         ) : chapter ? (
                             <div key={chapter?.index ?? 0} ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
                                 <div ref={bindContentRef} className={EPUB_CONTENT_CLASS_NAME}
-                                    style={{ height: '100%', boxSizing: 'border-box', display: 'block', backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${columnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
+                                    style={{ height: '100%', boxSizing: 'border-box', display: 'block', padding: isDualLayout ? `0 ${hMargin}px` : 0, backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${effectiveColumnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
                                     dangerouslySetInnerHTML={{ __html: sanitizedChapterHtml }}
                                 />
                             </div>

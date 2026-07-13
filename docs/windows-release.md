@@ -91,7 +91,7 @@ Older installs may have data mixed into `%LOCALAPPDATA%\BookReader`. Before star
 6. validates the completed marker before every skip and cleans verified journal residue; and
 7. leaves the legacy source untouched.
 
-An interrupted publish resumes only when the pending journal, source, and stage have the same manifest. If legacy and destination data both exist without a valid journal, startup fails closed instead of hiding or overwriting either side. Executables, the uninstaller, WebView files, and unknown entries are never copied. If migration cannot complete, the backend does not start and the UI explains that the original data was preserved.
+An interrupted publish resumes only when the pending journal, source, and stage have the same manifest. If the destination contains only the backend's exact empty default JSON stores and empty managed directories, that pristine scaffold is cleared before migration. Any actual destination content, malformed default, or extra field still fails closed instead of hiding or overwriting either side. Executables, the uninstaller, WebView files, and unknown entries are never copied. If migration cannot complete, the backend does not start and the UI explains that the original data was preserved.
 
 ## Automated Windows fault boundary
 

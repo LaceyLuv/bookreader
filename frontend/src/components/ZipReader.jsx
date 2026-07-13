@@ -14,7 +14,7 @@ import ReaderShell, {
     ReaderPageTurnControls,
     ReaderTopBar,
 } from './ReaderShell'
-import { API_BOOKS_BASE } from '../lib/apiBase'
+import { API_BOOKS_BASE, authenticateAssetUrl } from '../lib/apiBase'
 import { readApiProblem } from '../lib/readErrorDetail'
 import { getZipImageLayout } from '../lib/zipReaderLayout'
 
@@ -145,7 +145,7 @@ function ZipReader() {
     const imageUrl = (name) => {
         const retryVersion = imageRetryVersions[name] || 0
         const baseUrl = `${API}/${id}/image/${encodeURIComponent(name)}`
-        return retryVersion > 0 ? `${baseUrl}?retry=${retryVersion}` : baseUrl
+        return authenticateAssetUrl(retryVersion > 0 ? `${baseUrl}?retry=${retryVersion}` : baseUrl)
     }
     const markImageFailed = useCallback((name) => {
         setFailedImages((prev) => {
@@ -250,7 +250,7 @@ function ZipReader() {
                     issues={archiveDiagnostics}
                 />
             )}
-            bookmarkBar={(
+            bookmarkBar={settings.showZipBookmarkBar ? (
                 <ReaderBookmarkStrip
                     items={bookmarks}
                     label={tt('bookmarks')}
@@ -268,7 +268,7 @@ function ZipReader() {
                     onRemove={removeBookmark}
                     removeLabel={tt('removeBookmark')}
                 />
-            )}
+            ) : null}
             main={(
                 <div className="flex-1 relative min-h-0">
                     <ReaderPageTurnControls

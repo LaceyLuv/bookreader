@@ -7,6 +7,12 @@ import { beforeEach, expect, test, vi } from 'vitest'
 const mockUseKeyboardNav = vi.fn()
 const mockUseReaderSettings = vi.fn()
 const mockUseReadingProgress = vi.fn()
+const mockAuthenticateAssetUrl = vi.fn((url) => url)
+
+vi.mock('../lib/apiBase', () => ({
+    API_BOOKS_BASE: '/api/books',
+    authenticateAssetUrl: (...args) => mockAuthenticateAssetUrl(...args),
+}))
 
 vi.mock('../hooks/useReaderSettings', () => ({
     useReaderSettings: (...args) => mockUseReaderSettings(...args),
@@ -47,6 +53,7 @@ function createSettings(overrides = {}) {
         hMargin: 20,
         vMargin: 20,
         zipImageScale: 1,
+        showZipBookmarkBar: true,
         tt: (key) => key,
         toggleTitleBar: vi.fn(),
         ...overrides,
@@ -79,6 +86,8 @@ function renderReader() {
 }
 
 beforeEach(() => {
+    mockAuthenticateAssetUrl.mockReset()
+    mockAuthenticateAssetUrl.mockImplementation((url) => url)
     mockUseKeyboardNav.mockReturnValue(undefined)
     mockUseReaderSettings.mockImplementation(() => createSettings())
     mockUseReadingProgress.mockImplementation((_bookId, _options) => createProgress())
@@ -91,6 +100,15 @@ beforeEach(() => {
         }
         return new Response('{}', { status: 404 })
     }))
+})
+
+test('routes ZIP image sources through desktop asset authentication', async () => {
+    mockAuthenticateAssetUrl.mockImplementation((url) => `${url}?asset_token=desktop-secret`)
+    renderReader()
+
+    const image = await screen.findByAltText('page 1')
+    expect(mockAuthenticateAssetUrl).toHaveBeenCalledWith('/api/books/zip-1/image/1.jpg')
+    expect(image.getAttribute('src')).toBe('/api/books/zip-1/image/1.jpg?asset_token=desktop-secret')
 })
 
 test('dual ZIP view shows only the final odd page after seeking to the last image', async () => {
@@ -113,6 +131,29 @@ test('disables page keyboard navigation while reader settings are open', async (
 
     await screen.findByAltText('page 1')
     expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ enabled: false }))
+})
+
+test('hides only the ZIP bookmark strip when the display preference is off', async () => {
+    mockUseReaderSettings.mockImplementation(() => createSettings({ showZipBookmarkBar: false }))
+    mockUseReadingProgress.mockImplementation(() => createProgress({
+        bookmarks: [{ id: 'bookmark-2', position: 1, locator: { kind: 'zip', memberName: '2.jpg', page: 1 } }],
+    }))
+
+    renderReader()
+
+    expect(await screen.findByAltText('page 1')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Img 2' })).toBeNull()
+    expect(screen.getByTestId('progress-current-page').textContent).toBe('1')
+})
+
+test('shows saved ZIP bookmarks when the bookmark strip preference is on', async () => {
+    mockUseReadingProgress.mockImplementation(() => createProgress({
+        bookmarks: [{ id: 'bookmark-2', position: 1, locator: { kind: 'zip', memberName: '2.jpg', page: 1 } }],
+    }))
+
+    renderReader()
+
+    expect(await screen.findByRole('button', { name: 'Img 2' })).toBeTruthy()
 })
 
 test('ZIP image load failures show a per-page error without removing the reader', async () => {

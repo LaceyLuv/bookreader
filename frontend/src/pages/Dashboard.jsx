@@ -357,9 +357,11 @@ function Dashboard() {
     const [bulkMoving, setBulkMoving] = useState(false)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [selectionMode, setSelectionMode] = useState(false)
+    const [selectionActionsOpen, setSelectionActionsOpen] = useState(false)
     const [folderColors, setFolderColors] = useState(loadFolderColors)
     const fileInputRef = useRef(null)
     const libraryRef = useRef(null)
+    const selectionActionsRef = useRef(null)
 
     const savedLang = (() => {
         try {
@@ -425,6 +427,10 @@ function Dashboard() {
             localStorage.setItem(FOLDER_COLORS_KEY, JSON.stringify(folderColors))
         } catch { /* keep folder colors usable in memory */ }
     }, [folderColors])
+
+    useEffect(() => {
+        if (selectionActionsOpen) selectionActionsRef.current?.focus()
+    }, [selectionActionsOpen])
 
     useEffect(() => {
         const bookIdSet = new Set(books.map((book) => book.id))
@@ -591,7 +597,13 @@ function Dashboard() {
 
     const clearSelection = useCallback(() => {
         setSelectedBookIds([])
+        setSelectionActionsOpen(false)
     }, [])
+
+    const handleSelectionModeChange = useCallback((enabled) => {
+        setSelectionMode(enabled)
+        setSelectionActionsOpen(!enabled && selectedBookIds.length > 0)
+    }, [selectedBookIds.length])
 
     const handleBulkMove = useCallback(async (targetFolderId = bulkFolderId || null) => {
         if (selectedBookIds.length === 0) {
@@ -621,6 +633,7 @@ function Dashboard() {
             })
             await Promise.all([fetchBooks(), fetchFolders()])
             setSelectedBookIds([])
+            setSelectionActionsOpen(false)
         } catch (err) {
             console.error('Failed to move selected books', err)
             alert(err.message || tt('moveSelectedFailed'))
@@ -920,6 +933,7 @@ function Dashboard() {
                             type="checkbox"
                             checked={isSelected}
                             onChange={(event) => toggleBookSelection(book.id, event.target.checked)}
+                            aria-label={`${tt('selection')}: ${book.title}`}
                             className="mt-1 h-4 w-4 rounded"
                         />
                     </label>}
@@ -1030,14 +1044,14 @@ function Dashboard() {
     return (
         <div className="dashboard-page min-h-screen">
             <div className="dashboard-shell">
-                <header className="dashboard-hero">
-                    <div className="dashboard-brand-copy">
-                        <h1 className="dashboard-brand-heading">
-                            <span className="dashboard-brand-typography-frame">
-                                <img className="dashboard-brand-typography" src={gyeolTypography} alt={tt('appTitle')} data-testid="dashboard-brand-typography" />
+                <header className="dashboard-hero" data-tauri-drag-region>
+                    <div className="dashboard-brand-copy" data-tauri-drag-region>
+                        <h1 className="dashboard-brand-heading" data-tauri-drag-region>
+                            <span className="dashboard-brand-typography-frame" data-tauri-drag-region>
+                                <img className="dashboard-brand-typography" src={gyeolTypography} alt={tt('appTitle')} data-testid="dashboard-brand-typography" data-tauri-drag-region />
                             </span>
                         </h1>
-                        <p>{tt('appSubtitle')}</p>
+                        <p data-tauri-drag-region>{tt('appSubtitle')}</p>
                     </div>
                     <button type="button" className="dashboard-settings-button" onClick={() => setSettingsOpen(true)} aria-label={tt('librarySettings')} title={tt('librarySettings')}>⚙</button>
                 </header>
@@ -1241,36 +1255,68 @@ function Dashboard() {
                     )}
                 </div>
 
-                {visibleBookIds.length > 0 && (
-                    <div className="hidden">
+                {selectionMode && (
+                    <section className="glass-card sticky top-4 z-30 mb-6 px-5 py-4" aria-labelledby="dashboard-selection-mode-title">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                             <div>
-                                <h2 className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('selection')}</h2>
-                                <p className="mt-1 text-sm" style={{ color: subtleTextColor }}>{formatSelectedSummary(selectedBookIds.length)}</p>
+                                <h2 id="dashboard-selection-mode-title" className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('selectionMode')}</h2>
+                                <p role="status" aria-live="polite" className="mt-1 text-sm" style={{ color: subtleTextColor }}>{formatSelectedSummary(selectedBookIds.length)}</p>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <button type="button" onClick={toggleVisibleSelection} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
                                     {allVisibleSelected ? tt('unselectVisible') : tt('selectVisible')}
                                 </button>
                                 {selectedBookIds.length > 0 && (
-                                    <>
-                                        <select value={bulkFolderId} onChange={(event) => setBulkFolderId(event.target.value)} className="h-10 rounded-xl px-3 text-sm" style={inputStyle}>
-                                            <option value="">{tt('noFolder')}</option>
-                                            {folders.map((folder) => (
-                                                <option key={folder.id} value={folder.id}>{folder.name}</option>
-                                            ))}
-                                        </select>
-                                        <button type="button" onClick={() => handleBulkMove()} disabled={bulkMoving} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed" style={chipBaseStyle}>
-                                            {bulkMoving ? tt('moving') : tt('moveSelected')}
-                                        </button>
-                                        <button type="button" onClick={clearSelection} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
-                                            {tt('clear')}
-                                        </button>
-                                    </>
+                                    <button type="button" onClick={clearSelection} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
+                                        {tt('clear')}
+                                    </button>
                                 )}
+                                <button
+                                    type="button"
+                                    onClick={() => handleSelectionModeChange(false)}
+                                    aria-controls="dashboard-selection-actions"
+                                    className="h-10 rounded-xl bg-[#b7864b] px-4 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                                >
+                                    {tt('finishSelection')}
+                                </button>
                             </div>
                         </div>
-                    </div>
+                    </section>
+                )}
+
+                {!selectionMode && selectionActionsOpen && selectedBookIds.length > 0 && (
+                    <section
+                        ref={selectionActionsRef}
+                        id="dashboard-selection-actions"
+                        tabIndex={-1}
+                        className="glass-card sticky top-4 z-30 mb-6 px-5 py-4 outline-none focus-visible:ring-2 focus-visible:ring-[#b7864b]"
+                        aria-labelledby="dashboard-selection-actions-title"
+                    >
+                        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                            <div>
+                                <h2 id="dashboard-selection-actions-title" className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('selectedBooks')}</h2>
+                                <p role="status" aria-live="polite" className="mt-1 text-sm" style={{ color: subtleTextColor }}>{formatSelectedSummary(selectedBookIds.length)}</p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button type="button" onClick={() => handleSelectionModeChange(true)} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
+                                    {tt('editSelection')}
+                                </button>
+                                <label className="sr-only" htmlFor="dashboard-selection-folder">{tt('libraryFolder')}</label>
+                                <select id="dashboard-selection-folder" value={bulkFolderId} onChange={(event) => setBulkFolderId(event.target.value)} className="h-10 rounded-xl px-3 text-sm" style={inputStyle}>
+                                    <option value="">{tt('noFolder')}</option>
+                                    {folders.map((folder) => (
+                                        <option key={folder.id} value={folder.id}>{folder.name}</option>
+                                    ))}
+                                </select>
+                                <button type="button" onClick={() => handleBulkMove()} disabled={bulkMoving} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed" style={chipBaseStyle}>
+                                    {bulkMoving ? tt('moving') : tt('moveSelected')}
+                                </button>
+                                <button type="button" onClick={clearSelection} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
+                                    {tt('clear')}
+                                </button>
+                            </div>
+                        </div>
+                    </section>
                 )}
 
                 <section ref={libraryRef} className="dashboard-library">
@@ -1351,7 +1397,7 @@ function Dashboard() {
                 open={settingsOpen} onClose={() => setSettingsOpen(false)} onGoToLibrary={goToLibrary} onDataRestored={() => window.location.reload()} tt={tt}
                 filters={{ searchQuery, setSearchQuery, sortBy, setSortBy, statusFilter, setStatusFilter, flagFilter, setFlagFilter, sortOptions, statusOptions, flagFilterOptions, groupSeries, setGroupSeries, groupDuplicates, setGroupDuplicates, allTags, selectedTag, setSelectedTag, allCollections, selectedCollection, setSelectedCollection, clearFilters, activeFilterCount }}
                 folders={folders} folderColors={folderColors} getDefaultFolderColor={getDefaultFolderColor} onFolderColorChange={(folderId, color) => setFolderColors(prev => ({ ...prev, [folderId]: color }))} folderDraft={folderDraft} setFolderDraft={setFolderDraft} folderSaving={folderSaving} onAddFolder={handleAddFolder} onRenameFolder={handleRenameFolder} onRemoveFolder={handleRemoveFolder} folderStatsById={folderStatsById}
-                selection={{ selectionMode, setSelectionMode, summary: formatSelectedSummary(selectedBookIds.length), selectedCount: selectedBookIds.length, allVisibleSelected, toggleVisibleSelection, bulkFolderId, setBulkFolderId, bulkMoving, handleBulkMove, clearSelection }}
+                selection={{ selectionMode, setSelectionMode: handleSelectionModeChange, summary: formatSelectedSummary(selectedBookIds.length), selectedCount: selectedBookIds.length, allVisibleSelected, toggleVisibleSelection, bulkFolderId, setBulkFolderId, bulkMoving, handleBulkMove, clearSelection }}
             />
 
             {selectedInfo && (
