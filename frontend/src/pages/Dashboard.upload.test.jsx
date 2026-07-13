@@ -79,12 +79,14 @@ beforeEach(() => {
     })
 })
 
-test('dashboard presents the Gyeol brand and supplied icon', async () => {
+test('dashboard presents the Gyeol typography without the separate icon or plain title', async () => {
     render(<MemoryRouter><Dashboard /></MemoryRouter>)
 
-    expect(await screen.findByRole('heading', { name: '글결' })).toBeTruthy()
+    const heading = await screen.findByRole('heading', { name: '글결' })
+    expect(heading.textContent).toBe('')
     expect(screen.getByText('내 파일을, 내 방식으로.')).toBeTruthy()
-    expect(screen.getByTestId('dashboard-brand-icon').getAttribute('src')).toContain('gyeol-icon.png')
+    expect(screen.getByTestId('dashboard-brand-typography').getAttribute('src')).toContain('gyeol-typography.png')
+    expect(screen.queryByTestId('dashboard-brand-icon')).toBeNull()
 })
 
 test('clicking a book cover opens the reader', async () => {

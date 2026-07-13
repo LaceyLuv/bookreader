@@ -6,7 +6,7 @@ import { createT } from '../i18n'
 import { readErrorDetail } from '../lib/readErrorDetail'
 import DashboardSettingsPanel from '../components/DashboardSettingsPanel'
 import AnnotationExportControls from '../components/AnnotationExportControls'
-import gyeolIcon from '../assets/brand/gyeol-icon.png'
+import gyeolTypography from '../assets/brand/gyeol-typography.png'
 
 const API = API_BOOKS_BASE
 const FOLDER_API = API_BOOKS_BASE.replace(/\/books$/, '/library/folders')
@@ -1031,8 +1031,14 @@ function Dashboard() {
         <div className="dashboard-page min-h-screen">
             <div className="dashboard-shell">
                 <header className="dashboard-hero">
-                    <img className="dashboard-brand-mark" src={gyeolIcon} alt="" aria-hidden="true" data-testid="dashboard-brand-icon" />
-                    <div className="dashboard-brand-copy"><h1>{tt('appTitle')}</h1><p>{tt('appSubtitle')}</p></div>
+                    <div className="dashboard-brand-copy">
+                        <h1 className="dashboard-brand-heading">
+                            <span className="dashboard-brand-typography-frame">
+                                <img className="dashboard-brand-typography" src={gyeolTypography} alt={tt('appTitle')} data-testid="dashboard-brand-typography" />
+                            </span>
+                        </h1>
+                        <p>{tt('appSubtitle')}</p>
+                    </div>
                     <button type="button" className="dashboard-settings-button" onClick={() => setSettingsOpen(true)} aria-label={tt('librarySettings')} title={tt('librarySettings')}>⚙</button>
                 </header>
 
