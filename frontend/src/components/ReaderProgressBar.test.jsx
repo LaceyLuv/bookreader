@@ -3,6 +3,7 @@ import { fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ReaderProgressBar from './ReaderProgressBar'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
+import { KeyboardShortcutsProvider } from '../hooks/useKeyboardShortcuts'
 
 function KeyboardHarness({ onNext, onPrev, readerRootRef }) {
     useKeyboardNav({ onNext, onPrev, enabled: true, readerRootRef })
@@ -215,4 +216,33 @@ test('Ctrl+H does not toggle the progress bar while editing a page number', asyn
 
     expect(screen.queryByRole('button', { name: /show progress bar/i })).toBeNull()
     expect(input).toBe(document.activeElement)
+})
+
+test('Ctrl+Shift+H remains available to the host', () => {
+    render(<ReaderProgressBar currentPage={3} totalPages={10} progress={0.2} />)
+    const event = new KeyboardEvent('keydown', {
+        key: 'h', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true,
+    })
+
+    fireEvent(window, event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(screen.getByRole('button', { name: /hide progress bar/i })).toBeTruthy()
+})
+
+test('disabled shortcuts leave Ctrl+H available to the host without collapsing the bar', () => {
+    localStorage.setItem('bookreader_settings', JSON.stringify({ keyboardShortcutsEnabled: false }))
+    render(
+        <KeyboardShortcutsProvider>
+            <ReaderProgressBar currentPage={3} totalPages={10} progress={0.2} />
+        </KeyboardShortcutsProvider>,
+    )
+    const event = new KeyboardEvent('keydown', {
+        key: 'h', code: 'KeyH', ctrlKey: true, bubbles: true, cancelable: true,
+    })
+
+    fireEvent(window, event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(screen.getByRole('button', { name: /hide progress bar/i })).toBeTruthy()
 })

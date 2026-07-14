@@ -45,6 +45,9 @@
                                },
                    "externalBin":  [
                                        "binaries/bookreader-backend"
-                                   ]
+                                   ],
+                   "resources":  {
+                                     "resources/글결_단축키_안내.txt":  "글결_단축키_안내.txt"
+                                 }
                }
 }

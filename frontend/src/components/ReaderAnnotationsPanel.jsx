@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 
 import AnnotationExportControls from './AnnotationExportControls'
 
@@ -55,6 +55,18 @@ function ReaderAnnotationsPanel({
         () => getVisibleAnnotations(annotations, filterValue),
         [annotations, filterValue],
     )
+
+    useEffect(() => {
+        if (!open) return undefined
+        const closeOnEscape = (event) => {
+            if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+            event.preventDefault()
+            event.stopPropagation()
+            onClose?.()
+        }
+        window.addEventListener('keydown', closeOnEscape, true)
+        return () => window.removeEventListener('keydown', closeOnEscape, true)
+    }, [onClose, open])
 
     if (!open) return null
 

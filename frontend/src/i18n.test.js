@@ -89,3 +89,12 @@ test('basic and advanced settings plus theme presets are localized in both langu
         expect(t(preset.noteKey, 'ko')).not.toBe(preset.noteKey)
     }
 })
+
+test('keyboard shortcut controls explain both the switch and retained accessibility keys', () => {
+    for (const key of ['keyboardShortcuts', 'enableKeyboardShortcuts', 'keyboardShortcutsHint', 'keyboardShortcutsDisabled']) {
+        expect(t(key, 'en')).not.toBe(key)
+        expect(t(key, 'ko')).not.toBe(key)
+    }
+    expect(t('keyboardShortcutsHint', 'ko')).toContain('Esc')
+    expect(t('keyboardShortcutsHint', 'en')).toContain('Tab')
+})

@@ -106,19 +106,48 @@ if ($Profile -ne "Development") {
         [ordered]@{ name = "installer"; item = $installer }
     )
 
+    $shortcutGuideMappings = @()
+    if ($null -ne $tauriConfig.bundle.resources) {
+        $productName = [string]$tauriConfig.productName
+        $shortcutGuideMappings = @($tauriConfig.bundle.resources.PSObject.Properties | Where-Object {
+            $targetName = [IO.Path]::GetFileName([string]$_.Value)
+            $targetStem = [IO.Path]::GetFileNameWithoutExtension($targetName)
+            [IO.Path]::GetExtension([string]$_.Name) -ieq ".txt" -and
+                [IO.Path]::GetExtension($targetName) -ieq ".txt" -and
+                $targetStem.StartsWith($productName + "_", [StringComparison]::Ordinal)
+        })
+    }
+    Add-Check "artifact_shortcut_guide_resource_mapping" ($shortcutGuideMappings.Count -eq 1) ("Expected one product TXT resource mapping; found " + $shortcutGuideMappings.Count)
+
+    $shortcutGuideSource = $null
+    $shortcutGuide = $null
+    if ($shortcutGuideMappings.Count -eq 1) {
+        $shortcutGuideMapping = $shortcutGuideMappings[0]
+        $shortcutGuideSource = Get-Item -LiteralPath (Join-Path $TauriDir ([string]$shortcutGuideMapping.Name)) -ErrorAction SilentlyContinue
+        $bundledGuideName = [IO.Path]::GetFileName([string]$shortcutGuideMapping.Value)
+        $bundledGuideExtension = [IO.Path]::GetExtension($bundledGuideName)
+        $bundledGuideStem = [IO.Path]::GetFileNameWithoutExtension($bundledGuideName)
+        $bundledGuideSuffix = $bundledGuideStem.Substring(([string]$tauriConfig.productName).Length)
+        $releaseGuideName = ([string]$tauriConfig.productName) + "_" + ([string]$tauriConfig.version) + $bundledGuideSuffix + $bundledGuideExtension
+        $shortcutGuide = Get-Item -LiteralPath (Join-Path $TauriDir ("target\release\bundle\nsis\" + $releaseGuideName)) -ErrorAction SilentlyContinue
+    }
+    Add-Check "artifact_shortcut_guide_source_exists" ($null -ne $shortcutGuideSource) ($(if ($null -ne $shortcutGuideSource) { $shortcutGuideSource.FullName } else { "Missing shortcut guide source" }))
+    Add-Check "artifact_shortcut_guide_exists" ($null -ne $shortcutGuide) ($(if ($null -ne $shortcutGuide) { $shortcutGuide.FullName } else { "Missing packaged shortcut guide" }))
+
     $sourceFiles = @()
     foreach ($sourceRoot in @(
         (Join-Path $RootDir "backend"),
         (Join-Path $FrontendDir "src"),
         (Join-Path $FrontendDir "scripts"),
         (Join-Path $TauriDir "src"),
-        (Join-Path $TauriDir "icons")
+        (Join-Path $TauriDir "icons"),
+        (Join-Path $TauriDir "resources")
     )) {
         $sourceFiles += Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.FullName -notmatch '\\(build-sidecar|dist-sidecar|books|fonts|__pycache__)\\' -and
                 $_.Name -notin @('library.json', 'annotations.json', 'reading-progress.json', 'delete-journal.json', 'restore-journal.json') -and
-                $_.Extension -in @('.py', '.js', '.jsx', '.mjs', '.rs', '.toml', '.json', '.ps1', '.spec', '.png', '.ico', '.icns')
+                $_.Extension -in @('.py', '.js', '.jsx', '.mjs', '.rs', '.toml', '.json', '.ps1', '.spec', '.png', '.ico', '.icns', '.txt')
             }
     }
     foreach ($sourceFile in @(
@@ -167,6 +196,20 @@ if ($Profile -ne "Development") {
             bytes = $entry.item.Length
             sha256 = $artifactSha256
             built_at = $entry.item.LastWriteTimeUtc.ToString('o')
+        }
+    }
+
+    if ($null -ne $shortcutGuideSource -and $null -ne $shortcutGuide) {
+        $shortcutGuideSourceSha256 = (Get-FileHash -LiteralPath $shortcutGuideSource.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $shortcutGuideSha256 = (Get-FileHash -LiteralPath $shortcutGuide.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        Add-Check "artifact_shortcut_guide_hash_matches" ($shortcutGuideSha256 -eq $shortcutGuideSourceSha256) "The separately distributed shortcut guide must exactly match the bundled source."
+        Add-Check "artifact_shortcut_guide_fresh" ($shortcutGuide.LastWriteTimeUtc -ge $shortcutGuideSource.LastWriteTimeUtc) ("Packaged " + $shortcutGuide.LastWriteTimeUtc.ToString('o') + "; source " + $shortcutGuideSource.LastWriteTimeUtc.ToString('o'))
+        $artifacts += [ordered]@{
+            name = "shortcut_guide"
+            path = $shortcutGuide.FullName
+            bytes = $shortcutGuide.Length
+            sha256 = $shortcutGuideSha256
+            built_at = $shortcutGuide.LastWriteTimeUtc.ToString('o')
         }
     }
 

@@ -1,6 +1,6 @@
 # Windows release security and updater readiness
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 Gyeol Reader (`글결`) currently ships by manual update. The runtime updater is intentionally not installed or configured. A public installer must be code-signed, fault-tested, and built through the fail-closed release command below; `desktop:build` remains an unsigned developer build.
 
@@ -67,6 +67,8 @@ npm run desktop:release:signed
 ```
 
 The signed build creates a temporary Tauri config overlay, never writes certificate inputs into the repository, builds with Cargo `--locked`, runs the migration fixtures and Windows fault smoke, verifies all signatures and timestamps, and emits SHA-256-bound reports under `reports/release/`. It deletes the temporary overlay in `finally`.
+
+The same command also copies the canonical shortcut guide to `src-tauri/target/release/bundle/nsis/글결_<version>_단축키_안내.txt`. Release readiness requires that separate file to be fresh and byte-for-byte identical to the guide bundled through Tauri resources. The TXT is recorded by SHA-256 but is not an Authenticode signing target.
 
 `release-readiness.ps1` has four profiles:
 

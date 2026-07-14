@@ -17,13 +17,13 @@ beforeEach(() => {
 })
 
 test('collects only the allowlisted local state', () => {
-    localStorage.setItem('bookreader_settings', JSON.stringify({ theme: 'sepia' }))
+    localStorage.setItem('bookreader_settings', JSON.stringify({ theme: 'sepia', keyboardShortcutsEnabled: false }))
     localStorage.setItem('bookreader_folder_colors', JSON.stringify({ shelf: '#fff' }))
     localStorage.setItem('bookreader_progress', JSON.stringify({ book: { position: 2 } }))
     localStorage.setItem('__BOOKREADER_SAFE_MODE__', '1')
 
     expect(collectBackupClientState()).toEqual({
-        settings: { theme: 'sepia' },
+        settings: { theme: 'sepia', keyboardShortcutsEnabled: false },
         folder_colors: { shelf: '#fff' },
         progress: { book: { position: 2 } },
     })
@@ -72,9 +72,9 @@ test('applies restored settings only after commit and clears stale local progres
     localStorage.setItem('bookreader_progress', JSON.stringify({ stale: { position: 9 } }))
     localStorage.setItem('__BOOKREADER_SAFE_MODE__', '1')
 
-    applyRestoredClientState({ settings: { theme: 'dark' }, folder_colors: { shelf: '#123456' } })
+    applyRestoredClientState({ settings: { theme: 'dark', keyboardShortcutsEnabled: false }, folder_colors: { shelf: '#123456' } })
 
-    expect(JSON.parse(localStorage.getItem('bookreader_settings'))).toEqual({ theme: 'dark' })
+    expect(JSON.parse(localStorage.getItem('bookreader_settings'))).toEqual({ theme: 'dark', keyboardShortcutsEnabled: false })
     expect(JSON.parse(localStorage.getItem('bookreader_folder_colors'))).toEqual({ shelf: '#123456' })
     expect(localStorage.getItem('bookreader_progress')).toBeNull()
     expect(localStorage.getItem('__BOOKREADER_SAFE_MODE__')).toBe('1')

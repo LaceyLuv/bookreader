@@ -4,6 +4,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 
 import DashboardSettingsPanel from './DashboardSettingsPanel'
 import { applyRestoredClientState, commitRestore, previewRestore } from '../lib/backupClient'
+import { KeyboardShortcutsProvider } from '../hooks/useKeyboardShortcuts'
 
 vi.mock('../lib/backupClient', () => ({
     applyRestoredClientState: vi.fn(),
@@ -64,4 +65,17 @@ test('requires a verified preview before applying restore', async () => {
     await waitFor(() => expect(commitRestore).toHaveBeenCalledWith('verified-session'))
     expect(applyRestoredClientState).toHaveBeenCalledWith({ settings: {} })
     expect(onDataRestored).toHaveBeenCalledOnce()
+})
+
+test('library settings persist the keyboard shortcut switch', () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+    render(
+        <KeyboardShortcutsProvider>
+            <DashboardSettingsPanel {...props()} />
+        </KeyboardShortcutsProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'enableKeyboardShortcuts' }))
+
+    expect(JSON.parse(localStorage.getItem('bookreader_settings')).keyboardShortcutsEnabled).toBe(false)
 })

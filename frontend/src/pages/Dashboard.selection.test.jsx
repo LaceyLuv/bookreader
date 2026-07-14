@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
@@ -55,6 +55,7 @@ beforeEach(() => {
         const url = String(input)
         if (url.endsWith('/api/books')) return createJsonResponse([book])
         if (url.endsWith('/api/library/folders')) return createJsonResponse([])
+        if (url.endsWith('/api/fonts')) return createJsonResponse([])
         throw new Error(`Unexpected fetch call: ${url}`)
     })
 })
@@ -97,4 +98,33 @@ test('selection mode can be finished from the library without selecting a book',
     expect(screen.queryByRole('button', { name: 'finishSelection' })).toBeNull()
     expect(screen.queryByRole('checkbox', { name: 'selection: Clean Upload' })).toBeNull()
     expect(screen.queryByRole('region', { name: 'selectedBooks' })).toBeNull()
+})
+
+test('dashboard shortcuts open files and settings, focus search, and select visible books', async () => {
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+    await screen.findByText('Clean Upload')
+
+    fireEvent.keyDown(window, { key: ',', code: 'Comma', ctrlKey: true })
+    expect(await screen.findByRole('dialog', { name: 'librarySettings' })).toBeTruthy()
+
+    fireEvent.keyDown(window, { key: ',', code: 'Comma', ctrlKey: true })
+    expect(screen.queryByRole('dialog', { name: 'librarySettings' })).toBeNull()
+
+    fireEvent.keyDown(window, { key: 'f', code: 'KeyF', ctrlKey: true })
+    const search = document.querySelector('[data-dashboard-search="true"]')
+    expect(search).toBeTruthy()
+    await waitFor(() => expect(document.activeElement).toBe(search))
+
+    fireEvent.keyDown(window, { key: ',', code: 'Comma', ctrlKey: true })
+    const fileInput = document.querySelector('input[type="file"][accept=".txt,.epub,.zip"]')
+    const fileClick = vi.spyOn(fileInput, 'click')
+    fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true })
+    expect(fileClick).toHaveBeenCalledOnce()
+
+    const bookButton = screen.getByRole('button', { name: 'Clean Upload - read' })
+    bookButton.focus()
+    fireEvent.keyDown(window, { key: 'a', code: 'KeyA', ctrlKey: true })
+
+    const selectedBook = await screen.findByRole('checkbox', { name: 'selection: Clean Upload' })
+    expect(selectedBook.checked).toBe(true)
 })

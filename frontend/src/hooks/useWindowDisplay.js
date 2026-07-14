@@ -5,6 +5,7 @@ import {
     setWindowFrameVisible,
     setWindowFullscreen,
 } from '../lib/windowDisplay'
+import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 
 const STORAGE_KEY = 'bookreader_window_display'
 
@@ -40,14 +41,17 @@ const DEFAULT_VALUE = {
 const WindowDisplayContext = createContext(DEFAULT_VALUE)
 
 export function WindowDisplayProvider({ children }) {
+    const { keyboardShortcutsEnabled } = useKeyboardShortcuts()
     const initialPreference = useMemo(loadPreference, [])
     const support = useMemo(() => getWindowDisplaySupport(), [])
     const [showWindowFrame, setShowWindowFrameState] = useState(initialPreference.showWindowFrame)
     const [isFullscreen, setIsFullscreen] = useState(false)
-    const [windowDisplayBusy, setWindowDisplayBusy] = useState(false)
+    const [windowDisplayBusy, setWindowDisplayBusy] = useState(true)
     const [windowDisplayError, setWindowDisplayError] = useState('')
     const framePreferenceRef = useRef(initialPreference.showWindowFrame)
     const fullscreenRef = useRef(false)
+    const displayOperationBusyRef = useRef(true)
+    const initializationGenerationRef = useRef(0)
 
     useEffect(() => {
         framePreferenceRef.current = showWindowFrame
@@ -59,14 +63,26 @@ export function WindowDisplayProvider({ children }) {
 
     useEffect(() => {
         let active = true
+        const generation = initializationGenerationRef.current + 1
+        initializationGenerationRef.current = generation
+        displayOperationBusyRef.current = true
+        setWindowDisplayBusy(true)
         const initialize = async () => {
             try {
                 const state = support.frameControlSupported
                     ? await setWindowFrameVisible(framePreferenceRef.current)
                     : await getWindowDisplayState()
-                if (active) setIsFullscreen(state.fullscreen)
+                if (active) {
+                    fullscreenRef.current = state.fullscreen
+                    setIsFullscreen(state.fullscreen)
+                }
             } catch (error) {
                 if (active) setWindowDisplayError(error?.message || String(error))
+            } finally {
+                if (active && initializationGenerationRef.current === generation) {
+                    displayOperationBusyRef.current = false
+                    setWindowDisplayBusy(false)
+                }
             }
         }
         void initialize()
@@ -78,14 +94,19 @@ export function WindowDisplayProvider({ children }) {
     useEffect(() => {
         if (typeof document === 'undefined') return undefined
         const syncBrowserFullscreen = () => {
-            if (!support.frameControlSupported) setIsFullscreen(Boolean(document.fullscreenElement))
+            if (!support.frameControlSupported) {
+                const fullscreen = Boolean(document.fullscreenElement)
+                fullscreenRef.current = fullscreen
+                setIsFullscreen(fullscreen)
+            }
         }
         document.addEventListener('fullscreenchange', syncBrowserFullscreen)
         return () => document.removeEventListener('fullscreenchange', syncBrowserFullscreen)
     }, [support.frameControlSupported])
 
     const setShowWindowFrame = useCallback(async (visible) => {
-        if (!support.frameControlSupported) return
+        if (!support.frameControlSupported || displayOperationBusyRef.current) return
+        displayOperationBusyRef.current = true
         const next = Boolean(visible)
         const previous = framePreferenceRef.current
         framePreferenceRef.current = next
@@ -95,18 +116,21 @@ export function WindowDisplayProvider({ children }) {
         try {
             const state = await setWindowFrameVisible(next)
             persistPreference(next)
+            fullscreenRef.current = state.fullscreen
             setIsFullscreen(state.fullscreen)
         } catch (error) {
             framePreferenceRef.current = previous
             setShowWindowFrameState(previous)
             setWindowDisplayError(error?.message || String(error))
         } finally {
+            displayOperationBusyRef.current = false
             setWindowDisplayBusy(false)
         }
     }, [support.frameControlSupported])
 
     const setFullscreen = useCallback(async (fullscreen) => {
-        if (!support.fullscreenSupported) return
+        if (!support.fullscreenSupported || displayOperationBusyRef.current) return
+        displayOperationBusyRef.current = true
         setWindowDisplayBusy(true)
         setWindowDisplayError('')
         try {
@@ -114,16 +138,19 @@ export function WindowDisplayProvider({ children }) {
             if (!fullscreen && support.frameControlSupported) {
                 state = await setWindowFrameVisible(framePreferenceRef.current)
             }
+            fullscreenRef.current = state.fullscreen
             setIsFullscreen(state.fullscreen)
         } catch (error) {
             setWindowDisplayError(error?.message || String(error))
             try {
                 const state = await getWindowDisplayState()
+                fullscreenRef.current = state.fullscreen
                 setIsFullscreen(state.fullscreen)
             } catch {
                 // Preserve the last known state when recovery also fails.
             }
         } finally {
+            displayOperationBusyRef.current = false
             setWindowDisplayBusy(false)
         }
     }, [support.frameControlSupported, support.fullscreenSupported])
@@ -133,16 +160,38 @@ export function WindowDisplayProvider({ children }) {
     }, [setFullscreen])
 
     useEffect(() => {
-        if (!support.fullscreenSupported || typeof window === 'undefined') return undefined
+        if ((!support.fullscreenSupported && !support.frameControlSupported) || typeof window === 'undefined') return undefined
         const handleFullscreenShortcut = (event) => {
             if (event.repeat) return
-            if (event.key === 'F11') {
+            if (
+                keyboardShortcutsEnabled
+                && event.key === 'F11'
+                && event.shiftKey
+                && !event.ctrlKey
+                && !event.altKey
+                && !event.metaKey
+                && support.frameControlSupported
+            ) {
+                event.preventDefault()
+                void setShowWindowFrame(!framePreferenceRef.current)
+                return
+            }
+            if (
+                keyboardShortcutsEnabled
+                && support.fullscreenSupported
+                && event.key === 'F11'
+                && !event.shiftKey
+                && !event.ctrlKey
+                && !event.altKey
+                && !event.metaKey
+            ) {
                 event.preventDefault()
                 void toggleFullscreen()
                 return
             }
             if (
-                event.key === 'Escape'
+                support.fullscreenSupported
+                && event.key === 'Escape'
                 && fullscreenRef.current
                 && !event.defaultPrevented
                 && !document.querySelector('[role="dialog"][aria-modal="true"]')
@@ -153,7 +202,14 @@ export function WindowDisplayProvider({ children }) {
         }
         window.addEventListener('keydown', handleFullscreenShortcut)
         return () => window.removeEventListener('keydown', handleFullscreenShortcut)
-    }, [setFullscreen, support.fullscreenSupported, toggleFullscreen])
+    }, [
+        keyboardShortcutsEnabled,
+        setFullscreen,
+        setShowWindowFrame,
+        support.frameControlSupported,
+        support.fullscreenSupported,
+        toggleFullscreen,
+    ])
 
     const value = useMemo(() => ({
         showWindowFrame,

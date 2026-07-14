@@ -8,6 +8,7 @@ import {
     setAppThemeVars,
 } from '../lib/appChrome'
 import { useWindowDisplay } from './useWindowDisplay'
+import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 
 const THEMES = {
     dark: withThemeVars({ name: 'dark', bg: '#1a1b1e', text: '#d1d5db', card: '#25262b', border: '#373a40', accent: '#5c7cfa' }),
@@ -54,6 +55,7 @@ const DEFAULTS = {
     textColor: '#38342f',
     showTitleBar: false,
     showZipBookmarkBar: true,
+    keyboardShortcutsEnabled: true,
     lang: 'en',
 }
 
@@ -81,6 +83,7 @@ function loadSaved() {
             merged.layout = merged.layout === 'dual' || merged.layout === 'spread' ? 'dual' : 'single'
             merged.showTitleBar = false
             merged.showZipBookmarkBar = merged.showZipBookmarkBar !== false
+            merged.keyboardShortcutsEnabled = merged.keyboardShortcutsEnabled !== false
             if (safeMode) {
                 return { ...merged, theme: 'light', bgColor: SAFE_APP_BG, textColor: SAFE_APP_FG }
             }
@@ -95,24 +98,35 @@ function loadSaved() {
 
 export function useReaderSettings() {
     const windowDisplay = useWindowDisplay()
+    const {
+        keyboardShortcutsEnabled,
+        setKeyboardShortcutsEnabled,
+    } = useKeyboardShortcuts()
     const [s, setS] = useState(loadSaved)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [resetToast, setResetToast] = useState(false)
-    const latestSettingsRef = useRef(s)
+    const latestSettingsRef = useRef({ ...s, keyboardShortcutsEnabled })
+    const settingsDirtyRef = useRef(false)
 
     useEffect(() => {
-        latestSettingsRef.current = s
-    }, [s])
+        latestSettingsRef.current = { ...s, keyboardShortcutsEnabled }
+    }, [keyboardShortcutsEnabled, s])
 
     useEffect(() => {
+        if (!settingsDirtyRef.current) return undefined
         const timer = window.setTimeout(() => {
             persistSettings(latestSettingsRef.current)
+            settingsDirtyRef.current = false
         }, 120)
         return () => window.clearTimeout(timer)
     }, [s])
 
     useEffect(() => {
-        const flush = () => persistSettings(latestSettingsRef.current)
+        const flush = () => {
+            if (!settingsDirtyRef.current) return
+            persistSettings(latestSettingsRef.current)
+            settingsDirtyRef.current = false
+        }
         window.addEventListener('pagehide', flush)
         return () => {
             window.removeEventListener('pagehide', flush)
@@ -120,7 +134,10 @@ export function useReaderSettings() {
         }
     }, [])
 
-    const set = useCallback((key, val) => setS(prev => ({ ...prev, [key]: val })), [])
+    const set = useCallback((key, val) => {
+        settingsDirtyRef.current = true
+        setS(prev => ({ ...prev, [key]: val }))
+    }, [])
 
     const incFont = useCallback(() => set('fontSize', Math.min(36, s.fontSize + 2)), [s.fontSize])
     const decFont = useCallback(() => set('fontSize', Math.max(10, s.fontSize - 2)), [s.fontSize])
@@ -131,10 +148,12 @@ export function useReaderSettings() {
         const lang = s.lang
         const next = { ...DEFAULTS, lang }
         setS(next)
+        setKeyboardShortcutsEnabled(true)
         persistSettings(next)
+        settingsDirtyRef.current = false
         setResetToast(true)
         setTimeout(() => setResetToast(false), 2500)
-    }, [s.lang])
+    }, [s.lang, setKeyboardShortcutsEnabled])
 
     const baseThemeStyle = THEMES[s.theme] || THEMES.dark
     const fallbackFontFamily = (FONTS[s.font] || FONTS.system).family
@@ -194,6 +213,8 @@ export function useReaderSettings() {
         showTitleBar: false,
         showZipBookmarkBar: s.showZipBookmarkBar !== false,
         setShowZipBookmarkBar: v => set('showZipBookmarkBar', !!v),
+        keyboardShortcutsEnabled,
+        setKeyboardShortcutsEnabled,
         lang: s.lang, setLang: v => set('lang', v),
         resetDefaults, resetToast,
         settingsOpen, toggleSettings,

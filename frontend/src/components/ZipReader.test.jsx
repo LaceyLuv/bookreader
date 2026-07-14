@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
 
@@ -142,18 +142,32 @@ test('hides only the ZIP bookmark strip when the display preference is off', asy
     renderReader()
 
     expect(await screen.findByAltText('page 1')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Img 2' })).toBeNull()
+    expect(screen.queryByRole('option', { name: 'Page 2' })).toBeNull()
     expect(screen.getByTestId('progress-current-page').textContent).toBe('1')
 })
 
-test('shows saved ZIP bookmarks when the bookmark strip preference is on', async () => {
+test('shows the bookmark navigator when the ZIP bookmark-bar preference is on', async () => {
     mockUseReadingProgress.mockImplementation(() => createProgress({
         bookmarks: [{ id: 'bookmark-2', position: 1, locator: { kind: 'zip', memberName: '2.jpg', page: 1 } }],
     }))
 
     renderReader()
 
-    expect(await screen.findByRole('button', { name: 'Img 2' })).toBeTruthy()
+    expect(await screen.findByRole('option', { name: 'Page 2' })).toBeTruthy()
+})
+
+test('opens the bookmark panel and adds the current ZIP page from the panel action', async () => {
+    const addBookmark = vi.fn()
+    mockUseReadingProgress.mockImplementation(() => createProgress({ addBookmark }))
+    renderReader()
+
+    await screen.findByAltText('page 1')
+    fireEvent.click(screen.getByRole('button', { name: 'Open bookmarks' }))
+    const panel = screen.getByRole('complementary', { name: 'Bookmarks' })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Add bookmark' }))
+
+    expect(addBookmark).toHaveBeenCalledTimes(1)
+    expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ enabled: false }))
 })
 
 test('ZIP image load failures show a per-page error without removing the reader', async () => {

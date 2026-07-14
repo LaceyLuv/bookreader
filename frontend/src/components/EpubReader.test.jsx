@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
 
@@ -133,6 +133,28 @@ beforeEach(() => {
         }
         throw new Error(`Unexpected fetch: ${requestUrl}`)
     })
+})
+
+test('opens the bookmark panel and adds the current EPUB location', async () => {
+    const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800)
+    const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600)
+    const scrollWidthSpy = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(800)
+    const addBookmark = vi.fn()
+    mockUseReadingProgress.mockReturnValue(createProgress({ addBookmark }))
+    renderReader()
+
+    await screen.findByText('Chapter One')
+    fireEvent.click(screen.getByRole('button', { name: 'Open bookmarks' }))
+    const panel = screen.getByRole('complementary', { name: 'Bookmarks' })
+    const addButton = within(panel).getByRole('button', { name: 'Add bookmark' })
+    await waitFor(() => expect(addButton.disabled).toBe(false))
+    fireEvent.click(addButton)
+
+    expect(addBookmark).toHaveBeenCalledTimes(1)
+    expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ enabled: false }))
+    widthSpy.mockRestore()
+    heightSpy.mockRestore()
+    scrollWidthSpy.mockRestore()
 })
 
 test('loads toc and renders sanitized chapter html', async () => {

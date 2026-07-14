@@ -1,15 +1,20 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useReaderSettings } from '../hooks/useReaderSettings'
 import { useResponsiveReaderLayout } from '../hooks/useResponsiveReaderLayout'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
+import { useReaderCommandShortcuts } from '../hooks/useReaderCommandShortcuts'
 import { useReadingProgress } from '../hooks/useReadingProgress'
 import ReaderToolbar from './ReaderToolbar'
+import ReaderBookmarksPanel, {
+    ReaderBookmarkFab,
+    ReaderBookmarkNavigator,
+    ReaderBookmarkToggle,
+} from './ReaderBookmarks'
 import ReaderProgressBar from './ReaderProgressBar'
 import ResumeToast from './ResumeToast'
 import ReaderLoadProblem from './ReaderLoadProblem'
 import ReaderShell, {
-    ReaderBookmarkStrip,
     ReaderNoticeBar,
     ReaderPageTurnControls,
     ReaderTopBar,
@@ -17,6 +22,7 @@ import ReaderShell, {
 import { API_BOOKS_BASE, authenticateAssetUrl } from '../lib/apiBase'
 import { readApiProblem } from '../lib/readErrorDetail'
 import { getZipImageLayout } from '../lib/zipReaderLayout'
+import { createBookmarkThemeStyle } from '../lib/bookmarkTheme'
 
 const API = API_BOOKS_BASE
 
@@ -26,8 +32,18 @@ function ZipReader() {
     const location = useLocation()
     const legacyId = location.state?.legacyId ?? null
     const settings = useReaderSettings()
-    const { themeStyle, layout: preferredLayout, hMargin, vMargin, zipImageScale, tt } = settings
+    const {
+        themeStyle,
+        layout: preferredLayout,
+        setLayout,
+        hMargin,
+        vMargin,
+        zipImageScale,
+        setZipImageScale,
+        tt,
+    } = settings
     const layout = useResponsiveReaderLayout(preferredLayout)
+    const bookmarkThemeStyle = useMemo(() => createBookmarkThemeStyle(themeStyle), [themeStyle])
 
     const [images, setImages] = useState([])
     const [loading, setLoading] = useState(true)
@@ -37,6 +53,7 @@ function ZipReader() {
     const [imageRetryVersions, setImageRetryVersions] = useState({})
     const [archiveDiagnostics, setArchiveDiagnostics] = useState([])
     const [imageProblems, setImageProblems] = useState({})
+    const [bookmarksOpen, setBookmarksOpen] = useState(false)
     const listGenerationRef = useRef(0)
 
     useEffect(() => {
@@ -98,6 +115,9 @@ function ZipReader() {
             const memberIndex = saved?.memberName ? images.indexOf(saved.memberName) : -1
             return memberIndex >= 0 ? memberIndex : saved?.page
         },
+        bookmarkSnapshot: () => ({
+            excerpt: images[currentPage] || `${tt('page')} ${currentPage + 1}`,
+        }),
     })
     const {
         currentPosition: currentPage,
@@ -105,6 +125,7 @@ function ZipReader() {
         bookmarks,
         addBookmark,
         removeBookmark,
+        updateBookmark,
         goToBookmark,
         restoredProgress,
         startOver,
@@ -140,7 +161,21 @@ function ZipReader() {
         seekToImage(0)
     }, [seekToImage, startOver])
 
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: !listProblem && !settings.settingsOpen, readerRootRef })
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: !bookmarksOpen && !listProblem && !settings.settingsOpen, readerRootRef })
+    useReaderCommandShortcuts({
+        enabled: !bookmarksOpen && !loading && !listProblem && images.length > 0 && !settings.settingsOpen,
+        settingsShortcutEnabled: !bookmarksOpen,
+        searchShortcutEnabled: false,
+        onBack: () => navigate('/'),
+        onFirstPage: () => seekToImage(0),
+        onLastPage: () => seekToImage(images.length - 1),
+        onAddBookmark: addBookmark,
+        onToggleBookmarkBar: () => settings.setShowZipBookmarkBar(!settings.showZipBookmarkBar),
+        onToggleLayout: () => setLayout(preferredLayout === 'dual' ? 'single' : 'dual'),
+        onDecreaseScale: () => setZipImageScale(zipImageScale - 0.1),
+        onIncreaseScale: () => setZipImageScale(zipImageScale + 0.1),
+        onToggleSettings: settings.toggleSettings,
+    })
 
     const imageUrl = (name) => {
         const retryVersion = imageRetryVersions[name] || 0
@@ -221,6 +256,18 @@ function ZipReader() {
         )
     }
 
+    const handleBookmarkActivate = (bookmark) => {
+        const memberIndex = bookmark.locator?.memberName ? images.indexOf(bookmark.locator.memberName) : -1
+        goToBookmark({
+            ...bookmark,
+            position: memberIndex >= 0
+                ? memberIndex
+                : (bookmark.locator?.fallbackPage ?? bookmark.position),
+        })
+    }
+
+    const canAddBookmark = !loading && !listProblem && images.length > 0
+
     return (
         <ReaderShell
             rootRef={readerRootRef}
@@ -237,7 +284,13 @@ function ZipReader() {
                     )}
                     actions={(
                         <>
-                            <button type="button" onClick={addBookmark} title={tt('bookmark')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg></button>
+                            <ReaderBookmarkToggle
+                                open={bookmarksOpen}
+                                onToggle={() => setBookmarksOpen((open) => !open)}
+                                themeStyle={bookmarkThemeStyle}
+                                tt={tt}
+                                lang={settings.lang}
+                            />
                             <ReaderToolbar settings={settings} readerType="zip" />
                         </>
                     )}
@@ -250,27 +303,40 @@ function ZipReader() {
                     issues={archiveDiagnostics}
                 />
             )}
-            bookmarkBar={settings.showZipBookmarkBar ? (
-                <ReaderBookmarkStrip
+            bookmarkBar={settings.showZipBookmarkBar && (bookmarksOpen || bookmarks.length > 0) ? (
+                <ReaderBookmarkNavigator
                     items={bookmarks}
-                    label={tt('bookmarks')}
-                    themeStyle={themeStyle}
-                    getLabel={(bookmark) => `Img ${bookmark.position + 1}`}
-                    onActivate={(bookmark) => {
-                        const memberIndex = bookmark.locator?.memberName ? images.indexOf(bookmark.locator.memberName) : -1
-                        goToBookmark({
-                            ...bookmark,
-                            position: memberIndex >= 0
-                                ? memberIndex
-                                : (bookmark.locator?.fallbackPage ?? bookmark.position),
-                        })
-                    }}
+                    currentPosition={currentPage}
+                    themeStyle={bookmarkThemeStyle}
+                    onActivate={handleBookmarkActivate}
+                    tt={tt}
+                    lang={settings.lang}
+                />
+            ) : null}
+            sidePanel={bookmarksOpen ? (
+                <ReaderBookmarksPanel
+                    open
+                    items={bookmarks}
+                    currentPosition={currentPage}
+                    themeStyle={bookmarkThemeStyle}
+                    onClose={() => setBookmarksOpen(false)}
+                    onAdd={canAddBookmark ? () => addBookmark() : undefined}
+                    onActivate={handleBookmarkActivate}
                     onRemove={removeBookmark}
-                    removeLabel={tt('removeBookmark')}
+                    onUpdate={updateBookmark}
+                    tt={tt}
+                    lang={settings.lang}
                 />
             ) : null}
             main={(
                 <div className="flex-1 relative min-h-0">
+                    <ReaderBookmarkFab
+                        onAdd={() => addBookmark()}
+                        themeStyle={bookmarkThemeStyle}
+                        tt={tt}
+                        lang={settings.lang}
+                        disabled={!canAddBookmark}
+                    />
                     <ReaderPageTurnControls
                         themeStyle={themeStyle}
                         showPrev={currentPage > 0}

@@ -7,6 +7,7 @@ import { readErrorDetail } from '../lib/readErrorDetail'
 import DashboardSettingsPanel from '../components/DashboardSettingsPanel'
 import AnnotationExportControls from '../components/AnnotationExportControls'
 import gyeolTypography from '../assets/brand/gyeol-typography.png'
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 
 const API = API_BOOKS_BASE
 const FOLDER_API = API_BOOKS_BASE.replace(/\/books$/, '/library/folders')
@@ -330,6 +331,7 @@ function getStatusLabel(status, statusOptions, fallbackLabel) {
 
 function Dashboard() {
     const navigate = useNavigate()
+    const { keyboardShortcutsEnabled } = useKeyboardShortcuts()
     const [books, setBooks] = useState([])
     const [folders, setFolders] = useState([])
     const [loading, setLoading] = useState(true)
@@ -907,6 +909,63 @@ function Dashboard() {
         })
     }, [visibleBookIds])
 
+    const focusDashboardSearch = useCallback(() => {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.querySelector('[data-dashboard-search="true"]')?.focus()
+            })
+        })
+    }, [])
+
+    useEffect(() => {
+        if (!keyboardShortcutsEnabled) return undefined
+
+        const handleDashboardShortcut = (event) => {
+            if (event.defaultPrevented || event.repeat || event.isComposing) return
+            const ctrlOnly = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+            if (!ctrlOnly) return
+
+            const isComma = event.code === 'Comma' || event.key === ','
+            const isSearch = event.code === 'KeyF' || event.key?.toLowerCase() === 'f'
+            if (isComma && !selectedInfo) {
+                event.preventDefault()
+                setSettingsOpen((open) => !open)
+                return
+            }
+            if (isSearch && !selectedInfo) {
+                event.preventDefault()
+                if (!settingsOpen) setSettingsOpen(true)
+                focusDashboardSearch()
+                return
+            }
+            if (settingsOpen || selectedInfo) return
+
+            if ((event.code === 'KeyO' || event.key?.toLowerCase() === 'o') && !uploading) {
+                event.preventDefault()
+                fileInputRef.current?.click()
+                return
+            }
+
+            const libraryFocused = libraryRef.current?.contains(document.activeElement)
+            if ((event.code === 'KeyA' || event.key?.toLowerCase() === 'a') && libraryFocused && visibleBookIds.length > 0) {
+                event.preventDefault()
+                handleSelectionModeChange(true)
+                setSelectedBookIds(visibleBookIds)
+            }
+        }
+
+        window.addEventListener('keydown', handleDashboardShortcut, true)
+        return () => window.removeEventListener('keydown', handleDashboardShortcut, true)
+    }, [
+        focusDashboardSearch,
+        handleSelectionModeChange,
+        keyboardShortcutsEnabled,
+        selectedInfo,
+        settingsOpen,
+        uploading,
+        visibleBookIds,
+    ])
+
     const mutedTextColor = 'color-mix(in srgb, var(--app-fg) 72%, var(--app-bg) 28%)'
     const subtleTextColor = 'color-mix(in srgb, var(--app-fg) 58%, var(--app-bg) 42%)'
     const buttonBorder = '1px solid color-mix(in srgb, var(--app-fg) 10%, var(--app-bg) 90%)'
@@ -1053,7 +1112,7 @@ function Dashboard() {
                         </h1>
                         <p data-tauri-drag-region>{tt('appSubtitle')}</p>
                     </div>
-                    <button type="button" className="dashboard-settings-button" onClick={() => setSettingsOpen(true)} aria-label={tt('librarySettings')} title={tt('librarySettings')}>⚙</button>
+                    <button type="button" className="dashboard-settings-button" onClick={() => setSettingsOpen(true)} aria-label={tt('librarySettings')} aria-keyshortcuts={keyboardShortcutsEnabled ? 'Control+,' : undefined} title={tt('librarySettings')}>⚙</button>
                 </header>
 
                 <div
@@ -1061,7 +1120,9 @@ function Dashboard() {
                     onDrop={handleDrop}
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={(event) => {
+                        if (event.target !== fileInputRef.current) fileInputRef.current?.click()
+                    }}
                 >
                     <input
                         ref={fileInputRef}

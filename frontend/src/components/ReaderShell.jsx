@@ -3,6 +3,7 @@ function ReaderShell({
     topBar = null,
     notice = null,
     bookmarkBar = null,
+    sidePanel = null,
     main,
     bottom = null,
     overlays = null,
@@ -21,9 +22,14 @@ function ReaderShell({
         >
             {topBar}
             {notice}
-            {bookmarkBar}
-            {main}
-            {bottom}
+            <div className="reader-shell-body relative flex min-h-0 flex-1 overflow-hidden">
+                <div className="reader-shell-reading flex min-w-0 flex-1 flex-col">
+                    {bookmarkBar}
+                    {main}
+                    {bottom}
+                </div>
+                {sidePanel}
+            </div>
             {overlays}
             {tail}
         </div>

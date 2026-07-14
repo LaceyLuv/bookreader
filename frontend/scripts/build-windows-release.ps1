@@ -51,6 +51,8 @@ try {
         Set-Content -LiteralPath $overlayPath -Value ($overlay | ConvertTo-Json -Depth 8) -Encoding UTF8
         & node (Join-Path $ScriptDir "tauri-cli.cjs") build --ci --config $overlayPath -- --locked | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "Tauri release build failed with exit code $LASTEXITCODE." }
+        & node (Join-Path $ScriptDir "package-shortcut-guide.mjs") | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Shortcut guide packaging failed with exit code $LASTEXITCODE." }
     }
     finally {
         if (Test-Path -LiteralPath $overlayPath) { Remove-Item -LiteralPath $overlayPath -Force }

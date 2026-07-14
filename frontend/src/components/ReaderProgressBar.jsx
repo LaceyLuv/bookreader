@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value))
@@ -30,6 +31,7 @@ function ReaderProgressBar({
     readerFocusRef = null,
     onVisibilityChange,
 }) {
+    const { keyboardShortcutsEnabled } = useKeyboardShortcuts()
     const hasTotalPages = Number.isFinite(totalPages) && totalPages > 0
     const canSeekPage = hasTotalPages && typeof onSeekPage === 'function'
     const canSeekProgress = typeof onSeekProgress === 'function'
@@ -49,11 +51,12 @@ function ReaderProgressBar({
 
     useEffect(() => {
         const handleProgressShortcut = (event) => {
+            if (!keyboardShortcutsEnabled || event.repeat || event.isComposing) return
             const target = event.target
             const isEditing = target instanceof HTMLElement
                 && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
             const isHKey = event.code === 'KeyH' || event.key?.toLowerCase() === 'h' || event.key === 'ㅗ'
-            if (!event.ctrlKey || event.altKey || event.metaKey || !isHKey || isEditing) return
+            if (!event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || !isHKey || isEditing) return
 
             event.preventDefault()
             const nextCollapsed = !isCollapsed
@@ -64,7 +67,7 @@ function ReaderProgressBar({
 
         window.addEventListener('keydown', handleProgressShortcut)
         return () => window.removeEventListener('keydown', handleProgressShortcut)
-    }, [isCollapsed, onVisibilityChange, readerFocusRef])
+    }, [isCollapsed, keyboardShortcutsEnabled, onVisibilityChange, readerFocusRef])
 
     useEffect(() => {
         if (!isDragging) setDraftProgress(normalizedProgress)
@@ -150,8 +153,9 @@ function ReaderProgressBar({
             <div className="reader-progress-layer group h-3" style={{ borderTop: '1px solid var(--panel-border)' }}>
                 <button
                     type="button"
-                    title="Show progress bar (Ctrl+H)"
+                    title={keyboardShortcutsEnabled ? 'Show progress bar (Ctrl+H)' : 'Show progress bar'}
                     aria-label="Show progress bar"
+                    aria-keyshortcuts={keyboardShortcutsEnabled ? 'Control+H' : undefined}
                     data-reader-progress-control="true"
                     onPointerDown={markPointerInteraction}
                     onFocus={handleControlFocus}
@@ -176,8 +180,9 @@ function ReaderProgressBar({
         <div className="reader-progress reader-progress-layer" style={{ borderTop: '1px solid var(--panel-border)' }}>
             <button
                 type="button"
-                title="Hide progress bar (Ctrl+H)"
+                title={keyboardShortcutsEnabled ? 'Hide progress bar (Ctrl+H)' : 'Hide progress bar'}
                 aria-label="Hide progress bar"
+                aria-keyshortcuts={keyboardShortcutsEnabled ? 'Control+H' : undefined}
                 data-reader-progress-control="true"
                 onPointerDown={markPointerInteraction}
                 onFocus={handleControlFocus}

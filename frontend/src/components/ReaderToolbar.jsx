@@ -68,6 +68,8 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
         setTextColor,
         showZipBookmarkBar = true,
         setShowZipBookmarkBar = () => {},
+        keyboardShortcutsEnabled = true,
+        setKeyboardShortcutsEnabled = () => {},
         showWindowFrame = true,
         setShowWindowFrame = async () => {},
         isFullscreen = false,
@@ -267,6 +269,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                     onClick={() => setShowZipBookmarkBar(!showZipBookmarkBar)}
                     title={showZipBookmarkBar ? tt('hideZipBookmarkBar') : tt('showZipBookmarkBar')}
                     aria-label={showZipBookmarkBar ? tt('hideZipBookmarkBar') : tt('showZipBookmarkBar')}
+                    aria-keyshortcuts={keyboardShortcutsEnabled ? 'Shift+B' : undefined}
                     aria-pressed={showZipBookmarkBar}
                     className="reader-toolbar-button flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:opacity-60"
                     style={{ color: t.text }}
@@ -282,6 +285,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                 onClick={() => void toggleFullscreen()}
                 title={isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
                 aria-label={isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
+                aria-keyshortcuts={keyboardShortcutsEnabled ? 'F11' : undefined}
                 aria-pressed={isFullscreen}
                 disabled={!fullscreenSupported || windowDisplayBusy}
                 className="reader-toolbar-button flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:opacity-60 disabled:cursor-not-allowed disabled:opacity-30"
@@ -301,6 +305,8 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                 ref={triggerRef}
                 onClick={toggleSettings}
                 title={tt('settings')}
+                aria-label={tt('settings')}
+                aria-keyshortcuts={keyboardShortcutsEnabled ? 'Control+,' : undefined}
                 className="reader-toolbar-button flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:opacity-60"
                 style={{ color: t.text }}
             >
@@ -514,6 +520,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                             <input
                                                 type="checkbox"
                                                 checked={showWindowFrame}
+                                                aria-keyshortcuts={keyboardShortcutsEnabled ? 'Shift+F11' : undefined}
                                                 disabled={!frameControlSupported || windowDisplayBusy}
                                                 onChange={(event) => void setShowWindowFrame(event.target.checked)}
                                                 className="h-4 w-4 accent-[#b7864b]"
@@ -525,11 +532,24 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                                 <input
                                                     type="checkbox"
                                                     checked={showZipBookmarkBar}
+                                                    aria-keyshortcuts={keyboardShortcutsEnabled ? 'Shift+B' : undefined}
                                                     onChange={(event) => setShowZipBookmarkBar(event.target.checked)}
                                                     className="h-4 w-4 accent-[#b7864b]"
                                                 />
                                             </label>
                                         )}
+                                        <label className="flex items-start justify-between gap-4 rounded-xl border border-[#ded4c5] bg-[#fffdf9] px-3 py-2.5 text-[11px] font-semibold">
+                                            <span>
+                                                <b className="block font-semibold">{tt('enableKeyboardShortcuts')}</b>
+                                                <small className="mt-1 block font-normal leading-relaxed text-[#8a7c66]">{tt('keyboardShortcutsHint')}</small>
+                                            </span>
+                                            <input
+                                                type="checkbox"
+                                                checked={keyboardShortcutsEnabled}
+                                                onChange={(event) => setKeyboardShortcutsEnabled(event.target.checked)}
+                                                className="mt-0.5 h-4 w-4 shrink-0 accent-[#b7864b]"
+                                            />
+                                        </label>
                                         <button
                                             type="button"
                                             aria-pressed={isFullscreen}
@@ -668,7 +688,7 @@ export default function ReaderToolbar({ settings, readerType = '', txtTransforms
                                     )}
 
                                     <div className="rounded-2xl border border-dashed border-[#d7cbbb] bg-[#f4eee5] px-4 py-3 text-[10px] leading-relaxed text-[#766854]">
-                                        {tt('keyboardHint')}
+                                        {keyboardShortcutsEnabled ? tt('keyboardHint') : tt('keyboardShortcutsDisabled')}
                                     </div>
                                 </div>
                             )}

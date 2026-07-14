@@ -8,6 +8,7 @@ import { useBackendStartup } from './hooks/useBackendStartup'
 import { createT } from './i18n'
 import { restartBookReader } from './lib/backendStartup'
 import { WindowDisplayProvider } from './hooks/useWindowDisplay'
+import { KeyboardShortcutsProvider } from './hooks/useKeyboardShortcuts'
 
 const TxtReader = lazy(() => import('./components/TxtReader'))
 const EpubReader = lazy(() => import('./components/EpubReader'))
@@ -48,8 +49,9 @@ function App() {
     }
 
     return (
-        <WindowDisplayProvider>
-            <BrowserRouter>
+        <KeyboardShortcutsProvider>
+            <WindowDisplayProvider>
+                <BrowserRouter>
                 {!backendBlocked && <FontStyleInjector />}
                 <div>
                     {backendBlocked ? (
@@ -89,8 +91,9 @@ function App() {
                     </Suspense>
                     )}
                 </div>
-            </BrowserRouter>
-        </WindowDisplayProvider>
+                </BrowserRouter>
+            </WindowDisplayProvider>
+        </KeyboardShortcutsProvider>
     )
 }
 

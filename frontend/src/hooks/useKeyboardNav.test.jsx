@@ -1,7 +1,8 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useRef } from 'react'
 import { useKeyboardNav } from './useKeyboardNav'
+import { KeyboardShortcutsProvider } from './useKeyboardShortcuts'
 
 function Harness({ onNext, onPrev }) {
     const readerRootRef = useRef(null)
@@ -49,4 +50,30 @@ test('Escape is left available when the reader has no escape action', () => {
     window.dispatchEvent(event)
 
     expect(event.defaultPrevented).toBe(false)
+})
+
+test('disabled shortcuts leave page keys untouched', () => {
+    localStorage.setItem('bookreader_settings', JSON.stringify({ keyboardShortcutsEnabled: false }))
+    const onNext = vi.fn()
+    const onPrev = vi.fn()
+    render(<KeyboardShortcutsProvider><Harness onNext={onNext} onPrev={onPrev} /></KeyboardShortcutsProvider>)
+    const event = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+
+    window.dispatchEvent(event)
+
+    expect(onNext).not.toHaveBeenCalled()
+    expect(onPrev).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+})
+
+test('modifier arrow keys are not mistaken for page turns', () => {
+    const onNext = vi.fn()
+    const onPrev = vi.fn()
+    render(<Harness onNext={onNext} onPrev={onPrev} />)
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft', altKey: true })
+    fireEvent.keyDown(window, { key: 'ArrowRight', ctrlKey: true })
+
+    expect(onNext).not.toHaveBeenCalled()
+    expect(onPrev).not.toHaveBeenCalled()
 })

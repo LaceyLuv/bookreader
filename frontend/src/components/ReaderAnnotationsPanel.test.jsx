@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
 
@@ -43,4 +43,35 @@ test('provides an accessible panel, selected filters, close action, and whole-bo
 
     await user.click(screen.getByRole('button', { name: 'closeAnnotations' }))
     expect(onClose).toHaveBeenCalledOnce()
+})
+
+test('Escape closes the annotations panel before a window-level action can run', () => {
+    const onClose = vi.fn()
+    const windowAction = vi.fn()
+    window.addEventListener('keydown', windowAction)
+
+    render(
+        <ReaderAnnotationsPanel
+            open
+            bookId="book-1"
+            themeStyle={themeStyle}
+            loading={false}
+            annotations={annotations}
+            activeAnnotationId={null}
+            onClose={onClose}
+            onItemClick={vi.fn()}
+            onDeleteItem={vi.fn()}
+            onEditItem={vi.fn()}
+            onColorItem={vi.fn()}
+            tt={(key) => key}
+        />,
+    )
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    fireEvent(document.body, event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(windowAction).not.toHaveBeenCalled()
+    window.removeEventListener('keydown', windowAction)
 })

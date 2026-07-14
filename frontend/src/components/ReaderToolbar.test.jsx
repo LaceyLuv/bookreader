@@ -15,6 +15,7 @@ function createSettings(overrides = {}) {
         zipImageScale: 1, setZipImageScale: vi.fn(), bgColor: '#fbfaf6', setBgColor: vi.fn(),
         textColor: '#38342f', setTextColor: vi.fn(), showTitleBar: true, toggleTitleBar: vi.fn(),
         showZipBookmarkBar: true, setShowZipBookmarkBar: vi.fn(), showWindowFrame: true,
+        keyboardShortcutsEnabled: true, setKeyboardShortcutsEnabled: vi.fn(),
         setShowWindowFrame: vi.fn(), isFullscreen: false, toggleFullscreen: vi.fn(),
         frameControlSupported: true, fullscreenSupported: true, windowDisplayBusy: false, windowDisplayError: '',
         lang: 'ko', setLang: vi.fn(), resetDefaults: vi.fn(), resetToast: false, settingsOpen: true,
@@ -109,6 +110,17 @@ test('window, fullscreen, and ZIP bookmark-bar controls call their display actio
     expect(settings.setShowZipBookmarkBar).toHaveBeenNthCalledWith(1, false)
     expect(settings.setShowZipBookmarkBar).toHaveBeenNthCalledWith(2, false)
     expect(settings.toggleFullscreen).toHaveBeenCalledOnce()
+})
+
+test('reading settings can disable app shortcuts without disabling pointer controls', async () => {
+    const user = userEvent.setup()
+    const settings = renderToolbar({ readerType: 'zip' })
+
+    await user.click(screen.getByRole('checkbox', { name: /enableKeyboardShortcuts/ }))
+    await user.click(screen.getByRole('button', { name: 'single' }))
+
+    expect(settings.setKeyboardShortcutsEnabled).toHaveBeenCalledWith(false)
+    expect(settings.setLayout).toHaveBeenCalledWith('single')
 })
 
 test('shared preview reflects settings on basic and is hidden on advanced', async () => {

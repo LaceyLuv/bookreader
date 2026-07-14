@@ -1,6 +1,6 @@
 # Desktop Build Guide (Windows)
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 This document describes how to run and build the Tauri desktop app, how the Python sidecar is produced, where outputs are written, and what to check after install.
 
@@ -35,6 +35,7 @@ Build pipeline:
 - Rust release build
 - Sidecar generation runs inside `beforeBuildCommand` via `npm run desktop:sidecar`
 - NSIS installer bundling
+- `scripts/package-shortcut-guide.mjs` copies the bundled shortcut guide beside the installer with the application version in its filename
 
 ## 3) Sidecar build flow
 
@@ -75,6 +76,9 @@ Outputs:
 - Sidecar exe: `frontend/src-tauri/binaries/bookreader-backend-<triple>.exe`
 - Desktop app exe: `frontend/src-tauri/target/release/Gyeol.exe`
 - NSIS installer: `frontend/src-tauri/target/release/bundle/nsis/*-setup.exe`
+- Separately distributed shortcut guide: `frontend/src-tauri/target/release/bundle/nsis/글결_<version>_단축키_안내.txt`
+
+The canonical UTF-8 guide is `frontend/src-tauri/resources/글결_단축키_안내.txt`. Tauri includes that file in the installed application resources, while the packaging script makes an exact versioned copy beside the NSIS installer. Edit only the canonical file; never maintain the release copy by hand.
 
 Example:
 
@@ -90,7 +94,8 @@ Get-ChildItem C:\dev\bookreader\frontend\src-tauri\target\release\bundle\nsis
 4. Upload/open an EPUB file and navigate TOC/chapters.
 5. Upload/open a ZIP comic and navigate images.
 6. Confirm the UI does not show a backend diagnostic and can list/open books.
-7. Close app and verify sidecar process is terminated.
+7. Confirm the versioned shortcut guide exists beside the installer and opens as Korean UTF-8 text.
+8. Close app and verify sidecar process is terminated.
 
 Packaged builds use a random loopback port and a per-launch nonce. Port `8000` is debug-only; do not expose or log the release nonce just to probe the installed app. Build the desktop first, then use `npm run desktop:migration-fixtures` and `npm run desktop:fault-smoke` for authenticated, migration, and forced-exit checks.
 

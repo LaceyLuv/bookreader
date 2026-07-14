@@ -11,7 +11,7 @@ import ReaderShell, {
 
 const themeStyle = { border: '#ddd', card: '#fff', text: '#111' }
 
-test('ReaderShell preserves the focus root and renders slots in order', () => {
+test('ReaderShell preserves the focus root and stable reading surface slot order', () => {
     const rootRef = React.createRef()
     render(
         <ReaderShell
@@ -29,15 +29,50 @@ test('ReaderShell preserves the focus root and renders slots in order', () => {
     expect(rootRef.current).toBeInstanceOf(HTMLElement)
     expect(rootRef.current.tabIndex).toBe(-1)
     expect(rootRef.current.classList.contains('readerRoot')).toBe(true)
-    expect([...rootRef.current.children].map((node) => node.dataset.testid)).toEqual([
+    expect([...rootRef.current.children].map((node) => node.dataset.testid || node.className)).toEqual([
         'slot-top',
         'slot-notice',
-        'slot-bookmarks',
-        'slot-main',
-        'slot-bottom',
+        expect.stringContaining('reader-shell-body'),
         'slot-overlays',
         'slot-tail',
     ])
+    const readingSurface = screen.getByTestId('slot-main').closest('.reader-shell-reading')
+    expect([...readingSurface.children].map((node) => node.dataset.testid)).toEqual([
+        'slot-bookmarks',
+        'slot-main',
+        'slot-bottom',
+    ])
+})
+
+test('ReaderShell docks an optional side panel beside the reading surface', () => {
+    render(
+        <ReaderShell
+            bookmarkBar={<div data-testid="slot-bookmarks" />}
+            main={<div data-testid="slot-main" />}
+            bottom={<div data-testid="slot-bottom" />}
+            sidePanel={<aside data-testid="slot-side" />}
+        />,
+    )
+
+    const readingSurface = screen.getByTestId('slot-main').closest('.reader-shell-reading')
+    expect(readingSurface).toBeTruthy()
+    expect([...readingSurface.children].map((node) => node.dataset.testid)).toEqual([
+        'slot-bookmarks',
+        'slot-main',
+        'slot-bottom',
+    ])
+    expect(screen.getByTestId('slot-side').parentElement).toBe(readingSurface.parentElement)
+})
+
+test('ReaderShell keeps the reading DOM mounted when a side panel opens', () => {
+    const main = <div data-testid="slot-main" />
+    const { rerender } = render(<ReaderShell main={main} />)
+    const originalMain = screen.getByTestId('slot-main')
+
+    rerender(<ReaderShell main={main} sidePanel={<aside data-testid="slot-side" />} />)
+
+    expect(screen.getByTestId('slot-main')).toBe(originalMain)
+    expect(screen.getByTestId('slot-side')).toBeTruthy()
 })
 
 test('ReaderTopBar keeps back, meta, and action areas separate', () => {

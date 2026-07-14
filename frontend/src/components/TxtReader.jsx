@@ -5,14 +5,19 @@ import ReaderProgressBar from './ReaderProgressBar'
 import ReaderSearchPanel from './ReaderSearchPanel'
 import ReaderSelectionMenu from './ReaderSelectionMenu'
 import ReaderToolbar from './ReaderToolbar'
+import ReaderBookmarksPanel, {
+    ReaderBookmarkFab,
+    ReaderBookmarkNavigator,
+    ReaderBookmarkToggle,
+} from './ReaderBookmarks'
 import ResumeToast from './ResumeToast'
 import TxtEncodingDialog from './TxtEncodingDialog'
 import ReaderShell, {
-    ReaderBookmarkStrip,
     ReaderPageTurnControls,
     ReaderTopBar,
 } from './ReaderShell'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
+import { useReaderCommandShortcuts } from '../hooks/useReaderCommandShortcuts'
 import { useReaderViewportAnchor } from '../hooks/useReaderViewportAnchor'
 import { useReadingProgress } from '../hooks/useReadingProgress'
 import { useReaderSettings } from '../hooks/useReaderSettings'
@@ -23,6 +28,8 @@ import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annota
 import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
 import { API_BOOKS_BASE } from '../lib/apiBase'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
+import { getBookmarkExcerpt } from '../lib/bookmarkExcerpt'
+import { createBookmarkThemeStyle } from '../lib/bookmarkTheme'
 import { getDualPageOuterInset, MAX_SPLIT_MARGIN_PX } from '../lib/dualPageLayout'
 import { clearSearchHighlights } from '../lib/searchHighlighter'
 import {
@@ -177,6 +184,7 @@ function TxtReader() {
         contentStyle,
         themeStyle,
         layout: preferredLayout,
+        setLayout,
         columnGap,
         hMargin,
         vMargin,
@@ -184,10 +192,13 @@ function TxtReader() {
         letterSpacing,
         lang,
         tt,
+        incFont,
+        decFont,
     } = settings
 
     const [compactWhitespace, setCompactWhitespace] = useState(false)
     const layout = useResponsiveReaderLayout(preferredLayout)
+    const bookmarkThemeStyle = useMemo(() => createBookmarkThemeStyle(themeStyle), [themeStyle])
     const dualPageOuterInset = layout === 'dual' ? getDualPageOuterInset(columnGap) : 0
     const paginationColumnGap = layout === 'dual' ? MAX_SPLIT_MARGIN_PX : 0
     const [splitParagraphs, setSplitParagraphs] = useState(false)
@@ -204,6 +215,7 @@ function TxtReader() {
     const [activeSearchIndex, setActiveSearchIndex] = useState(null)
     const [pendingSearchTarget, setPendingSearchTarget] = useState(null)
     const [annotationsOpen, setAnnotationsOpen] = useState(false)
+    const [bookmarksOpen, setBookmarksOpen] = useState(false)
     const [annotationsLoading, setAnnotationsLoading] = useState(false)
     const [annotations, setAnnotations] = useState([])
     const [activeAnnotationId, setActiveAnnotationId] = useState(null)
@@ -506,6 +518,11 @@ function TxtReader() {
                 page: saved?.page ?? saved?.fallbackPage,
             })
         },
+        bookmarkSnapshot: () => ({
+            excerpt: getBookmarkExcerpt(visibleRenderPages.flatMap((page) => (
+                page.segments.map((segment) => segment.displayText)
+            ))),
+        }),
     })
     const {
         currentPosition: currentViewportPage,
@@ -513,6 +530,7 @@ function TxtReader() {
         bookmarks,
         addBookmark,
         removeBookmark,
+        updateBookmark,
         restoredProgress,
         startOver,
     } = progress
@@ -1675,6 +1693,7 @@ function TxtReader() {
             setAnnotations((prev) => [created, ...prev])
             setAnnotationsOpen(true)
             setSearchOpen(false)
+            setBookmarksOpen(false)
             setPendingSearchTarget(null)
             setActiveSearchIndex(null)
             setActiveAnnotationId(created.id)
@@ -1776,8 +1795,43 @@ function TxtReader() {
         setEncodingContentVersion((version) => version + 1)
     }, [])
 
+    const goToLastPage = useCallback(() => {
+        void (async () => {
+            const pages = hasGlobalRenderPageMap ? globalRenderPages : await loadGlobalRenderPages()
+            const pageStarts = getRenderPageStartSegments(pages)
+            if (pageStarts.length === 0) return
+            await goToViewportPage({ page: pageStarts.length - 1 })
+        })().catch((err) => {
+            console.error('Failed to move to the last TXT page', err)
+        })
+    }, [globalRenderPages, goToViewportPage, hasGlobalRenderPageMap, loadGlobalRenderPages])
+
     const partialNavigationReady = !loading && !error && renderPages.length > 0
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: partialNavigationReady && !searchOpen && !annotationsOpen && !encodingDialogOpen && !settings.settingsOpen, readerRootRef })
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: partialNavigationReady && !searchOpen && !annotationsOpen && !bookmarksOpen && !encodingDialogOpen && !settings.settingsOpen, readerRootRef })
+    useReaderCommandShortcuts({
+        enabled: partialNavigationReady && !searchOpen && !annotationsOpen && !bookmarksOpen && !encodingDialogOpen && !settings.settingsOpen,
+        settingsShortcutEnabled: !searchOpen && !annotationsOpen && !bookmarksOpen && !encodingDialogOpen,
+        searchShortcutEnabled: !annotationsOpen && !bookmarksOpen && !encodingDialogOpen && !settings.settingsOpen && !error,
+        onBack: () => navigate('/'),
+        onFirstPage: () => { void goToViewportPage({ page: 0 }) },
+        onLastPage: goToLastPage,
+        onSearch: () => {
+            setSearchOpen(true)
+            setAnnotationsOpen(false)
+            setBookmarksOpen(false)
+            setActiveAnnotationId(null)
+        },
+        onAddBookmark: addBookmark,
+        onToggleAnnotations: () => {
+            setAnnotationsOpen(true)
+            setSearchOpen(false)
+            setBookmarksOpen(false)
+        },
+        onToggleLayout: () => setLayout(preferredLayout === 'dual' ? 'single' : 'dual'),
+        onDecreaseScale: decFont,
+        onIncreaseScale: incFont,
+        onToggleSettings: settings.toggleSettings,
+    })
 
     const showPaginationPanel = partialNavigationReady && !globalPaginationReady
     const showProgressControl = partialNavigationReady && globalPaginationReady
@@ -1803,6 +1857,9 @@ function TxtReader() {
     const encodingConfidenceLabel = manifest?.encoding_source === 'override' || !Number.isFinite(manifest?.encoding_confidence)
         ? null
         : `${Math.round(Math.max(0, Math.min(1, manifest.encoding_confidence)) * 100)}%`
+    const handleBookmarkActivate = (bookmark) => {
+        void goToViewportPage(bookmark.locator ?? { page: bookmark.position })
+    }
 
     return (
         <ReaderShell
@@ -1837,9 +1894,11 @@ function TxtReader() {
                                 onClick={() => {
                                     setSearchOpen((open) => !open)
                                     setAnnotationsOpen(false)
+                                    setBookmarksOpen(false)
                                     setActiveAnnotationId(null)
                                 }}
                                 title={tt('search')}
+                                aria-keyshortcuts={settings.keyboardShortcutsEnabled ? 'Control+F' : undefined}
                                 className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60"
                                 style={{ color: searchOpen ? '#5c7cfa' : themeStyle.text }}
                             >
@@ -1850,14 +1909,27 @@ function TxtReader() {
                                 onClick={() => {
                                     setAnnotationsOpen((open) => !open)
                                     setSearchOpen(false)
+                                    setBookmarksOpen(false)
                                 }}
                                 title={tt('annotations')}
+                                aria-keyshortcuts={settings.keyboardShortcutsEnabled ? 'M' : undefined}
                                 className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60"
                                 style={{ color: annotationsOpen ? '#ff922b' : themeStyle.text }}
                             >
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z" /></svg>
                             </button>
-                            <button type="button" onClick={addBookmark} title={tt('addBookmark')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg></button>
+                            <ReaderBookmarkToggle
+                                open={bookmarksOpen}
+                                onToggle={() => {
+                                    setBookmarksOpen((open) => !open)
+                                    setSearchOpen(false)
+                                    setAnnotationsOpen(false)
+                                    setActiveAnnotationId(null)
+                                }}
+                                themeStyle={bookmarkThemeStyle}
+                                tt={tt}
+                                lang={lang}
+                            />
                             <ReaderToolbar
                                 settings={settings}
                                 readerType="txt"
@@ -1878,19 +1950,40 @@ function TxtReader() {
                     )}
                 />
             )}
-            bookmarkBar={(
-                <ReaderBookmarkStrip
+            bookmarkBar={bookmarksOpen ? (
+                <ReaderBookmarkNavigator
                     items={bookmarks}
-                    label={tt('bookmarks')}
-                    themeStyle={themeStyle}
-                    getLabel={(bookmark) => bookmark.label}
-                    onActivate={(bookmark) => { void goToViewportPage(bookmark.locator ?? { page: bookmark.position }) }}
-                    onRemove={removeBookmark}
-                    removeLabel={tt('removeBookmark')}
+                    currentPosition={effectiveViewportPage}
+                    themeStyle={bookmarkThemeStyle}
+                    onActivate={handleBookmarkActivate}
+                    tt={tt}
+                    lang={lang}
                 />
-            )}
+            ) : null}
+            sidePanel={bookmarksOpen ? (
+                <ReaderBookmarksPanel
+                    open
+                    items={bookmarks}
+                    currentPosition={effectiveViewportPage}
+                    themeStyle={bookmarkThemeStyle}
+                    onClose={() => setBookmarksOpen(false)}
+                    onAdd={partialNavigationReady ? () => addBookmark() : undefined}
+                    onActivate={handleBookmarkActivate}
+                    onRemove={removeBookmark}
+                    onUpdate={updateBookmark}
+                    tt={tt}
+                    lang={lang}
+                />
+            ) : null}
             main={(
             <div className="flex-1 relative min-h-0">
+                <ReaderBookmarkFab
+                    onAdd={() => addBookmark()}
+                    themeStyle={bookmarkThemeStyle}
+                    tt={tt}
+                    lang={lang}
+                    disabled={!partialNavigationReady}
+                />
                 <ReaderSearchPanel
                     open={searchOpen}
                     themeStyle={themeStyle}

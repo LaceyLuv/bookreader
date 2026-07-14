@@ -3,6 +3,7 @@ import { API_FONTS_BASE } from '../lib/apiBase'
 import { emitUserFontsUpdated } from './FontStyleInjector'
 import { applyRestoredClientState, commitRestore, discardRestore, exportBackup, previewRestore } from '../lib/backupClient'
 import { useWindowDisplay } from '../hooks/useWindowDisplay'
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 
 export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, onDataRestored, tt, filters, folders, folderColors, getDefaultFolderColor, onFolderColorChange, folderDraft, setFolderDraft, folderSaving, onAddFolder, onRenameFolder, onRemoveFolder, folderStatsById, selection }) {
     const {
@@ -15,6 +16,7 @@ export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, o
         windowDisplayBusy,
         windowDisplayError,
     } = useWindowDisplay()
+    const { keyboardShortcutsEnabled, setKeyboardShortcutsEnabled } = useKeyboardShortcuts()
     const panelRef = useRef(null)
     const fontInputRef = useRef(null)
     const restoreInputRef = useRef(null)
@@ -169,6 +171,7 @@ export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, o
                                 <input
                                     type="checkbox"
                                     checked={showWindowFrame}
+                                    aria-keyshortcuts={keyboardShortcutsEnabled ? 'Shift+F11' : undefined}
                                     disabled={!frameControlSupported || windowDisplayBusy}
                                     onChange={(event) => void setShowWindowFrame(event.target.checked)}
                                 />
@@ -177,6 +180,7 @@ export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, o
                                 className="dashboard-primary-button"
                                 type="button"
                                 aria-pressed={isFullscreen}
+                                aria-keyshortcuts={keyboardShortcutsEnabled ? 'F11' : undefined}
                                 disabled={!fullscreenSupported || windowDisplayBusy}
                                 onClick={() => void toggleFullscreen()}
                             >
@@ -187,8 +191,21 @@ export default function DashboardSettingsPanel({ open, onClose, onGoToLibrary, o
                         {windowDisplayError && <p className="dashboard-settings-error" role="alert">{tt('windowDisplayFailed')}</p>}
                     </section>
                     <section>
+                        <h3>{tt('keyboardShortcuts')}</h3>
+                        <label className="dashboard-settings-switch">
+                            <span>{tt('enableKeyboardShortcuts')}</span>
+                            <input
+                                type="checkbox"
+                                checked={keyboardShortcutsEnabled}
+                                onChange={(event) => setKeyboardShortcutsEnabled(event.target.checked)}
+                            />
+                        </label>
+                        <p className="dashboard-settings-help">{tt('keyboardShortcutsHint')}</p>
+                    </section>
+                    <section>
                         <h3>{tt('searchAndFilter')}</h3>
                         <input
+                            data-dashboard-search="true"
                             className={fieldClass}
                             value={filters.searchQuery}
                             onFocus={() => onGoToLibrary(false)}

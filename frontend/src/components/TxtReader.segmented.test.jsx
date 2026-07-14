@@ -352,6 +352,52 @@ beforeEach(() => {
     })
 })
 
+test('TXT reader opens the bookmark panel and adds the visible page once content is ready', async () => {
+    const user = userEvent.setup()
+    const addBookmark = vi.fn()
+    mockUseReadingProgress.mockImplementation((_bookId, options = {}) => {
+        const [currentPosition, setCurrentPosition] = React.useState(0)
+        return {
+            currentPosition,
+            setCurrentPosition,
+            bookmarks: [],
+            addBookmark,
+            removeBookmark: vi.fn(),
+            updateBookmark: vi.fn(),
+            goToBookmark: setCurrentPosition,
+            restoredProgress: null,
+            startOver: vi.fn(),
+            totalPages: options.totalPages || 1,
+        }
+    })
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (String(url).includes('/txt-manifest')) {
+            return new Response(JSON.stringify({ encoding: 'utf-8', total_chars: 11, segment_count: 1 }), { status: 200 })
+        }
+        if (String(url).includes('/txt-segments')) {
+            return new Response(JSON.stringify({
+                start: 0,
+                limit: 40,
+                total: 1,
+                segments: [{ segment_id: 0, text: 'alpha block', start_offset: 0, end_offset: 11 }],
+            }), { status: 200 })
+        }
+        if (String(url).includes('/annotations')) return new Response(JSON.stringify([]), { status: 200 })
+        return new Response('{}', { status: 404 })
+    }))
+
+    renderReader()
+    await screen.findByTestId('txt-spread')
+    await user.click(screen.getByRole('button', { name: 'Open bookmarks' }))
+    const panel = screen.getByRole('complementary', { name: 'Bookmarks' })
+    const addButton = within(panel).getByRole('button', { name: 'Add bookmark' })
+    expect(addButton.disabled).toBe(false)
+    await user.click(addButton)
+
+    expect(addBookmark).toHaveBeenCalledTimes(1)
+    expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ enabled: false }))
+})
+
 test('TXT reader fills one visible render page with multiple short segments on first load', async () => {
     const fetchSpy = vi.fn(async (url) => {
         if (String(url).includes('/txt-manifest')) {
