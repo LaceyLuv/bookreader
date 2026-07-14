@@ -233,7 +233,11 @@ function ReaderBookmarkNavigator({
     return (
         <div
             className={`reader-bookmark-navigator reader-ui flex min-w-0 items-center gap-3 border-b px-5 py-3 text-xs ${className}`.trim()}
-            style={{ borderColor: themeStyle.border ?? '#ded4c5', color: themeStyle.text ?? '#4b3825' }}
+            style={{
+                borderColor: themeStyle.border ?? '#ded4c5',
+                color: themeStyle.text ?? '#4b3825',
+                backgroundColor: themeStyle.card ?? '#fffaf1',
+            }}
         >
             <span className="shrink-0 font-semibold opacity-65">{t('bookmarks')}</span>
             <select
@@ -517,7 +521,7 @@ function ReaderBookmarksPanel({
             aria-modal={isModal ? 'true' : undefined}
             aria-label={t('bookmarks')}
             tabIndex={-1}
-            className={`reader-bookmarks-panel reader-ui z-30 flex flex-col overflow-hidden rounded-l-2xl border-l shadow-2xl max-sm:rounded-2xl max-sm:border ${className}`.trim()}
+            className={`reader-bookmarks-panel reader-ui absolute inset-y-0 right-0 z-30 flex flex-col overflow-hidden rounded-l-2xl border-l shadow-2xl max-sm:rounded-2xl max-sm:border ${className}`.trim()}
             style={{
                 color: themeStyle.text ?? '#4d3927',
                 borderColor: themeStyle.border ?? '#e2d4bf',

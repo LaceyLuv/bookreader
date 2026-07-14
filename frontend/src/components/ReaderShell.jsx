@@ -23,8 +23,12 @@ function ReaderShell({
             {topBar}
             {notice}
             <div className="reader-shell-body relative flex min-h-0 flex-1 overflow-hidden">
-                <div className="reader-shell-reading flex min-w-0 flex-1 flex-col">
-                    {bookmarkBar}
+                <div className="reader-shell-reading relative flex min-w-0 flex-1 flex-col">
+                    {bookmarkBar && (
+                        <div className="reader-shell-bookmark-overlay absolute inset-x-0 top-0 z-20">
+                            {bookmarkBar}
+                        </div>
+                    )}
                     {main}
                     {bottom}
                 </div>

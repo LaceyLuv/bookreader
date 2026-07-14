@@ -63,6 +63,29 @@ test('renders an accessible panel, filters, searches, and sorts bookmarks', asyn
     expect(within(cards.at(-1)).getByText('Page 12')).toBeTruthy()
 })
 
+test('overlays the reading surface without reserving layout width', () => {
+    render(
+        <div className="reader-shell-body relative flex">
+            <div className="reader-shell-reading flex-1">Reading surface</div>
+            <ReaderBookmarksPanel
+                open
+                items={items}
+                themeStyle={themeStyle}
+                tt={identity}
+                lang="en"
+                onClose={vi.fn()}
+            />
+        </div>,
+    )
+
+    const panel = screen.getByRole('complementary', { name: 'Bookmarks' })
+    expect(panel.classList.contains('absolute')).toBe(true)
+    expect(panel.classList.contains('inset-y-0')).toBe(true)
+    expect(panel.classList.contains('right-0')).toBe(true)
+    expect(panel.classList.contains('relative')).toBe(false)
+    expect(panel.parentElement.querySelector('.reader-shell-reading')).toBeTruthy()
+})
+
 test('adds, activates, stars, edits, and removes bookmarks through callbacks', async () => {
     const user = userEvent.setup()
     const callbacks = renderPanel()

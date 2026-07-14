@@ -127,11 +127,11 @@ body {
 }
 
 .reader-bookmarks-panel {
-  position: relative;
   z-index: 30;
   width: min(390px, 34vw);
   min-width: 330px;
-  flex: 0 0 auto;
+  max-width: 100%;
+  box-shadow: -18px 0 42px color-mix(in srgb, var(--reader-page-fg) 14%, transparent);
 }
 
 .reader-topbar {
@@ -337,15 +337,9 @@ body {
 
 @media (max-width: 980px) {
   .reader-bookmarks-panel {
-    position: absolute;
     z-index: 70;
-    top: 0;
-    right: 0;
-    bottom: 0;
     width: min(390px, 100%);
     min-width: 0;
-    max-width: 100%;
-    box-shadow: -18px 0 42px color-mix(in srgb, var(--reader-page-fg) 14%, transparent);
   }
 }
 

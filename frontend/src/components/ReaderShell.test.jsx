@@ -37,14 +37,19 @@ test('ReaderShell preserves the focus root and stable reading surface slot order
         'slot-tail',
     ])
     const readingSurface = screen.getByTestId('slot-main').closest('.reader-shell-reading')
-    expect([...readingSurface.children].map((node) => node.dataset.testid)).toEqual([
-        'slot-bookmarks',
+    const bookmarkOverlay = screen.getByTestId('slot-bookmarks').closest('.reader-shell-bookmark-overlay')
+    expect(bookmarkOverlay.parentElement).toBe(readingSurface)
+    expect(bookmarkOverlay.classList.contains('absolute')).toBe(true)
+    expect(bookmarkOverlay.classList.contains('inset-x-0')).toBe(true)
+    expect(bookmarkOverlay.classList.contains('top-0')).toBe(true)
+    expect([...readingSurface.children].map((node) => node.dataset.testid || node.className)).toEqual([
+        expect.stringContaining('reader-shell-bookmark-overlay'),
         'slot-main',
         'slot-bottom',
     ])
 })
 
-test('ReaderShell docks an optional side panel beside the reading surface', () => {
+test('ReaderShell keeps an optional overlay panel beside the reading surface in the DOM', () => {
     render(
         <ReaderShell
             bookmarkBar={<div data-testid="slot-bookmarks" />}
@@ -56,8 +61,8 @@ test('ReaderShell docks an optional side panel beside the reading surface', () =
 
     const readingSurface = screen.getByTestId('slot-main').closest('.reader-shell-reading')
     expect(readingSurface).toBeTruthy()
-    expect([...readingSurface.children].map((node) => node.dataset.testid)).toEqual([
-        'slot-bookmarks',
+    expect([...readingSurface.children].map((node) => node.dataset.testid || node.className)).toEqual([
+        expect.stringContaining('reader-shell-bookmark-overlay'),
         'slot-main',
         'slot-bottom',
     ])
