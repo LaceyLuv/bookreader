@@ -1,12 +1,11 @@
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use std::path::Path;
-#[cfg(not(debug_assertions))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
@@ -22,6 +21,9 @@ const BACKEND_HEALTH_ATTEMPTS: usize = 50;
 const BACKEND_HEALTH_INTERVAL: Duration = Duration::from_millis(200);
 #[allow(dead_code)]
 const BACKEND_HEALTH_TIMEOUT: Duration = Duration::from_millis(500);
+const DESKTOP_FAULT_SMOKE_ENV: &str = "BOOKREADER_DESKTOP_FAULT_SMOKE";
+const DESKTOP_FAULT_SMOKE_DATA_DIR_ENV: &str = "BOOKREADER_DESKTOP_FAULT_SMOKE_DATA_DIR";
+const STARTUP_WORK_AREA_INSET_PX: u32 = 16;
 #[cfg(not(debug_assertions))]
 const LEGACY_DATA_DIR_NAME: &str = "BookReader";
 const LEGACY_MIGRATION_MARKER: &str = ".legacy-data-migration-v1.json";
@@ -792,8 +794,63 @@ fn legacy_windows_data_dir() -> Option<PathBuf> {
         .map(|root| root.join(LEGACY_DATA_DIR_NAME))
 }
 
+fn desktop_fault_smoke_enabled(value: Option<&OsStr>) -> bool {
+    value == Some(OsStr::new("1"))
+}
+
+fn resolve_fault_smoke_data_dir(
+    smoke_flag: Option<&OsStr>,
+    data_dir: Option<&OsStr>,
+) -> Result<Option<PathBuf>, String> {
+    if !desktop_fault_smoke_enabled(smoke_flag) {
+        return Ok(None);
+    }
+
+    let path = data_dir
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            format!("{DESKTOP_FAULT_SMOKE_DATA_DIR_ENV} must be set during desktop fault smoke")
+        })?;
+    if !path.is_absolute() {
+        return Err(format!(
+            "{DESKTOP_FAULT_SMOKE_DATA_DIR_ENV} must be an absolute path: {}",
+            path.display()
+        ));
+    }
+    Ok(Some(path))
+}
+
 #[cfg(not(debug_assertions))]
 fn prepare_backend_data_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> Result<PathBuf, String> {
+    let smoke_flag = std::env::var_os(DESKTOP_FAULT_SMOKE_ENV);
+    let smoke_data_dir = std::env::var_os(DESKTOP_FAULT_SMOKE_DATA_DIR_ENV);
+    if let Some(destination) =
+        resolve_fault_smoke_data_dir(smoke_flag.as_deref(), smoke_data_dir.as_deref())?
+    {
+        fs::create_dir_all(&destination).map_err(|err| {
+            format!(
+                "failed to create desktop fault smoke data directory {}: {err}",
+                destination.display()
+            )
+        })?;
+        let metadata = fs::symlink_metadata(&destination)
+            .map_err(|err| format!("failed to inspect {}: {err}", destination.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "desktop fault smoke data root is not a regular directory: {}",
+                destination.display()
+            ));
+        }
+        if path_has_content(&destination)? {
+            return Err(format!(
+                "desktop fault smoke data root must be empty: {}",
+                destination.display()
+            ));
+        }
+        return Ok(destination);
+    }
+
     let destination = app
         .path()
         .app_local_data_dir()
@@ -1005,6 +1062,132 @@ struct WindowDisplayState {
     fullscreen: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PixelSize {
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PixelPosition {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StartupWindowGeometry {
+    inner_size: PixelSize,
+    outer_size: PixelSize,
+    outer_position: PixelPosition,
+}
+
+fn startup_window_geometry(
+    current_inner: PixelSize,
+    current_outer: PixelSize,
+    work_area_position: PixelPosition,
+    work_area_size: PixelSize,
+    inset: u32,
+) -> Option<StartupWindowGeometry> {
+    let total_inset = inset.saturating_mul(2);
+    let available_outer_width = work_area_size.width.checked_sub(total_inset)?;
+    let available_outer_height = work_area_size.height.checked_sub(total_inset)?;
+    let frame_width = current_outer.width.saturating_sub(current_inner.width);
+    let frame_height = current_outer.height.saturating_sub(current_inner.height);
+    let target_outer = PixelSize {
+        width: current_outer.width.min(available_outer_width),
+        height: current_outer.height.min(available_outer_height),
+    };
+
+    let target_inner = PixelSize {
+        width: target_outer.width.checked_sub(frame_width)?,
+        height: target_outer.height.checked_sub(frame_height)?,
+    };
+    if target_inner.width == 0 || target_inner.height == 0 {
+        return None;
+    }
+
+    let horizontal_offset =
+        i32::try_from(work_area_size.width.saturating_sub(target_outer.width) / 2)
+            .unwrap_or(i32::MAX);
+    let vertical_offset =
+        i32::try_from(work_area_size.height.saturating_sub(target_outer.height) / 2)
+            .unwrap_or(i32::MAX);
+
+    Some(StartupWindowGeometry {
+        inner_size: target_inner,
+        outer_size: target_outer,
+        outer_position: PixelPosition {
+            x: work_area_position.x.saturating_add(horizontal_offset),
+            y: work_area_position.y.saturating_add(vertical_offset),
+        },
+    })
+}
+
+fn fit_startup_window_to_work_area(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let monitor = match window.current_monitor() {
+        Ok(Some(monitor)) => Some(monitor),
+        Ok(None) => window
+            .primary_monitor()
+            .map_err(|err| format!("failed to detect primary monitor: {err}"))?,
+        Err(current_error) => window.primary_monitor().map_err(|primary_error| {
+            format!(
+                "failed to detect current monitor ({current_error}) or primary monitor ({primary_error})"
+            )
+        })?,
+    };
+    let Some(monitor) = monitor else {
+        return Ok(());
+    };
+
+    let current_inner = window
+        .inner_size()
+        .map_err(|err| format!("failed to read startup inner size: {err}"))?;
+    let current_outer = window
+        .outer_size()
+        .map_err(|err| format!("failed to read startup outer size: {err}"))?;
+    let work_area = monitor.work_area();
+    let Some(geometry) = startup_window_geometry(
+        PixelSize {
+            width: current_inner.width,
+            height: current_inner.height,
+        },
+        PixelSize {
+            width: current_outer.width,
+            height: current_outer.height,
+        },
+        PixelPosition {
+            x: work_area.position.x,
+            y: work_area.position.y,
+        },
+        PixelSize {
+            width: work_area.size.width,
+            height: work_area.size.height,
+        },
+        STARTUP_WORK_AREA_INSET_PX,
+    ) else {
+        return Err("monitor work area is too small to fit the startup window".to_string());
+    };
+
+    if geometry.inner_size.width != current_inner.width
+        || geometry.inner_size.height != current_inner.height
+    {
+        window
+            .set_size(tauri::PhysicalSize::new(
+                geometry.inner_size.width,
+                geometry.inner_size.height,
+            ))
+            .map_err(|err| format!("failed to fit startup window size: {err}"))?;
+    }
+    window
+        .set_position(tauri::PhysicalPosition::new(
+            geometry.outer_position.x,
+            geometry.outer_position.y,
+        ))
+        .map_err(|err| format!("failed to center startup window: {err}"))?;
+
+    Ok(())
+}
+
 fn window_display_state(window: &tauri::WebviewWindow) -> Result<WindowDisplayState, String> {
     Ok(WindowDisplayState {
         frame_visible: window
@@ -1108,6 +1291,12 @@ pub fn run() {
             restart_application
         ])
         .setup(|app| {
+            if let Some(main_window) = app.get_webview_window("main") {
+                if let Err(err) = fit_startup_window_to_work_area(&main_window) {
+                    eprintln!("[tauri] startup window fitting failed: {err}");
+                }
+            }
+
             #[cfg(debug_assertions)]
             {
                 app.handle().plugin(
@@ -1122,7 +1311,8 @@ pub fn run() {
             }
 
             if let Some(main_window) = app.get_webview_window("main") {
-                if std::env::var_os("BOOKREADER_DESKTOP_FAULT_SMOKE").is_some() {
+                if desktop_fault_smoke_enabled(std::env::var_os(DESKTOP_FAULT_SMOKE_ENV).as_deref())
+                {
                     let _ = main_window.hide();
                 } else {
                     let _ = main_window.show();
@@ -1298,6 +1488,169 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn startup_window_geometry_keeps_a_window_that_already_fits() {
+        let geometry = startup_window_geometry(
+            PixelSize {
+                width: 1200,
+                height: 720,
+            },
+            PixelSize {
+                width: 1216,
+                height: 759,
+            },
+            PixelPosition { x: 0, y: 0 },
+            PixelSize {
+                width: 1920,
+                height: 1020,
+            },
+            16,
+        )
+        .expect("work area should fit the preferred window");
+
+        assert_eq!(
+            geometry,
+            StartupWindowGeometry {
+                inner_size: PixelSize {
+                    width: 1200,
+                    height: 720,
+                },
+                outer_size: PixelSize {
+                    width: 1216,
+                    height: 759,
+                },
+                outer_position: PixelPosition { x: 352, y: 130 },
+            }
+        );
+    }
+
+    #[test]
+    fn startup_window_geometry_clamps_the_outer_frame_inside_a_short_work_area() {
+        let geometry = startup_window_geometry(
+            PixelSize {
+                width: 1200,
+                height: 720,
+            },
+            PixelSize {
+                width: 1216,
+                height: 759,
+            },
+            PixelPosition { x: 0, y: 0 },
+            PixelSize {
+                width: 1366,
+                height: 728,
+            },
+            16,
+        )
+        .expect("short work area should produce a clamped window");
+
+        assert_eq!(
+            geometry,
+            StartupWindowGeometry {
+                inner_size: PixelSize {
+                    width: 1200,
+                    height: 657,
+                },
+                outer_size: PixelSize {
+                    width: 1216,
+                    height: 696,
+                },
+                outer_position: PixelPosition { x: 75, y: 16 },
+            }
+        );
+    }
+
+    #[test]
+    fn startup_window_geometry_centers_with_taskbar_and_secondary_monitor_offsets() {
+        let geometry = startup_window_geometry(
+            PixelSize {
+                width: 1484,
+                height: 861,
+            },
+            PixelSize {
+                width: 1500,
+                height: 900,
+            },
+            PixelPosition { x: -1920, y: 40 },
+            PixelSize {
+                width: 1920,
+                height: 1000,
+            },
+            16,
+        )
+        .expect("offset work area should still produce a centered window");
+
+        assert_eq!(geometry.outer_position, PixelPosition { x: -1710, y: 90 });
+        assert_eq!(
+            geometry.outer_size,
+            PixelSize {
+                width: 1500,
+                height: 900,
+            }
+        );
+    }
+
+    #[test]
+    fn startup_window_geometry_rejects_an_unusable_work_area() {
+        assert_eq!(
+            startup_window_geometry(
+                PixelSize {
+                    width: 1200,
+                    height: 720,
+                },
+                PixelSize {
+                    width: 1216,
+                    height: 759,
+                },
+                PixelPosition { x: 0, y: 0 },
+                PixelSize {
+                    width: 30,
+                    height: 30,
+                },
+                16,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn desktop_fault_smoke_data_dir_is_ignored_without_the_exact_flag() {
+        let candidate = std::env::temp_dir().join("bookreader-fault-smoke-disabled");
+
+        assert_eq!(
+            resolve_fault_smoke_data_dir(None, Some(candidate.as_os_str())).unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_fault_smoke_data_dir(Some(OsStr::new("0")), Some(candidate.as_os_str()))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn desktop_fault_smoke_data_dir_is_required_and_must_be_absolute() {
+        let missing = resolve_fault_smoke_data_dir(Some(OsStr::new("1")), None)
+            .expect_err("smoke data dir must be required");
+        let relative =
+            resolve_fault_smoke_data_dir(Some(OsStr::new("1")), Some(OsStr::new("relative-data")))
+                .expect_err("relative smoke data dir must be rejected");
+
+        assert!(missing.contains(DESKTOP_FAULT_SMOKE_DATA_DIR_ENV));
+        assert!(relative.contains("absolute path"));
+    }
+
+    #[test]
+    fn desktop_fault_smoke_data_dir_accepts_an_absolute_path() {
+        let candidate = std::env::temp_dir().join("bookreader-fault-smoke-enabled");
+
+        assert_eq!(
+            resolve_fault_smoke_data_dir(Some(OsStr::new("1")), Some(candidate.as_os_str()))
+                .unwrap(),
+            Some(candidate)
+        );
+    }
 
     #[test]
     fn backend_status_records_spawn_failure() {

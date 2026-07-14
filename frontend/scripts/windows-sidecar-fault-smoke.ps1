@@ -29,8 +29,7 @@ $previousNonce = $env:BOOKREADER_SIDECAR_NONCE
 $previousAssetToken = $env:BOOKREADER_SIDECAR_ASSET_TOKEN
 $previousParentPid = $env:BOOKREADER_PARENT_PID
 $previousDesktopFaultSmoke = $env:BOOKREADER_DESKTOP_FAULT_SMOKE
-$previousLocalAppData = $env:LOCALAPPDATA
-$previousAppData = $env:APPDATA
+$previousDesktopFaultSmokeDataDir = $env:BOOKREADER_DESKTOP_FAULT_SMOKE_DATA_DIR
 
 function Add-Case {
     param([string]$Name, [bool]$Passed, [string]$Detail)
@@ -114,6 +113,19 @@ function Wait-ForNamedDescendant {
         Start-Sleep -Milliseconds 200
     } while ((Get-Date) -lt $deadline)
     return $null
+}
+
+function Wait-ForCoreStores {
+    param([string]$DataDir, [int]$TimeoutSeconds = 30)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $storesReady = (Test-Path -LiteralPath (Join-Path $DataDir "library.json")) -and
+            (Test-Path -LiteralPath (Join-Path $DataDir "annotations.json")) -and
+            (Test-Path -LiteralPath (Join-Path $DataDir "reading-progress.json"))
+        if ($storesReady) { return $true }
+        Start-Sleep -Milliseconds 200
+    } while ((Get-Date) -lt $deadline)
+    return $false
 }
 
 function Wait-ForAuthenticatedHealth {
@@ -231,28 +243,26 @@ try {
     $healthyTreeStopped = Wait-ForProcessSnapshotExit $healthyTree 15
     Add-Case "clean_process_tree_shutdown" ($explicitStopSucceeded -and $healthyProcess.HasExited -and $healthyTreeStopped) ("Captured " + $healthyTree.Count + " sidecar process(es); root exited: " + $healthyProcess.HasExited + "; captured tree exited: " + $healthyTreeStopped + ".")
 
-    $desktopLocalAppData = Join-Path $temporaryRoot "desktop-localappdata"
-    $desktopRoamingAppData = Join-Path $temporaryRoot "desktop-appdata"
-    [System.IO.Directory]::CreateDirectory($desktopLocalAppData) | Out-Null
-    [System.IO.Directory]::CreateDirectory($desktopRoamingAppData) | Out-Null
-    $env:LOCALAPPDATA = $desktopLocalAppData
-    $env:APPDATA = $desktopRoamingAppData
+    $desktopDataDir = Join-Path $temporaryRoot "desktop-data"
+    [System.IO.Directory]::CreateDirectory($desktopDataDir) | Out-Null
     $env:BOOKREADER_DESKTOP_FAULT_SMOKE = "1"
+    $env:BOOKREADER_DESKTOP_FAULT_SMOKE_DATA_DIR = $desktopDataDir
     $env:BOOKREADER_DATA_DIR = $null
     $env:BOOKREADER_SIDECAR_NONCE = $null
     $env:BOOKREADER_SIDECAR_ASSET_TOKEN = $null
     $desktopProcess = Start-Process -FilePath $DesktopPath -WorkingDirectory (Split-Path -Parent $DesktopPath) -WindowStyle Hidden -PassThru
     $desktopSidecarRecord = Wait-ForNamedDescendant $desktopProcess.Id "bookreader-backend*" $StartupTimeoutSeconds
     Add-Case "desktop_spawned_owned_sidecar" ($null -ne $desktopSidecarRecord) "The packaged desktop launched its owned sidecar under isolated app data."
+    $desktopStoresReady = Wait-ForCoreStores $desktopDataDir $StartupTimeoutSeconds
+    Add-Case "desktop_isolated_store_initialization" $desktopStoresReady "The packaged desktop initialized core stores only in its dedicated smoke data root."
     $desktopSidecarProcess = Get-Process -Id $desktopSidecarRecord.ProcessId -ErrorAction Stop
     $desktopSidecarTree = @(Get-ProcessTreeSnapshot $desktopSidecarRecord.ProcessId)
     Stop-Process -Id $desktopProcess.Id -Force -ErrorAction Stop
     $desktopProcess.WaitForExit(10000) | Out-Null
     $desktopCrashTreeStopped = Wait-ForProcessSnapshotExit $desktopSidecarTree 20
     Add-Case "desktop_crash_watchdog_shutdown" ($desktopProcess.HasExited -and $desktopCrashTreeStopped) ("Forced desktop exit left none of " + $desktopSidecarTree.Count + " captured sidecar process(es).")
-    $env:LOCALAPPDATA = $previousLocalAppData
-    $env:APPDATA = $previousAppData
     $env:BOOKREADER_DESKTOP_FAULT_SMOKE = $previousDesktopFaultSmoke
+    $env:BOOKREADER_DESKTOP_FAULT_SMOKE_DATA_DIR = $previousDesktopFaultSmokeDataDir
     $env:BOOKREADER_PARENT_PID = $null
     $env:BOOKREADER_DATA_DIR = $dataDir
     $env:BOOKREADER_SIDECAR_NONCE = $nonce
@@ -291,8 +301,7 @@ finally {
     $env:BOOKREADER_SIDECAR_ASSET_TOKEN = $previousAssetToken
     $env:BOOKREADER_PARENT_PID = $previousParentPid
     $env:BOOKREADER_DESKTOP_FAULT_SMOKE = $previousDesktopFaultSmoke
-    $env:LOCALAPPDATA = $previousLocalAppData
-    $env:APPDATA = $previousAppData
+    $env:BOOKREADER_DESKTOP_FAULT_SMOKE_DATA_DIR = $previousDesktopFaultSmokeDataDir
 
     $passed = $null -eq $failure -and @($cases | Where-Object { -not $_.passed }).Count -eq 0
     $result = [ordered]@{

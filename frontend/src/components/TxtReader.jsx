@@ -1779,9 +1779,10 @@ function TxtReader() {
     const partialNavigationReady = !loading && !error && renderPages.length > 0
     useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: partialNavigationReady && !searchOpen && !annotationsOpen && !encodingDialogOpen && !settings.settingsOpen, readerRootRef })
 
-    const paginationPending = !loading && (
-        globalPaginationStatus === 'loading' || globalPaginationStatus === 'recoverable_error'
-    )
+    const showPaginationPanel = partialNavigationReady && !globalPaginationReady
+    const showProgressControl = partialNavigationReady && globalPaginationReady
+    const paginationPreparationFailed = globalPaginationStatus === 'recoverable_error'
+        || globalPaginationStatus === 'cancelled'
     const loadingLabel = error || globalPaginationError ? tt('loadContentFailed') : (manifest?.encoding || tt('loading'))
     const paginationPercent = globalPaginationProgress.totalSegments > 0
         ? Math.min(99, Math.round((globalPaginationProgress.completedSegments / globalPaginationProgress.totalSegments) * 100))
@@ -2072,15 +2073,15 @@ function TxtReader() {
             )}
             bottom={(
                 <>
-                    {paginationPending && (
+                    {showPaginationPanel && (
                         <div
                             data-testid="txt-pagination-loading"
-                            className={`reader-ui reader-progress reader-progress-layer txt-pagination-preparation ${partialNavigationReady ? 'txt-pagination-preparation-with-progress' : ''}`}
+                            className="reader-ui reader-progress reader-progress-layer txt-pagination-preparation"
                             style={{ borderTop: '1px solid var(--panel-border)' }}
                             aria-live="polite"
                         >
                             <div className="reader-progress-inner">
-                                {globalPaginationError ? (
+                                {paginationPreparationFailed ? (
                                     <div className="txt-pagination-status-row">
                                         <span>{tt('pagePreparationFailed')}</span>
                                         <button type="button" onClick={retryGlobalPagination} className="rounded-md border px-3 py-1 text-xs" style={{ borderColor: themeStyle.border }}>
@@ -2116,10 +2117,10 @@ function TxtReader() {
 
                     <div
                         className="shrink-0"
-                        aria-hidden={!partialNavigationReady}
+                        aria-hidden={!showProgressControl}
                         style={{
-                            visibility: partialNavigationReady ? 'visible' : 'hidden',
-                            pointerEvents: partialNavigationReady ? 'auto' : 'none',
+                            visibility: showProgressControl ? 'visible' : 'hidden',
+                            pointerEvents: showProgressControl ? 'auto' : 'none',
                         }}
                     >
                         <ReaderProgressBar

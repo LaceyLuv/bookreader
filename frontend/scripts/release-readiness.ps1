@@ -184,6 +184,7 @@ if ($Profile -ne "Development") {
         "authenticated_long_path_api",
         "clean_process_tree_shutdown",
         "desktop_spawned_owned_sidecar",
+        "desktop_isolated_store_initialization",
         "desktop_crash_watchdog_shutdown",
         "invalid_data_root_fails_closed"
     )

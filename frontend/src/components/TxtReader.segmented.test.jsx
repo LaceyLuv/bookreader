@@ -669,10 +669,15 @@ test('TXT reader recalculates measured pages when vertical margin changes', asyn
             </MemoryRouter>,
         )
 
-        expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
+        await waitFor(() => {
+            expect(screen.getByTestId('txt-pagination-loading')).toBeTruthy()
+            expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('hidden')
+        })
         await waitFor(() => {
             expect(screen.getByTestId('progress-total-pages').textContent).toBe('3')
         })
+        expect(screen.queryByTestId('txt-pagination-loading')).toBeNull()
+        expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
     } finally {
         if (clientWidthDescriptor) {
             Object.defineProperty(HTMLElement.prototype, 'clientWidth', clientWidthDescriptor)
@@ -887,7 +892,8 @@ test('TXT reader shows the first page while the full-book page map is still pend
     expect(screen.getByTestId('txt-pagination-loading')).toBeTruthy()
     expect(screen.getByTestId('txt-page-surface').textContent).toBe('A'.repeat(24))
     expect(screen.getByTestId('txt-pagination-loading').className).not.toContain('inset-0')
-    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
+    expect(screen.getByTestId('txt-pagination-loading').className).not.toContain('txt-pagination-preparation-with-progress')
+    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('hidden')
     expect(mockUseKeyboardNav.mock.lastCall[0].enabled).toBe(true)
     expect(Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))).toBeGreaterThan(0)
 
@@ -912,6 +918,7 @@ test('TXT reader shows the first page while the full-book page map is still pend
         expect(screen.getByTestId('progress-total-pages').textContent).toBe('3')
     })
     expect(screen.queryByTestId('txt-pagination-loading')).toBeNull()
+    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
     expect(mockUseKeyboardNav.mock.lastCall[0].enabled).toBe(true)
 })
 
@@ -1021,7 +1028,7 @@ test('TXT reader keeps partial reading available after pagination fails and retr
     renderReader()
     await screen.findByText('A'.repeat(24))
     await screen.findByText('pagePreparationFailed')
-    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
+    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('hidden')
     expect(mockUseKeyboardNav.mock.lastCall[0].enabled).toBe(true)
 
     await act(async () => mockUseKeyboardNav.mock.lastCall[0].onNext())
@@ -1034,6 +1041,7 @@ test('TXT reader keeps partial reading available after pagination fails and retr
         expect(screen.getByTestId('progress-total-pages').textContent).toBe('3')
     })
     expect(screen.queryByText('pagePreparationFailed')).toBeNull()
+    expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
     expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to prepare TXT pagination', expect.any(Error))
     consoleErrorSpy.mockRestore()
 })
@@ -2866,11 +2874,16 @@ test('stale eager global render-page loads do not apply after the reader switche
         await waitFor(() => {
             expect(countFetchCalls(fetchSpy, '/txt-1/txt-segments?start=40&limit=40')).toBeGreaterThanOrEqual(1)
         })
-        expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
+        expect(screen.getByTestId('txt-pagination-loading')).toBeTruthy()
+        expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('hidden')
 
         await user.click(screen.getByRole('button', { name: 'open-book-2' }))
         await screen.findByText('book two')
-        await waitFor(() => expect(screen.getByTestId('progress-total-pages').textContent).toBe('1'))
+        await waitFor(() => {
+            expect(screen.getByTestId('progress-total-pages').textContent).toBe('1')
+            expect(screen.getByTestId('reader-progress-bar').parentElement.style.visibility).toBe('visible')
+        })
+        expect(screen.queryByTestId('txt-pagination-loading')).toBeNull()
 
         deferredWindow.resolve(new Response(JSON.stringify({
             start: 40,

@@ -109,6 +109,19 @@ def test_windows_bundle_policy_blocks_downgrades_and_freezes_current_user_scope(
     assert "createUpdaterArtifacts" not in config["bundle"]
 
 
+def test_tauri_startup_window_is_fitted_before_it_is_shown():
+    config = json.loads(read_text(FRONTEND / "src-tauri" / "tauri.conf.json"))
+    source = read_text(FRONTEND / "src-tauri" / "src" / "lib.rs")
+    main_window = config["app"]["windows"][0]
+
+    assert main_window["width"] == 1200
+    assert main_window["height"] == 720
+    assert main_window["visible"] is False
+    assert "monitor.work_area()" in source
+    setup = source[source.index(".setup(|app|"):source.index(".build(tauri::generate_context!())")]
+    assert setup.index("fit_startup_window_to_work_area") < setup.index("main_window.show()")
+
+
 def test_private_alpha_brand_keeps_the_existing_data_identity():
     config = json.loads(read_text(FRONTEND / "src-tauri" / "tauri.conf.json"))
     source = read_text(FRONTEND / "src-tauri" / "src" / "lib.rs")
@@ -157,6 +170,7 @@ def test_release_commands_fail_closed_and_verify_all_windows_artifacts():
     assert "desktop:migration-fixtures" in package["scripts"]
     assert "migration_source_sha256" in migration_fixtures
     assert "--locked" in migration_fixtures
+    assert "desktop_isolated_store_initialization" in readiness
     for artifact in ["sidecar", "desktop", "installer"]:
         assert f'"{artifact}"' in readiness
     assert "runtime_updater_disabled" in policy
@@ -167,6 +181,10 @@ def test_windows_fault_smoke_is_isolated_authenticated_and_non_destructive():
     script = read_text(FRONTEND / "scripts" / "windows-sidecar-fault-smoke.ps1")
 
     assert "BOOKREADER_DATA_DIR" in script
+    assert "BOOKREADER_DESKTOP_FAULT_SMOKE_DATA_DIR" in script
+    assert "desktop_isolated_store_initialization" in script
+    assert "$env:LOCALAPPDATA =" not in script
+    assert "$env:APPDATA =" not in script
     assert "BOOKREADER_SIDECAR_NONCE" in script
     assert "GetTempPath" in script
     assert "managed_book_path_240_to_250" in script
@@ -186,6 +204,8 @@ def test_tauri_runtime_uses_separate_data_root_and_reports_early_exit():
 
     assert 'env("BOOKREADER_DATA_DIR"' in source
     assert 'env("BOOKREADER_PARENT_PID"' in source
+    assert "BOOKREADER_DESKTOP_FAULT_SMOKE_DATA_DIR" in source
+    assert "resolve_fault_smoke_data_dir" in source
     assert "app_local_data_dir" in source
     assert "LEGACY_MIGRATION_PENDING" in source
     assert "source_preserved: true" in source
