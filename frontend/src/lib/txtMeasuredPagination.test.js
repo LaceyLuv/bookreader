@@ -134,7 +134,7 @@ test('buildMeasuredPages throws when even a one-character slice cannot fit a pag
   )).toThrow(/impossible fit/i)
 })
 
-test('buildMeasuredPages fills remaining page space by shrinking a slice before flushing', () => {
+test('buildMeasuredPages only fills remaining page space from a paragraph larger than an empty page', () => {
   const pages = buildMeasuredPages(
     [
       {
@@ -145,9 +145,9 @@ test('buildMeasuredPages fills remaining page space by shrinking a slice before 
       },
       {
         segmentId: 2,
-        text: 'efghij',
+        text: 'efghijkl',
         startOffset: 4,
-        endOffset: 10,
+        endOffset: 12,
       },
     ],
     {
@@ -167,7 +167,7 @@ test('buildMeasuredPages fills remaining page space by shrinking a slice before 
   expect(pages[1].slices[0]).toMatchObject({
     segmentId: 2,
     sliceStart: 1,
-    sliceEnd: 6,
+    sliceEnd: 7,
   })
 })
 
@@ -206,4 +206,93 @@ test('buildMeasuredPages avoids leaving a tiny trailing sentence fragment on the
     sliceStart: 0,
     sliceEnd: 10,
   })
+})
+
+test('buildMeasuredPages moves a paragraph that fits on an empty page instead of splitting it', () => {
+  const pages = buildMeasuredPages(
+    [
+      { segmentId: 1, text: '1234', startOffset: 0, endOffset: 4 },
+      { segmentId: 2, text: 'abc', startOffset: 4, endOffset: 7 },
+    ],
+    {
+      pageHeight: 5,
+      measureSliceHeight: (slice) => slice.text.length,
+      measurePageHeight: (pageSlices) => pageSlices.reduce((total, slice) => total + slice.text.length, 0),
+    },
+  )
+
+  expect(pages).toHaveLength(2)
+  expect(pages[0].slices.map((slice) => slice.text)).toEqual(['1234'])
+  expect(pages[1].slices.map((slice) => slice.text)).toEqual(['abc'])
+})
+
+test('splitOversizedSegmentIntoSlices prefers safe whitespace boundaries', () => {
+  const text = 'alpha beta gamma'
+  const slices = splitOversizedSegmentIntoSlices(
+    { segmentId: 3, text, startOffset: 100, endOffset: 116 },
+    {
+      maxSliceHeight: 7,
+      measureSliceHeight: (slice) => slice.text.length,
+    },
+  )
+
+  expect(slices.map((slice) => slice.text)).toEqual(['alpha ', 'beta ', 'gamma'])
+  expect(slices.map((slice) => [slice.sourceStartOffset, slice.sourceEndOffset])).toEqual([
+    [100, 106],
+    [106, 111],
+    [111, 116],
+  ])
+  expect(slices.map((slice) => slice.text).join('')).toBe(text)
+})
+
+test('splitOversizedSegmentIntoSlices prefers sentence punctuation over whitespace', () => {
+  const slices = splitOversizedSegmentIntoSlices(
+    { segmentId: 4, text: 'First sentence. Next words', startOffset: 0, endOffset: 26 },
+    {
+      maxSliceHeight: 19,
+      measureSliceHeight: (slice) => slice.text.length,
+    },
+  )
+
+  expect(slices[0].text).toBe('First sentence. ')
+  expect(slices.map((slice) => slice.text).join('')).toBe('First sentence. Next words')
+})
+
+test('splitOversizedSegmentIntoSlices falls back to character boundaries and always progresses', () => {
+  const text = 'abcdefghijklmnop'
+  const slices = splitOversizedSegmentIntoSlices(
+    { segmentId: 5, text, startOffset: 20, endOffset: 36 },
+    {
+      maxSliceHeight: 5,
+      measureSliceHeight: (slice) => slice.text.length,
+    },
+  )
+
+  expect(slices.map((slice) => slice.text)).toEqual(['abcde', 'fghij', 'klmno', 'p'])
+  expect(slices.map((slice) => slice.text).join('')).toBe(text)
+})
+
+test('split slices preserve mapped source offsets across omitted display characters', () => {
+  const slices = splitOversizedSegmentIntoSlices(
+    {
+      segmentId: 6,
+      text: 'alpha beta',
+      startOffset: 50,
+      endOffset: 62,
+      display_to_source_runs: [
+        [0, 50, 5],
+        [5, 57, 5],
+      ],
+    },
+    {
+      maxSliceHeight: 6,
+      measureSliceHeight: (slice) => slice.text.length,
+    },
+  )
+
+  expect(slices.map((slice) => slice.text).join('')).toBe('alpha beta')
+  expect(slices.map((slice) => [slice.sourceStartOffset, slice.sourceEndOffset])).toEqual([
+    [50, 58],
+    [58, 62],
+  ])
 })

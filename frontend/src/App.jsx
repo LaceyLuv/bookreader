@@ -1,12 +1,14 @@
 ﻿import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useEffect, lazy, Suspense, useState } from 'react'
 import Dashboard from './pages/Dashboard'
-import TitleBar from './components/TitleBar'
 import FontStyleInjector from './components/FontStyleInjector'
-import { onTitleBarVisibilityChange, setTitleBarOffset, getInitialAppTheme, setAppThemeVars } from './lib/appChrome'
+import { setTitleBarOffset, getInitialAppTheme, setAppThemeVars } from './lib/appChrome'
 import { IS_TAURI_RUNTIME } from './lib/apiBase'
 import { useBackendStartup } from './hooks/useBackendStartup'
 import { createT } from './i18n'
+import { restartBookReader } from './lib/backendStartup'
+import { WindowDisplayProvider } from './hooks/useWindowDisplay'
+import { KeyboardShortcutsProvider } from './hooks/useKeyboardShortcuts'
 
 const TxtReader = lazy(() => import('./components/TxtReader'))
 const EpubReader = lazy(() => import('./components/EpubReader'))
@@ -22,44 +24,63 @@ function getSavedLang() {
 }
 
 function App() {
-    const [showTitleBar, setShowTitleBar] = useState(IS_TAURI_RUNTIME)
     const backendStartup = useBackendStartup()
     const tt = createT(getSavedLang())
+    const [restartError, setRestartError] = useState('')
 
     useEffect(() => {
         setAppThemeVars(getInitialAppTheme())
-    }, [])
-
-    useEffect(() => {
-        setTitleBarOffset(showTitleBar)
-    }, [showTitleBar])
-
-    useEffect(() => {
-        return onTitleBarVisibilityChange((visible) => setShowTitleBar(visible))
+        setTitleBarOffset(false)
     }, [])
 
     const backendBlocked = IS_TAURI_RUNTIME && !backendStartup.ready
     const backendMessage = backendStartup.checking
-        ? 'Starting local backend...'
-        : (backendStartup.message || 'Local backend failed to start.')
+        ? tt('backendStarting')
+        : (backendStartup.message || tt('backendUnavailable'))
+    const backendProblem = backendStartup.problem
+
+    const handleBackendRestart = async () => {
+        setRestartError('')
+        try {
+            await restartBookReader()
+        } catch (error) {
+            setRestartError(error?.message || tt('backendRestartFailed'))
+        }
+    }
 
     return (
-        <BrowserRouter>
-            {!backendBlocked && <FontStyleInjector />}
-            {showTitleBar && <TitleBar visible={showTitleBar} />}
-            <div style={{ paddingTop: showTitleBar ? 'var(--titlebar-height, 0px)' : '0px' }}>
-                {backendBlocked ? (
+        <KeyboardShortcutsProvider>
+            <WindowDisplayProvider>
+                <BrowserRouter>
+                {!backendBlocked && <FontStyleInjector />}
+                <div>
+                    {backendBlocked ? (
                     <div style={{ display: 'flex', minHeight: '60vh', alignItems: 'center', justifyContent: 'center', padding: '24px', color: 'var(--app-fg)' }}>
                         <div style={{ maxWidth: '520px', textAlign: 'center' }}>
                             <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>
-                                {backendStartup.checking ? tt('loading') : 'Backend unavailable'}
+                                {backendStartup.checking ? tt('loading') : tt(backendProblem?.titleKey || 'backendUnavailable')}
                             </div>
                             <div style={{ fontSize: '13px', lineHeight: 1.6, opacity: 0.7 }}>
                                 {backendMessage}
                             </div>
+                            {!backendStartup.checking && backendProblem && (
+                                <>
+                                    <div style={{ marginTop: '10px', fontSize: '12px', lineHeight: 1.6, opacity: 0.72 }}>
+                                        {tt(backendProblem.recoveryKey)}
+                                    </div>
+                                    <button type="button" onClick={handleBackendRestart} style={{ marginTop: '16px', minHeight: '38px', padding: '0 16px', borderRadius: '10px', border: '1px solid currentColor', background: 'transparent', color: 'inherit', cursor: 'pointer' }}>
+                                        {tt('restartBookReader')}
+                                    </button>
+                                    <details style={{ marginTop: '14px', fontSize: '11px', opacity: 0.62 }}>
+                                        <summary style={{ cursor: 'pointer' }}>{tt('technicalDetails')}</summary>
+                                        <div style={{ marginTop: '6px', overflowWrap: 'anywhere' }}>{backendProblem.code}: {backendMessage}</div>
+                                    </details>
+                                    {restartError && <div role="alert" style={{ marginTop: '10px', color: '#e03131', fontSize: '12px' }}>{restartError}</div>}
+                                </>
+                            )}
                         </div>
                     </div>
-                ) : (
+                    ) : (
                     <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh', color: 'var(--app-fg)', opacity: 0.5 }}>{tt('loading')}</div>}>
                         <Routes>
                             <Route path="/" element={<Dashboard />} />
@@ -68,9 +89,11 @@ function App() {
                             <Route path="/read/zip/:id" element={<ZipReader />} />
                         </Routes>
                     </Suspense>
-                )}
-            </div>
-        </BrowserRouter>
+                    )}
+                </div>
+                </BrowserRouter>
+            </WindowDisplayProvider>
+        </KeyboardShortcutsProvider>
     )
 }
 

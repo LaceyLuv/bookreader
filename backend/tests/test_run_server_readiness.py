@@ -1,8 +1,11 @@
 import socket
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 import main
+import run_server
 from run_server import is_port_available
 
 
@@ -13,6 +16,16 @@ def test_health_endpoint_reports_ready():
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "authenticated": False}
+
+
+def test_backend_api_uses_gyeol_reader_display_name():
+    client = TestClient(main.app)
+
+    response = client.get("/")
+
+    assert main.app.title == "Gyeol Reader API"
+    assert response.status_code == 200
+    assert response.json() == {"message": "Gyeol Reader API", "docs": "/docs"}
 
 
 def test_sidecar_nonce_authenticates_health_and_api_requests(monkeypatch):
@@ -26,7 +39,7 @@ def test_sidecar_nonce_authenticates_health_and_api_requests(monkeypatch):
     assert response.json() == {"ok": True, "authenticated": True}
 
 
-def test_asset_token_is_limited_to_get_asset_routes(monkeypatch):
+def test_asset_token_is_limited_to_get_book_binary_routes(monkeypatch):
     monkeypatch.setattr(main, "SIDECAR_NONCE", "launch-secret")
     monkeypatch.setattr(main, "SIDECAR_ASSET_TOKEN", "asset-secret")
     client = TestClient(main.app)
@@ -35,7 +48,10 @@ def test_asset_token_is_limited_to_get_asset_routes(monkeypatch):
     # not-found for this synthetic book) rather than being rejected as 401.
     asset = client.get("/api/books/missing/asset/cover.png?asset_token=asset-secret")
     assert asset.status_code != 401
+    image = client.get("/api/books/missing/image/page.jpg?asset_token=asset-secret")
+    assert image.status_code != 401
     assert client.get("/api/health?asset_token=asset-secret").status_code == 401
+    assert client.post("/api/books/missing/image/page.jpg?asset_token=asset-secret").status_code == 401
 
 
 def test_port_available_returns_false_when_port_is_bound():
@@ -53,3 +69,40 @@ def test_port_available_returns_true_for_free_loopback_port():
         port = listener.getsockname()[1]
 
     assert is_port_available("127.0.0.1", port) is True
+
+
+def test_cli_help_and_port_conflict_use_gyeol_reader_display_name(monkeypatch, capsys):
+    monkeypatch.setattr(run_server.sys, "argv", ["run_server.py", "--help"])
+    with pytest.raises(SystemExit) as help_exit:
+        run_server.parse_args()
+    assert help_exit.value.code == 0
+    assert "Gyeol Reader backend launcher" in capsys.readouterr().out
+
+    monkeypatch.delenv("BOOKREADER_PARENT_PID", raising=False)
+    monkeypatch.setattr(run_server, "is_port_available", lambda _host, _port: False)
+
+    assert run_server.run_backend("127.0.0.1", 8765) == run_server.PORT_IN_USE_EXIT_CODE
+    assert "Gyeol Reader backend cannot start" in capsys.readouterr().err
+
+
+def test_packaged_sidecar_disables_access_logs_that_can_contain_asset_tokens(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("BOOKREADER_SIDECAR_NONCE", "launch-secret")
+    monkeypatch.delenv("BOOKREADER_PARENT_PID", raising=False)
+    monkeypatch.setattr(run_server, "is_port_available", lambda _host, _port: True)
+    monkeypatch.setattr(run_server.uvicorn, "run", lambda *args, **kwargs: captured.update(kwargs))
+
+    assert run_server.run_backend("127.0.0.1", 8765) == 0
+    assert captured["access_log"] is False
+
+
+def test_parent_watchdog_is_optional_for_standalone_development(monkeypatch):
+    monkeypatch.delenv("BOOKREADER_PARENT_PID", raising=False)
+
+    assert run_server.start_parent_watchdog() is None
+
+
+@pytest.mark.parametrize("value", ["not-a-pid", "0", "-1"])
+def test_parent_watchdog_rejects_invalid_owner_pid(value):
+    with pytest.raises(RuntimeError):
+        run_server.start_parent_watchdog(value)

@@ -1,19 +1,36 @@
 ﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useReaderSettings } from '../hooks/useReaderSettings'
+import { useResponsiveReaderLayout } from '../hooks/useResponsiveReaderLayout'
 import { useKeyboardNav } from '../hooks/useKeyboardNav'
+import { useReaderCommandShortcuts } from '../hooks/useReaderCommandShortcuts'
 import { useReadingProgress } from '../hooks/useReadingProgress'
 import ReaderToolbar from './ReaderToolbar'
+import ReaderBookmarksPanel, {
+    ReaderBookmarkFab,
+    ReaderBookmarkNavigator,
+    ReaderBookmarkToggle,
+} from './ReaderBookmarks'
 import ReaderProgressBar from './ReaderProgressBar'
 import ResumeToast from './ResumeToast'
 import ReaderSearchPanel from './ReaderSearchPanel'
 import ReaderAnnotationsPanel from './ReaderAnnotationsPanel'
 import ReaderSelectionMenu from './ReaderSelectionMenu'
+import ReaderLoadProblem from './ReaderLoadProblem'
+import ReaderShell, {
+    ReaderNoticeBar,
+    ReaderPageTurnControls,
+    ReaderTopBar,
+} from './ReaderShell'
 import { API_BOOKS_BASE, authenticateAssetUrl } from '../lib/apiBase'
+import { readApiProblem } from '../lib/readErrorDetail'
 import { clearSearchHighlights, highlightSearchMatchInElement, scrollSearchMarkIntoView } from '../lib/searchHighlighter'
 import { activateAnnotationHighlight, clearAnnotationHighlights, highlightAnnotationsInElement, scrollAnnotationIntoView } from '../lib/annotationHighlighter'
 import { clearCurrentSelection, getSelectionSnapshot } from '../lib/annotationSelection'
 import { getDefaultAnnotationColor, getNextAnnotationColor } from '../lib/annotationColors'
+import { getBookmarkExcerpt } from '../lib/bookmarkExcerpt'
+import { createBookmarkThemeStyle } from '../lib/bookmarkTheme'
+import { captureEpubBookmarkAnchor, resolveEpubBookmarkPage } from '../lib/epubBookmarkAnchor'
 import { buildEpubTypographyCss } from '../lib/epubTypography'
 import { sanitizeEpubHtml } from '../lib/epubSanitizer'
 
@@ -22,6 +39,18 @@ const API_ROOT = API.replace(/\/books$/, '')
 const PAGE_COUNT_START_DELAY_MS = 2200
 const PAGE_COUNT_IDLE_TIMEOUT_MS = 1500
 const EPUB_CONTENT_CLASS_NAME = 'select-text epub-content [&_p]:mb-4 [&_h1]:text-2xl [&_h1]:mb-5 [&_h1]:break-after-avoid [&_h2]:text-xl [&_h2]:mb-4 [&_h2]:break-after-avoid [&_h3]:text-lg [&_h3]:mb-3 [&_h3]:break-after-avoid [&_img]:max-w-full [&_img]:max-h-full [&_img]:rounded-lg [&_img]:mx-auto [&_img]:my-4 [&_img]:break-inside-avoid [&_img]:cursor-zoom-in [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:opacity-80 [&_blockquote]:break-inside-avoid'
+
+export function getEpubSpreadNavigationGap(measuredColumnGap, isDualLayout, horizontalMargin) {
+    const measuredGap = Math.max(0, Number(measuredColumnGap) || 0)
+    if (!isDualLayout) return measuredGap
+    return Math.max(0, measuredGap - (Math.max(0, Number(horizontalMargin) || 0) * 2))
+}
+
+function applyEpubOwnedLayoutStyles(contentEl, { columnGap, horizontalMargin, isDualLayout }) {
+    if (!contentEl) return
+    contentEl.style.setProperty('column-gap', `${columnGap}px`, 'important')
+    contentEl.style.setProperty('padding', isDualLayout ? `0 ${horizontalMargin}px` : '0', 'important')
+}
 
 function normalizeEpubHrefPath(href) {
     if (!href || href.startsWith('#')) return ''
@@ -109,13 +138,19 @@ function EpubReader() {
     const location = useLocation()
     const legacyId = location.state?.legacyId ?? null
     const settings = useReaderSettings()
-    const { contentStyle, themeStyle, layout, columnGap, hMargin, vMargin,
-        lineHeight, letterSpacing, fontMode, lang, tt, toggleTitleBar } = settings
+    const { contentStyle, themeStyle, layout: preferredLayout, setLayout, columnGap, hMargin, vMargin,
+        lineHeight, letterSpacing, fontMode, lang, tt, incFont, decFont } = settings
 
+    const layout = useResponsiveReaderLayout(preferredLayout)
+    const bookmarkThemeStyle = useMemo(() => createBookmarkThemeStyle(themeStyle), [themeStyle])
     const [toc, setToc] = useState([])
     const [bookTitle, setBookTitle] = useState('')
     const [chapter, setChapter] = useState(null)
     const [loading, setLoading] = useState(true)
+    const [initialProblem, setInitialProblem] = useState(null)
+    const [chapterProblem, setChapterProblem] = useState(null)
+    const [formatDiagnostics, setFormatDiagnostics] = useState([])
+    const [initialLoadAttempt, setInitialLoadAttempt] = useState(0)
     const [sidebarOpen, setSidebarOpen] = useState(false)
     const [searchOpen, setSearchOpen] = useState(false)
     const [searchDraft, setSearchDraft] = useState('')
@@ -123,9 +158,12 @@ function EpubReader() {
     const [searchRequestId, setSearchRequestId] = useState(0)
     const [searchLoading, setSearchLoading] = useState(false)
     const [searchResults, setSearchResults] = useState([])
+    const [searchMeta, setSearchMeta] = useState({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+    const [searchError, setSearchError] = useState('')
     const [activeSearchIndex, setActiveSearchIndex] = useState(null)
     const [activeChapterMatchIndex, setActiveChapterMatchIndex] = useState(null)
     const [annotationsOpen, setAnnotationsOpen] = useState(false)
+    const [bookmarksOpen, setBookmarksOpen] = useState(false)
     const [annotationsLoading, setAnnotationsLoading] = useState(false)
     const [annotations, setAnnotations] = useState([])
     const [activeAnnotationId, setActiveAnnotationId] = useState(null)
@@ -146,10 +184,18 @@ function EpubReader() {
     const pendingPageRef = useRef(null)
     const pendingPageUntilRef = useRef(0)
     const pendingChapterPageRef = useRef(null)
+    const pendingTextAnchorRef = useRef(null)
     const chapterPageCountsRef = useRef({})
     const pendingSearchResultRef = useRef(null)
+    const searchAbortRef = useRef(null)
+    const searchGenerationRef = useRef(0)
+    const appliedRestoreKeyRef = useRef(null)
     const initialMeasureDoneRef = useRef(false)
     const scheduledMeasureCleanupRef = useRef(null)
+    const initialLoadGenerationRef = useRef(0)
+    const chapterLoadGenerationRef = useRef(0)
+    const chapterLoadAbortRef = useRef(null)
+    const chapterRetryRef = useRef(null)
 
     const [totalChapters, setTotalChapters] = useState(1)
     const progress = useReadingProgress(id, {
@@ -157,19 +203,44 @@ function EpubReader() {
         type: 'epub',
         legacyId,
         paginationReady: !loading && totalChapters > 0,
-        locator: () => ({
-            kind: 'epub',
-            chapterHref: toc.find((item) => item.index === chapterIndex)?.href || null,
-            chapterIndex,
-            chapterPage,
-        }),
+        locator: () => {
+            const textAnchor = captureEpubBookmarkAnchor(
+                contentRef.current,
+                scrollerRef.current,
+                chapterPage,
+                stepRef.current,
+                selectionSnapshot,
+            )
+            return {
+                kind: 'epub',
+                chapterHref: toc.find((item) => item.index === chapterIndex)?.href || null,
+                chapterTitle: chapter?.title || null,
+                chapterIndex,
+                chapterPage,
+                fallbackPage: chapterPage,
+                ...textAnchor,
+            }
+        },
         locatorToPosition: (saved) => toc.find((item) => item.href && item.href === saved?.chapterHref)?.index
             ?? saved?.chapterIndex,
+        bookmarkSnapshot: () => {
+            const textAnchor = captureEpubBookmarkAnchor(
+                contentRef.current,
+                scrollerRef.current,
+                chapterPage,
+                stepRef.current,
+                selectionSnapshot,
+            )
+            return {
+                excerpt: getBookmarkExcerpt(textAnchor?.quote?.exact || chapter?.title || bookTitle),
+            }
+        },
     })
     const { currentPosition: chapterIndex, setCurrentPosition: setChapterIndex,
-        bookmarks, addBookmark, removeBookmark, goToBookmark,
-        resumePrompt, resumeReading, dismissResume } = progress
+        bookmarks, addBookmark, removeBookmark, updateBookmark, goToBookmark,
+        restoredProgress, startOver } = progress
     const isDualLayout = layout === 'dual'
+    const effectiveColumnGap = isDualLayout ? columnGap + (hMargin * 2) : columnGap
     const useEmbeddedFonts = fontMode === 'embedded'
     const isSearchActive = searchOpen && !!searchQuery.trim()
     const shouldRenderSearchHighlight = isSearchActive && activeChapterMatchIndex != null
@@ -190,6 +261,8 @@ function EpubReader() {
             setSearchQuery('')
             setSearchLoading(false)
             setSearchResults([])
+            setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+            setSearchError('')
             setActiveSearchIndex(null)
             setActiveChapterMatchIndex(null)
             pendingSearchResultRef.current = null
@@ -199,6 +272,8 @@ function EpubReader() {
             setSearchQuery('')
             setSearchLoading(false)
             setSearchResults([])
+            setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+            setSearchError('')
             setActiveSearchIndex(null)
             setActiveChapterMatchIndex(null)
             pendingSearchResultRef.current = null
@@ -211,6 +286,8 @@ function EpubReader() {
             setSearchQuery('')
             setSearchLoading(false)
             setSearchResults([])
+            setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+            setSearchError('')
             setActiveSearchIndex(null)
             setActiveChapterMatchIndex(null)
             pendingSearchResultRef.current = null
@@ -219,6 +296,14 @@ function EpubReader() {
         setSearchQuery(trimmedQuery)
         setSearchRequestId((value) => value + 1)
     }, [searchDraft])
+
+    const handleSearchCancel = useCallback(() => {
+        searchAbortRef.current?.abort()
+        searchGenerationRef.current += 1
+        setSearchLoading(false)
+        setSearchError('')
+        setSearchMeta((current) => ({ ...current, complete: false, partial_reason: 'cancelled' }))
+    }, [])
     const currentChapterAnnotations = useMemo(
         () => annotations.filter((annotation) => annotation.chapter_index == null || annotation.chapter_index === chapter?.index),
         [annotations, chapter?.index],
@@ -227,7 +312,8 @@ function EpubReader() {
     const paginationSignature = useMemo(() => JSON.stringify({
         id,
         layout,
-        columnGap,
+        columnGap: effectiveColumnGap,
+        hMargin,
         lineHeight,
         letterSpacing,
         fontMode,
@@ -240,7 +326,8 @@ function EpubReader() {
     }), [
         id,
         layout,
-        columnGap,
+        effectiveColumnGap,
+        hMargin,
         lineHeight,
         letterSpacing,
         fontMode,
@@ -307,7 +394,7 @@ function EpubReader() {
             setAnnotations([])
         }
         setAnnotationsLoading(false)
-    }, [id, tt])
+    }, [id])
 
     useEffect(() => {
         loadAnnotations()
@@ -319,40 +406,54 @@ function EpubReader() {
         if (!trimmedQuery) {
             setSearchLoading(false)
             setSearchResults([])
+            setSearchMeta({ total: 0, complete: true, partial_reason: null, results_truncated: false })
+            setSearchError('')
             setActiveSearchIndex(null)
             setActiveChapterMatchIndex(null)
             pendingSearchResultRef.current = null
             return
         }
 
-        let cancelled = false
+        const controller = new AbortController()
+        const generation = searchGenerationRef.current + 1
+        searchGenerationRef.current = generation
+        searchAbortRef.current = controller
 
         ; (async () => {
             setSearchLoading(true)
+            setSearchError('')
             try {
-                const res = await fetch(`${API}/${id}/search?q=${encodeURIComponent(trimmedQuery)}`)
+                const res = await fetch(`${API}/${id}/search?q=${encodeURIComponent(trimmedQuery)}`, { signal: controller.signal })
                 if (!res.ok) throw new Error(`HTTP ${res.status}`)
                 const data = await res.json()
-                if (!cancelled) {
+                if (!controller.signal.aborted && searchGenerationRef.current === generation) {
                     setSearchResults(Array.isArray(data?.results) ? data.results : [])
+                    setSearchMeta({
+                        total: Number.isFinite(data?.total) ? data.total : 0,
+                        complete: data?.complete !== false,
+                        partial_reason: data?.partial_reason || null,
+                        results_truncated: Boolean(data?.results_truncated),
+                    })
                     setActiveSearchIndex(null)
                     setActiveChapterMatchIndex(null)
                     pendingSearchResultRef.current = null
                 }
             } catch (err) {
-                if (!cancelled) {
+                if (err?.name !== 'AbortError' && searchGenerationRef.current === generation) {
                     console.error('Failed to search EPUB', err)
                     setSearchResults([])
+                    setSearchError(tt('searchFailed'))
                     setActiveSearchIndex(null)
                     setActiveChapterMatchIndex(null)
                     pendingSearchResultRef.current = null
                 }
             }
-            if (!cancelled) setSearchLoading(false)
+            if (!controller.signal.aborted && searchGenerationRef.current === generation) setSearchLoading(false)
         })()
 
         return () => {
-            cancelled = true
+            controller.abort()
+            if (searchAbortRef.current === controller) searchAbortRef.current = null
         }
     }, [id, searchOpen, searchQuery, searchRequestId])
 
@@ -361,58 +462,163 @@ function EpubReader() {
         setChapterPageCounts({})
     }, [paginationSignature])
 
-    // ??? S4: Parallel TOC + first chapter fetch ???
+    // Load both pieces in parallel, but retain a structured failure instead of
+    // silently rendering an empty reader when either request fails.
     useEffect(() => {
+        const controller = new AbortController()
+        const generation = initialLoadGenerationRef.current + 1
+        initialLoadGenerationRef.current = generation
+        chapterLoadAbortRef.current?.abort()
+        chapterLoadGenerationRef.current += 1
+        setLoading(true)
+        setInitialProblem(null)
+        setChapterProblem(null)
+        setFormatDiagnostics([])
+        setBookTitle('')
+        setToc([])
+        setChapter(null)
+
         ; (async () => {
             try {
                 const [tocRes, chapterRes] = await Promise.all([
-                    fetch(`${API}/${id}/toc`),
-                    fetch(`${API}/${id}/chapter/0`),
+                    fetch(`${API}/${id}/toc`, { signal: controller.signal }),
+                    fetch(`${API}/${id}/chapter/0`, { signal: controller.signal }),
                 ])
-                if (!tocRes.ok) throw new Error(`TOC HTTP ${tocRes.status}`)
-                const tocData = await tocRes.json()
-                const tocItems = Array.isArray(tocData?.toc) ? tocData.toc : []
-                setBookTitle(tocData.title)
-                setToc(tocItems)
 
-                if (chapterRes.ok) {
-                    const firstChapter = await chapterRes.json()
-                    setChapter(firstChapter)
-                    setTotalChapters(Math.max(1, firstChapter?.total || tocItems.length || 1))
-                } else {
-                    setChapter({ title: tt('error'), html: `<p>${tt('loadChapterFailed')}</p>`, index: 0, total: 0 })
-                    setTotalChapters(Math.max(1, tocItems.length || 1))
+                if (!tocRes.ok || !chapterRes.ok) {
+                    const failedResponse = !tocRes.ok ? tocRes : chapterRes
+                    const fallback = !tocRes.ok ? tt('bookLoadFailed') : tt('chapterLoadFailed')
+                    const problem = await readApiProblem(failedResponse, fallback)
+                    if (!controller.signal.aborted && initialLoadGenerationRef.current === generation) {
+                        setInitialProblem(problem)
+                    }
+                    return
                 }
+
+                const [tocData, firstChapter] = await Promise.all([tocRes.json(), chapterRes.json()])
+                if (controller.signal.aborted || initialLoadGenerationRef.current !== generation) return
+                const tocItems = Array.isArray(tocData?.toc) ? tocData.toc : []
+                setBookTitle(tocData?.title || '')
+                setToc(tocItems)
+                setChapter(firstChapter)
+                setTotalChapters(Math.max(1, firstChapter?.total || tocItems.length || 1))
+                void fetch(`${API}/${id}/diagnostics`, { signal: controller.signal })
+                    .then(async (response) => (response.ok ? response.json() : null))
+                    .then((diagnostics) => {
+                        if (controller.signal.aborted || initialLoadGenerationRef.current !== generation) return
+                        setFormatDiagnostics(Array.isArray(diagnostics?.issues) ? diagnostics.issues : [])
+                    })
+                    .catch((reason) => {
+                        if (reason?.name !== 'AbortError') console.error('Failed to load EPUB diagnostics', reason)
+                    })
             } catch (err) {
-                console.error('Failed to load EPUB', err)
+                if (err?.name !== 'AbortError' && initialLoadGenerationRef.current === generation) {
+                    console.error('Failed to load EPUB', err)
+                    setInitialProblem({
+                        code: 'network_error',
+                        message: tt('bookLoadFailed'),
+                        severity: 'error',
+                        stage: 'open',
+                        retryable: true,
+                        recovery: null,
+                        context: null,
+                        status: null,
+                    })
+                }
+            } finally {
+                if (!controller.signal.aborted && initialLoadGenerationRef.current === generation) setLoading(false)
             }
-            setLoading(false)
         })()
-    }, [id])
+
+        return () => controller.abort()
+    }, [id, initialLoadAttempt])
 
     const loadChapter = async (index, options = {}) => {
         const rawInitialPage = options?.page
+        const textAnchor = options?.textAnchor && typeof options.textAnchor === 'object'
+            ? options.textAnchor
+            : null
         const initialPage = rawInitialPage === 'last'
             ? 'last'
             : Math.max(0, Number.isFinite(rawInitialPage) ? rawInitialPage : 0)
 
+        chapterLoadAbortRef.current?.abort()
+        const controller = new AbortController()
+        const generation = chapterLoadGenerationRef.current + 1
+        chapterLoadGenerationRef.current = generation
+        chapterLoadAbortRef.current = controller
+        chapterRetryRef.current = { index, options: { page: initialPage, textAnchor } }
         pendingChapterPageRef.current = initialPage
         setLoading(true)
-        setChapterIndex(index)
-        setChapterPage(initialPage === 'last' ? 0 : initialPage)
+        setChapterProblem(null)
         try {
-            const res = await fetch(`${API}/${id}/chapter/${index}`)
-            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const res = await fetch(`${API}/${id}/chapter/${index}`, { signal: controller.signal })
+            if (!res.ok) {
+                const problem = await readApiProblem(res, tt('chapterLoadFailed'))
+                if (!controller.signal.aborted && chapterLoadGenerationRef.current === generation) {
+                    setChapterProblem(problem)
+                }
+                return false
+            }
             const nextChapter = await res.json()
+            if (controller.signal.aborted || chapterLoadGenerationRef.current !== generation) return false
+            pendingTextAnchorRef.current = textAnchor
             setChapter(nextChapter)
+            setChapterIndex(index)
+            setChapterPage(initialPage === 'last' ? 0 : initialPage)
             if (Number.isFinite(nextChapter?.total) && nextChapter.total > 0) {
                 setTotalChapters(nextChapter.total)
             }
-        } catch {
-            setChapter({ title: tt('error'), html: `<p>${tt('loadChapterFailed')}</p>`, index, total: 0 })
+            chapterRetryRef.current = null
+            return true
+        } catch (err) {
+            if (err?.name !== 'AbortError' && chapterLoadGenerationRef.current === generation) {
+                console.error('Failed to load EPUB chapter', err)
+                setChapterProblem({
+                    code: 'network_error',
+                    message: tt('chapterLoadFailed'),
+                    severity: 'error',
+                    stage: 'chapter',
+                    retryable: true,
+                    recovery: null,
+                    context: { chapter_index: index },
+                    status: null,
+                })
+            }
+            return false
+        } finally {
+            if (!controller.signal.aborted && chapterLoadGenerationRef.current === generation) setLoading(false)
         }
-        setLoading(false)
     }
+
+    useEffect(() => () => {
+        chapterLoadAbortRef.current?.abort()
+        chapterLoadGenerationRef.current += 1
+    }, [])
+
+    useEffect(() => {
+        if (loading || !chapter || !restoredProgress) return
+        const restoreKey = `${id}:${restoredProgress.updatedAt || ''}:${JSON.stringify(restoredProgress.locator || restoredProgress.position)}`
+        if (appliedRestoreKeyRef.current === restoreKey) return
+        appliedRestoreKeyRef.current = restoreKey
+        const hrefChapterIndex = restoredProgress.locator?.chapterHref
+            ? toc.find((item) => item.href === restoredProgress.locator.chapterHref)?.index
+            : null
+        const targetChapter = Math.max(0, Math.min(
+            hrefChapterIndex ?? restoredProgress.locator?.chapterIndex ?? restoredProgress.position,
+            Math.max(0, totalChapters - 1),
+        ))
+        void loadChapter(targetChapter, {
+            page: Math.max(0, restoredProgress.locator?.chapterPage ?? restoredProgress.locator?.fallbackPage ?? 0),
+            textAnchor: restoredProgress.locator,
+        })
+    }, [chapter, id, loading, restoredProgress, toc, totalChapters])
+
+    const handleStartOver = useCallback(() => {
+        appliedRestoreKeyRef.current = null
+        startOver()
+        void loadChapter(0, { page: 0 })
+    }, [startOver])
 
     const waitForMeasuredAssets = useCallback(async (root) => {
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
@@ -486,7 +692,11 @@ function EpubReader() {
         contentEl.style.wordBreak = 'break-word'
         contentEl.style.overflowWrap = 'break-word'
         contentEl.style.columnCount = isDualLayout ? '2' : '1'
-        contentEl.style.columnGap = `${columnGap}px`
+        applyEpubOwnedLayoutStyles(contentEl, {
+            columnGap: effectiveColumnGap,
+            horizontalMargin: hMargin,
+            isDualLayout,
+        })
         contentEl.style.columnFill = 'auto'
         contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
         contentEl.style.breakInside = 'avoid-column'
@@ -506,7 +716,8 @@ function EpubReader() {
         const rawGap = cs.columnGap
         const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const colW = isDualLayout ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
+        const contentWidth = isDualLayout ? Math.max(1, W - (hMargin * 2)) : W
+        const colW = isDualLayout ? Math.max(1, Math.floor((contentWidth - gap) / 2)) : Math.max(1, Math.floor(contentWidth))
 
         contentEl.style.columnWidth = `${colW}px`
         contentEl.style.columnCount = isDualLayout ? '2' : '1'
@@ -522,12 +733,13 @@ function EpubReader() {
         const measuredRawGap = finalStyles.columnGap
         const measuredFallbackGap = parseFloat(finalStyles.fontSize) || 16
         const measuredGap = measuredRawGap === 'normal' ? measuredFallbackGap : (parseFloat(measuredRawGap) || 0)
-        const step = W + measuredGap
-        const pages = step > 0 ? Math.max(1, Math.ceil((scroller.scrollWidth + measuredGap) / step)) : 1
+        const navigationGap = getEpubSpreadNavigationGap(measuredGap, isDualLayout, hMargin)
+        const step = W + navigationGap
+        const pages = step > 0 ? Math.max(1, Math.ceil((scroller.scrollWidth + navigationGap) / step)) : 1
 
         host.innerHTML = ''
         return pages
-    }, [columnGap, contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, epubTypographyCss, isDualLayout, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
+    }, [contentStyle.fontFamily, contentStyle.fontSize, contentStyle.fontWeight, effectiveColumnGap, epubTypographyCss, hMargin, isDualLayout, letterSpacing, lineHeight, pageHeight, pageWidth, useEmbeddedFonts, waitForMeasuredAssets])
 
     const measure = useCallback(() => {
         const scroller = scrollerRef.current; const contentEl = contentRef.current
@@ -535,25 +747,36 @@ function EpubReader() {
         const W = scroller.clientWidth; const cs = getComputedStyle(contentEl)
         const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const colW = isDualLayout ? Math.max(1, Math.floor((W - gap) / 2)) : Math.max(1, Math.floor(W))
+        const contentWidth = isDualLayout ? Math.max(1, W - (hMargin * 2)) : W
+        const colW = isDualLayout ? Math.max(1, Math.floor((contentWidth - gap) / 2)) : Math.max(1, Math.floor(contentWidth))
         const H = Math.max(1, Math.floor(scroller.clientHeight))
         contentEl.style.columnWidth = `${colW}px`; contentEl.style.columnCount = isDualLayout ? '2' : '1'
         contentEl.style.columnFill = 'auto'; contentEl.style.height = `${H}px`; contentEl.style.display = 'block'
         contentEl.style.textAlign = 'left'; contentEl.style.columnRule = isDualLayout ? '1px solid transparent' : 'none'
-        const step = W + gap; if (step <= 0) return
+        const navigationGap = getEpubSpreadNavigationGap(gap, isDualLayout, hMargin)
+        const step = W + navigationGap; if (step <= 0) return
         const oldStep = stepRef.current > 0 ? stepRef.current : step; const oldLeft = scroller.scrollLeft
         stepRef.current = step; setPageWidth(W); setPageHeight(H)
-        const pages = Math.max(1, Math.ceil((scroller.scrollWidth + gap) / step)); initialMeasureDoneRef.current = true; setChapterPaginationReady(true); setChapterTotalPages(pages)
+        const pages = Math.max(1, Math.ceil((scroller.scrollWidth + navigationGap) / step)); initialMeasureDoneRef.current = true; setChapterPaginationReady(true); setChapterTotalPages(pages)
         const pendingPage = getPendingPage()
         const requestedChapterPage = pendingChapterPageRef.current
+        const requestedTextAnchor = pendingTextAnchorRef.current
+        const anchorTargetsCurrentChapter = requestedTextAnchor
+            && (!Number.isFinite(requestedTextAnchor.chapterIndex) || requestedTextAnchor.chapterIndex === chapter?.index)
+        const anchoredPage = anchorTargetsCurrentChapter
+            ? resolveEpubBookmarkPage(contentEl, scroller, requestedTextAnchor, step, pages)
+            : null
+        if (anchorTargetsCurrentChapter) pendingTextAnchorRef.current = null
         if (requestedChapterPage != null) pendingChapterPageRef.current = null
-        const idxFromScroll = requestedChapterPage === 'last'
-            ? pages - 1
-            : (Number.isFinite(requestedChapterPage) ? requestedChapterPage : (pendingPage ?? Math.round(oldLeft / oldStep)))
+        const idxFromScroll = Number.isFinite(anchoredPage)
+            ? anchoredPage
+            : (requestedChapterPage === 'last'
+                ? pages - 1
+                : (Number.isFinite(requestedChapterPage) ? requestedChapterPage : (pendingPage ?? Math.round(oldLeft / oldStep))))
         const clamped = Math.max(0, Math.min(idxFromScroll, pages - 1))
         scroller.scrollTo({ left: Math.round(clamped * step), behavior: 'auto' })
         setChapterPage(prev => (prev === clamped ? prev : clamped))
-    }, [getPendingPage, isDualLayout])
+    }, [chapter?.index, effectiveColumnGap, getPendingPage, hMargin, isDualLayout])
 
     useEffect(() => {
         if (chapter?.index == null || !Number.isFinite(chapterTotalPages) || chapterTotalPages < 1) return
@@ -617,10 +840,11 @@ function EpubReader() {
         const W = s.clientWidth; const cs = getComputedStyle(c)
         const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
         const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
-        const step = W + gap; if (step <= 0) return; stepRef.current = step
+        const navigationGap = getEpubSpreadNavigationGap(gap, isDualLayout, hMargin)
+        const step = W + navigationGap; if (step <= 0) return; stepRef.current = step
         lockPendingPage(target)
         s.scrollTo({ left: Math.round(target * step), behavior: 'auto' }); setChapterPage(target)
-    }, [chapterTotalPages, lockPendingPage])
+    }, [chapterTotalPages, hMargin, isDualLayout, lockPendingPage])
 
     const goToOverallPage = useCallback((overallPage) => {
         if (!overallPagination.ready || overallPagination.totalPages <= 0) return
@@ -642,13 +866,24 @@ function EpubReader() {
         goToOverallPage(Math.round(progressValue * (overallPagination.totalPages - 1)))
     }, [goToOverallPage, overallPagination])
 
-    useEffect(() => { const s = scrollerRef.current; const c = contentRef.current; if (!s || !c) return; const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const step = W + gap; if (step <= 0) return; stepRef.current = step; s.scrollTo({ left: Math.round(chapterPage * step), behavior: 'auto' }) }, [chapterPage])
+    useEffect(() => {
+        const s = scrollerRef.current; const c = contentRef.current
+        if (!s || !c) return
+        const W = s.clientWidth; const cs = getComputedStyle(c)
+        const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16
+        const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0)
+        const navigationGap = getEpubSpreadNavigationGap(gap, isDualLayout, hMargin)
+        const step = W + navigationGap
+        if (step <= 0) return
+        stepRef.current = step
+        s.scrollTo({ left: Math.round(chapterPage * step), behavior: 'auto' })
+    }, [chapterPage, effectiveColumnGap, hMargin, isDualLayout])
 
     useEffect(() => {
         const s = scrollerRef.current; const c = contentRef.current; if (!s || !c) return; let timer = null
-        const onScroll = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const step = W + gap; if (step <= 0) return; stepRef.current = step; const pendingPage = getPendingPage(); const idx = pendingPage ?? Math.round(s.scrollLeft / step); const snapLeft = Math.round(idx * step); if (Math.abs(s.scrollLeft - snapLeft) >= 1) s.scrollTo({ left: snapLeft, behavior: 'auto' }); const clamped = Math.max(0, Math.min(idx, chapterTotalPages - 1)); setChapterPage(prev => (prev === clamped ? prev : clamped)) }, 120) }
+        const onScroll = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { const W = s.clientWidth; const cs = getComputedStyle(c); const rawGap = cs.columnGap; const fallbackGap = parseFloat(cs.fontSize) || 16; const gap = rawGap === 'normal' ? fallbackGap : (parseFloat(rawGap) || 0); const navigationGap = getEpubSpreadNavigationGap(gap, isDualLayout, hMargin); const step = W + navigationGap; if (step <= 0) return; stepRef.current = step; const pendingPage = getPendingPage(); const idx = pendingPage ?? Math.round(s.scrollLeft / step); const snapLeft = Math.round(idx * step); if (Math.abs(s.scrollLeft - snapLeft) >= 1) s.scrollTo({ left: snapLeft, behavior: 'auto' }); const clamped = Math.max(0, Math.min(idx, chapterTotalPages - 1)); setChapterPage(prev => (prev === clamped ? prev : clamped)) }, 120) }
         s.addEventListener('scroll', onScroll, { passive: true }); return () => { if (timer) clearTimeout(timer); s.removeEventListener('scroll', onScroll) }
-    }, [chapterTotalPages, getPendingPage])
+    }, [chapterTotalPages, effectiveColumnGap, getPendingPage, hMargin, isDualLayout])
 
     useEffect(() => {
         if (loading || !chapterPaginationReady || totalChapters <= 0 || pageWidth <= 0 || pageHeight <= 0) return
@@ -706,7 +941,39 @@ function EpubReader() {
 
     const goNext = useCallback(() => { if (chapterPage < chapterTotalPages - 1) goToPage(chapterPage + 1); else if (chapter && chapterIndex < chapter.total - 1) loadChapter(chapterIndex + 1, { page: 0 }) }, [chapterPage, chapterTotalPages, chapter, chapterIndex, goToPage])
     const goPrev = useCallback(() => { if (chapterPage > 0) goToPage(chapterPage - 1); else if (chapterIndex > 0) loadChapter(chapterIndex - 1, { page: 'last' }) }, [chapterPage, chapterIndex, goToPage])
-    useKeyboardNav({ onNext: goNext, onPrev: goPrev, onEscape: toggleTitleBar, enabled: true, readerRootRef })
+    useKeyboardNav({ onNext: goNext, onPrev: goPrev, enabled: !searchOpen && !annotationsOpen && !bookmarksOpen && !initialProblem && !chapterProblem && !settings.settingsOpen, readerRootRef })
+    useReaderCommandShortcuts({
+        enabled: !loading && !!chapter && !searchOpen && !annotationsOpen && !bookmarksOpen && !initialProblem && !chapterProblem && !settings.settingsOpen,
+        settingsShortcutEnabled: !searchOpen && !annotationsOpen && !bookmarksOpen,
+        searchShortcutEnabled: !annotationsOpen && !bookmarksOpen && !initialProblem && !chapterProblem && !settings.settingsOpen,
+        onBack: () => navigate('/'),
+        onFirstPage: () => {
+            if (chapterIndex === 0) goToPage(0)
+            else void loadChapter(0, { page: 0 })
+        },
+        onLastPage: () => {
+            const lastChapter = Math.max(0, totalChapters - 1)
+            if (chapterIndex === lastChapter) goToPage(chapterTotalPages - 1)
+            else void loadChapter(lastChapter, { page: 'last' })
+        },
+        onSearch: () => {
+            setSearchOpen(true)
+            setAnnotationsOpen(false)
+            setBookmarksOpen(false)
+            setActiveAnnotationId(null)
+        },
+        onAddBookmark: addBookmark,
+        onToggleToc: () => setSidebarOpen((open) => !open),
+        onToggleAnnotations: () => {
+            setAnnotationsOpen(true)
+            setSearchOpen(false)
+            setBookmarksOpen(false)
+        },
+        onToggleLayout: () => setLayout(preferredLayout === 'dual' ? 'single' : 'dual'),
+        onDecreaseScale: decFont,
+        onIncreaseScale: incFont,
+        onToggleSettings: settings.toggleSettings,
+    })
 
     const openEpubImageInWindow = useCallback((imgEl) => {
         if (!imgEl || typeof window === 'undefined') return
@@ -835,8 +1102,15 @@ function EpubReader() {
         const previous = contentRef.current
         if (previous) previous.removeEventListener('click', handleEpubContentClick)
         contentRef.current = node
-        if (node) node.addEventListener('click', handleEpubContentClick)
-    }, [handleEpubContentClick])
+        if (node) {
+            applyEpubOwnedLayoutStyles(node, {
+                columnGap: effectiveColumnGap,
+                horizontalMargin: hMargin,
+                isDualLayout,
+            })
+            node.addEventListener('click', handleEpubContentClick)
+        }
+    }, [effectiveColumnGap, hMargin, handleEpubContentClick, isDualLayout])
 
     useEffect(() => {
         if (loading) return
@@ -939,6 +1213,18 @@ function EpubReader() {
                 body: JSON.stringify({
                     kind,
                     locator: `chapter:${chapterIndex}:page:${chapterPage}`,
+                    locator_v2: {
+                        version: 2,
+                        kind: 'epub',
+                        chapterHref: toc.find((item) => item.index === chapterIndex)?.href || null,
+                        chapterIndex,
+                        chapterPage,
+                        fallbackPage: chapterPage,
+                        textOffset: selectionSnapshot.startOffset,
+                        textEndOffset: selectionSnapshot.endOffset,
+                        offsetUnit: 'utf16-code-unit-v1',
+                        quote: { exact: selectionSnapshot.selectedText, prefix: '', suffix: '', position: 0 },
+                    },
                     page: chapterPage,
                     chapter_index: chapterIndex,
                     chapter_title: chapter?.title || null,
@@ -955,6 +1241,7 @@ function EpubReader() {
             setAnnotations((prev) => [created, ...prev])
             setAnnotationsOpen(true)
             setSearchOpen(false)
+            setBookmarksOpen(false)
             setActiveSearchIndex(null)
             setActiveChapterMatchIndex(null)
             pendingSearchResultRef.current = null
@@ -965,7 +1252,7 @@ function EpubReader() {
             console.error('Failed to create annotation', err)
             window.alert(tt('annotationSaveFailed'))
         }
-    }, [chapter?.title, chapterIndex, chapterPage, id, selectionSnapshot, tt])
+    }, [chapter?.title, chapterIndex, chapterPage, id, selectionSnapshot, toc, tt])
 
     const handleEditAnnotation = useCallback(async (annotation) => {
         if (annotation.kind !== 'note') return
@@ -1012,45 +1299,147 @@ function EpubReader() {
         pendingSearchResultRef.current = null
         setActiveAnnotationId(annotation.id)
 
-        if (annotation.chapter_index != null && annotation.chapter_index !== chapterIndex) {
-            loadChapter(annotation.chapter_index, { page: Number.isFinite(annotation.page) ? annotation.page : 0 })
+        const locator = annotation.locator_v2
+        const hrefChapterIndex = locator?.chapterHref
+            ? toc.find((item) => item.href === locator.chapterHref)?.index
+            : null
+        const targetChapter = hrefChapterIndex ?? locator?.chapterIndex ?? annotation.chapter_index
+        const targetPage = locator?.chapterPage ?? locator?.fallbackPage ?? annotation.page ?? 0
+        if (targetChapter != null && targetChapter !== chapterIndex) {
+            loadChapter(targetChapter, { page: Number.isFinite(targetPage) ? targetPage : 0 })
             return
         }
 
-        if (Number.isFinite(annotation.page)) {
-            goToPage(annotation.page)
+        if (Number.isFinite(targetPage)) {
+            goToPage(targetPage)
         }
-    }, [chapterIndex, goToPage])
+    }, [chapterIndex, goToPage, toc])
 
-    return (        <div ref={readerRootRef} tabIndex={-1} className="readerRoot h-[calc(100vh-var(--titlebar-height,0px))] flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)', transition: 'background-color 0.3s, color 0.3s' }}>
+    const handleBookmarkActivate = (bookmark) => {
+        const targetChapter = toc.find((item) => item.href && item.href === bookmark.locator?.chapterHref)?.index
+            ?? bookmark.locator?.chapterIndex
+            ?? bookmark.position
+        const fallbackPage = bookmark.locator?.chapterPage ?? bookmark.locator?.fallbackPage ?? 0
+        const anchoredPage = targetChapter === chapterIndex
+            ? resolveEpubBookmarkPage(
+                contentRef.current,
+                scrollerRef.current,
+                bookmark.locator,
+                stepRef.current,
+                chapterTotalPages,
+            )
+            : null
+        goToBookmark({ ...bookmark, position: targetChapter })
+        if (targetChapter === chapterIndex && chapter?.index === targetChapter) {
+            goToPage(Number.isFinite(anchoredPage) ? anchoredPage : fallbackPage)
+            return
+        }
+        void loadChapter(targetChapter, {
+            page: fallbackPage,
+            textAnchor: bookmark.locator,
+        })
+    }
 
-            <div className="reader-ui shrink-0 flex items-center justify-between px-6 py-2.5" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
-                <div className="flex items-center gap-3">
-                    <button onClick={() => navigate('/')} title={tt('backToLibrary')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg></button>
-                    <div className="h-5 w-px opacity-20" style={{ backgroundColor: themeStyle.text }} />
-                    <span className="text-[11px] font-semibold uppercase tracking-widest opacity-40" style={{ color: themeStyle.text }}>EPUB</span>
-                    <span className="text-sm opacity-60 truncate max-w-[18rem]" style={{ color: themeStyle.text }}>{bookTitle}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <button onClick={() => { setSearchOpen((open) => !open); setAnnotationsOpen(false); setActiveAnnotationId(null) }} title={tt('search')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: searchOpen ? '#5c7cfa' : themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.35-4.35" /></svg></button>
-                    <button onClick={() => { setAnnotationsOpen((open) => !open); setSearchOpen(false) }} title={tt('annotations')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: annotationsOpen ? '#ff922b' : themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z" /></svg></button>
-                    <button onClick={addBookmark} title={tt('bookmark')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg></button>
-                    <button onClick={() => setSidebarOpen(o => !o)} title={tt('toc')} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="15" y2="12" /><line x1="3" y1="18" x2="18" y2="18" /></svg></button>
-                    <ReaderToolbar settings={settings} readerType="epub" />
-                </div>
-            </div>
+    const canAddBookmark = !loading && !initialProblem && !chapterProblem && !!chapter && chapterPaginationReady
+    const currentBookmarkPosition = {
+        position: chapterIndex,
+        label: overallPagination.ready
+            ? `${tt('page')} ${overallPagination.currentPage}`
+            : `${tt('chapter')} ${chapterIndex + 1} · ${tt('page')} ${chapterPage + 1}`,
+        locator: {
+            kind: 'epub',
+            chapterHref: toc.find((item) => item.index === chapterIndex)?.href || null,
+            chapterIndex,
+            chapterPage,
+            fallbackPage: chapterPage,
+        },
+    }
+    const preserveCurrentBookmarkAnchor = () => {
+        const anchor = captureEpubBookmarkAnchor(
+            contentRef.current,
+            scrollerRef.current,
+            chapterPage,
+            stepRef.current,
+            selectionSnapshot,
+        )
+        if (anchor) pendingTextAnchorRef.current = { ...anchor, chapterIndex }
+    }
+    const closeBookmarksPanel = () => {
+        if (bookmarksOpen) preserveCurrentBookmarkAnchor()
+        setBookmarksOpen(false)
+    }
+    const toggleBookmarksPanel = () => {
+        preserveCurrentBookmarkAnchor()
+        setBookmarksOpen((open) => !open)
+        setSearchOpen(false)
+        setAnnotationsOpen(false)
+        setActiveAnnotationId(null)
+    }
 
-            {bookmarks.length > 0 && (
-                <div className="reader-ui shrink-0 px-6 py-1.5 flex items-center gap-2 overflow-x-auto" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
-                    <span className="text-[10px] uppercase tracking-widest opacity-30 shrink-0" style={{ color: themeStyle.text }}>{tt('bookmarks')}</span>
-                    {bookmarks.map(b => (
-                        <button key={b.position} onClick={() => { goToBookmark(b.position); loadChapter(b.position) }} className="px-2 py-0.5 rounded text-[11px] border transition-all hover:opacity-70 shrink-0" style={{ borderColor: themeStyle.border, color: themeStyle.text }}>
-                            {tt('chapter')} {b.position + 1}<span onClick={(e) => { e.stopPropagation(); removeBookmark(b.position) }} className="ml-1.5 opacity-30 hover:opacity-100 cursor-pointer">횞</span>
-                        </button>
-                    ))}
-                </div>
+    return (
+        <ReaderShell
+            rootRef={readerRootRef}
+            topBar={(
+                <ReaderTopBar
+                    themeStyle={themeStyle}
+                    backLabel={tt('backToLibrary')}
+                    onBack={() => navigate('/')}
+                    meta={(
+                        <>
+                            <span className="text-[11px] font-semibold uppercase tracking-widest opacity-40" style={{ color: themeStyle.text }}>EPUB</span>
+                            <span className="text-sm opacity-60 truncate max-w-[18rem]" style={{ color: themeStyle.text }}>{bookTitle}</span>
+                        </>
+                    )}
+                    actions={(
+                        <>
+                            <button type="button" onClick={() => { setSearchOpen((open) => !open); setAnnotationsOpen(false); closeBookmarksPanel(); setActiveAnnotationId(null) }} title={tt('search')} aria-keyshortcuts={settings.keyboardShortcutsEnabled ? 'Control+F' : undefined} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: searchOpen ? '#5c7cfa' : themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.35-4.35" /></svg></button>
+                            <button type="button" onClick={() => { setAnnotationsOpen((open) => !open); setSearchOpen(false); closeBookmarksPanel() }} title={tt('annotations')} aria-keyshortcuts={settings.keyboardShortcutsEnabled ? 'M' : undefined} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: annotationsOpen ? '#ff922b' : themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z" /></svg></button>
+                            <ReaderBookmarkToggle
+                                open={bookmarksOpen}
+                                onToggle={toggleBookmarksPanel}
+                                themeStyle={bookmarkThemeStyle}
+                                tt={tt}
+                                lang={lang}
+                            />
+                            <button type="button" onClick={() => setSidebarOpen(o => !o)} title={tt('toc')} aria-keyshortcuts={settings.keyboardShortcutsEnabled ? 'T' : undefined} className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:opacity-60" style={{ color: themeStyle.text }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="15" y2="12" /><line x1="3" y1="18" x2="18" y2="18" /></svg></button>
+                            <ReaderToolbar settings={settings} readerType="epub" />
+                        </>
+                    )}
+                />
             )}
-
+            notice={(
+                <ReaderNoticeBar
+                    themeStyle={themeStyle}
+                    message={tt('limitedFormatSupport')}
+                    issues={formatDiagnostics}
+                />
+            )}
+            bookmarkBar={bookmarksOpen ? (
+                <ReaderBookmarkNavigator
+                    items={bookmarks}
+                    currentPosition={currentBookmarkPosition}
+                    themeStyle={bookmarkThemeStyle}
+                    onActivate={handleBookmarkActivate}
+                    tt={tt}
+                    lang={lang}
+                />
+            ) : null}
+            sidePanel={bookmarksOpen ? (
+                <ReaderBookmarksPanel
+                    open
+                    items={bookmarks}
+                    currentPosition={currentBookmarkPosition}
+                    themeStyle={bookmarkThemeStyle}
+                    onClose={closeBookmarksPanel}
+                    onAdd={canAddBookmark ? () => addBookmark() : undefined}
+                    onActivate={handleBookmarkActivate}
+                    onRemove={removeBookmark}
+                    onUpdate={updateBookmark}
+                    tt={tt}
+                    lang={lang}
+                />
+            ) : null}
+            main={(
             <div className="flex-1 flex min-h-0 overflow-hidden">
                 {sidebarOpen && (
                     <div className="reader-ui w-56 shrink-0 overflow-y-auto py-4 px-3" style={{ borderRight: `1px solid ${themeStyle.border}`, backgroundColor: themeStyle.card }}>
@@ -1064,37 +1453,85 @@ function EpubReader() {
                 )}
 
                 <div className="flex-1 relative min-h-0">
-                    <ReaderSearchPanel open={searchOpen} themeStyle={themeStyle} query={searchDraft} submittedQuery={searchQuery} loading={searchLoading} results={searchResults} activeIndex={activeSearchIndex} onQueryChange={handleSearchQueryChange} onSubmit={handleSearchSubmit} onClose={() => setSearchOpen(false)} onResultClick={handleSearchResultClick} formatResultLocation={formatSearchResultLocation} tt={tt} />
-                    <ReaderAnnotationsPanel open={annotationsOpen} themeStyle={themeStyle} loading={annotationsLoading} annotations={annotations} activeAnnotationId={activeAnnotationId} onClose={() => setAnnotationsOpen(false)} onItemClick={handleAnnotationClick} onDeleteItem={handleDeleteAnnotation} onEditItem={handleEditAnnotation} onColorItem={handleCycleAnnotationColor} tt={tt} lang={lang} />
+                    <ReaderBookmarkFab
+                        onAdd={() => addBookmark()}
+                        themeStyle={bookmarkThemeStyle}
+                        tt={tt}
+                        lang={lang}
+                        disabled={!canAddBookmark}
+                    />
+                    <ReaderSearchPanel open={searchOpen} themeStyle={themeStyle} query={searchDraft} submittedQuery={searchQuery} loading={searchLoading} results={searchResults} meta={searchMeta} error={searchError} activeIndex={activeSearchIndex} onQueryChange={handleSearchQueryChange} onSubmit={handleSearchSubmit} onCancel={handleSearchCancel} onClose={() => setSearchOpen(false)} onResultClick={handleSearchResultClick} formatResultLocation={formatSearchResultLocation} tt={tt} />
+                    <ReaderAnnotationsPanel bookId={id} open={annotationsOpen} themeStyle={themeStyle} loading={annotationsLoading} annotations={annotations} activeAnnotationId={activeAnnotationId} onClose={() => setAnnotationsOpen(false)} onItemClick={handleAnnotationClick} onDeleteItem={handleDeleteAnnotation} onEditItem={handleEditAnnotation} onColorItem={handleCycleAnnotationColor} tt={tt} lang={lang} />
                     <ReaderSelectionMenu selection={selectionSnapshot} themeStyle={themeStyle} onHighlight={() => createAnnotation('highlight')} onNote={() => createAnnotation('note')} onClear={() => { setSelectionSnapshot(null); clearCurrentSelection() }} tt={tt} />
                     {epubTypographyCss && <style>{epubTypographyCss}</style>}
-                    <div className="absolute inset-y-0 left-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goPrev}>{(chapterPage > 0 || chapterIndex > 0) && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg></div>)}</div>
-                    <div className="absolute inset-y-0 right-0 w-16 z-20 flex items-center justify-center cursor-pointer opacity-0 hover:opacity-100 transition-opacity duration-300" onClick={goNext}>{(chapterPage < chapterTotalPages - 1 || (chapter && chapterIndex < chapter.total - 1)) && (<div className="w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md" style={{ backgroundColor: `${themeStyle.card}cc`, border: `1px solid ${themeStyle.border}`, color: themeStyle.text }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg></div>)}</div>
+                    <ReaderPageTurnControls
+                        themeStyle={themeStyle}
+                        showPrev={chapterPage > 0 || chapterIndex > 0}
+                        showNext={chapterPage < chapterTotalPages - 1 || Boolean(chapter && chapterIndex < chapter.total - 1)}
+                        onPrev={goPrev}
+                        onNext={goNext}
+                        previousLabel={tt('previous')}
+                        nextLabel={tt('next')}
+                    />
 
-                    {layout === 'dual' && (<div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-8 z-10 pointer-events-none" style={{ background: `linear-gradient(to right, transparent, ${themeStyle.bg === '#1a1b1e' ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.06)'} 45%, ${themeStyle.bg === '#1a1b1e' ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.08)'} 50%, ${themeStyle.bg === '#1a1b1e' ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.06)'} 55%, transparent)` }} />)}
-
-                    <div ref={frameRef} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${hMargin}px`, boxSizing: 'border-box' }}>
+                    <div data-testid="epub-reader-stage" ref={frameRef} aria-busy={loading} className={`reader-stage ${layout === 'dual' ? 'reader-stage-dual' : ''}`} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', padding: `${vMargin}px ${isDualLayout ? 0 : hMargin}px`, boxSizing: 'border-box' }}>
                         {loading ? (
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}><div className="text-sm opacity-60">{tt('loading')}</div></div>
+                            <div role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}><div className="text-sm opacity-60">{tt('loading')}</div></div>
+                        ) : initialProblem ? (
+                            <div className="flex h-full items-center justify-center">
+                                <ReaderLoadProblem
+                                    problem={initialProblem}
+                                    title={tt('bookLoadFailed')}
+                                    themeStyle={themeStyle}
+                                    tt={tt}
+                                    onRetry={() => setInitialLoadAttempt((value) => value + 1)}
+                                    onBack={() => navigate('/')}
+                                    forceRetry
+                                />
+                            </div>
                         ) : chapter ? (
                             <div key={chapter?.index ?? 0} ref={scrollerRef} className="reader-scroller" style={{ position: 'relative', width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'none', scrollbarGutter: 'stable' }}>
                                 <div ref={bindContentRef} className={EPUB_CONTENT_CLASS_NAME}
-                                    style={{ height: '100%', boxSizing: 'border-box', display: 'block', backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${columnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
+                                    style={{ height: '100%', boxSizing: 'border-box', display: 'block', padding: isDualLayout ? `0 ${hMargin}px` : 0, backgroundColor: 'var(--reader-page-bg)', color: 'var(--reader-page-fg)', fontFamily: useEmbeddedFonts ? undefined : contentStyle.fontFamily, fontWeight: contentStyle.fontWeight, fontSize: contentStyle.fontSize, lineHeight: `${lineHeight}`, letterSpacing: `${letterSpacing}em`, textAlign: 'left', hyphens: 'auto', WebkitHyphens: 'auto', wordBreak: 'break-word', overflowWrap: 'break-word', columnCount: isDualLayout ? 2 : 1, columnGap: `${effectiveColumnGap}px`, columnFill: 'auto', columnRule: isDualLayout ? '1px solid transparent' : 'none', breakInside: 'avoid-column' }}
                                     dangerouslySetInnerHTML={{ __html: sanitizedChapterHtml }}
                                 />
                             </div>
                         ) : null}
+                        {!loading && chapterProblem && chapter && (
+                            <div className="absolute inset-0 z-30 flex items-center justify-center" style={{ backgroundColor: 'var(--reader-page-bg)' }}>
+                                <ReaderLoadProblem
+                                    problem={chapterProblem}
+                                    title={tt('chapterLoadFailed')}
+                                    themeStyle={themeStyle}
+                                    tt={tt}
+                                    onRetry={() => {
+                                        const retry = chapterRetryRef.current
+                                        if (retry) void loadChapter(retry.index, retry.options)
+                                    }}
+                                    onBack={() => navigate('/')}
+                                    forceRetry
+                                />
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>
-
-            <div className="reader-ui">
-                {chapter && (<ReaderProgressBar currentPage={overallPagination.currentPage} totalPages={overallPagination.totalPages} onSeekPage={overallPagination.ready ? (p) => goToOverallPage(p - 1) : undefined} progress={overallPagination.totalPages > 1 ? (overallPagination.currentPage - 1) / (overallPagination.totalPages - 1) : 0} onSeekProgress={overallPagination.ready ? seekToOverallProgress : undefined} extraInfo={`${tt('chapter')} ${chapterIndex + 1}/${chapter?.total || totalChapters}`} readerFocusRef={readerRootRef} />)}
-                <ResumeToast resumePrompt={resumePrompt} onResume={() => { resumeReading(); if (resumePrompt) loadChapter(resumePrompt.position) }} onDismiss={dismissResume} tt={tt} />
-            </div>
-
-            <div ref={measureHostRef} aria-hidden="true" style={{ position: 'fixed', left: '-100000px', top: '0', width: '1px', height: '1px', overflow: 'hidden', visibility: 'hidden', pointerEvents: 'none' }} />
-        </div>
+            )}
+            bottom={(
+                <div className="reader-ui">
+                    {chapter && (<ReaderProgressBar currentPage={overallPagination.currentPage} totalPages={overallPagination.totalPages} onSeekPage={overallPagination.ready ? (p) => goToOverallPage(p - 1) : undefined} progress={overallPagination.totalPages > 1 ? (overallPagination.currentPage - 1) / (overallPagination.totalPages - 1) : 0} onSeekProgress={overallPagination.ready ? seekToOverallProgress : undefined} extraInfo={`${tt('chapter')} ${chapterIndex + 1}/${chapter?.total || totalChapters}`} readerFocusRef={readerRootRef} />)}
+                    <ResumeToast
+                        message={restoredProgress ? tt('resumedFromLastPosition') : null}
+                        actionLabel={tt('startOver')}
+                        onAction={handleStartOver}
+                        durationMs={5000}
+                    />
+                </div>
+            )}
+            tail={(
+                <div ref={measureHostRef} aria-hidden="true" style={{ position: 'fixed', left: '-100000px', top: '0', width: '1px', height: '1px', overflow: 'hidden', visibility: 'hidden', pointerEvents: 'none' }} />
+            )}
+        />
     )
 }
 

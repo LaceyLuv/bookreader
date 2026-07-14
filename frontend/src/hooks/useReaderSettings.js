@@ -2,12 +2,13 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { createT } from '../i18n'
 import { withThemeVars } from '../constants/themes'
 import {
-    emitTitleBarVisibility,
     isSafeModeEnabled,
     SAFE_APP_BG,
     SAFE_APP_FG,
     setAppThemeVars,
 } from '../lib/appChrome'
+import { useWindowDisplay } from './useWindowDisplay'
+import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 
 const THEMES = {
     dark: withThemeVars({ name: 'dark', bg: '#1a1b1e', text: '#d1d5db', card: '#25262b', border: '#373a40', accent: '#5c7cfa' }),
@@ -37,7 +38,7 @@ function persistSettings(value) {
 
 const DEFAULTS = {
     settingsVersion: SETTINGS_SCHEMA_VERSION,
-    theme: 'dark',
+    theme: 'light',
     font: 'system',
     fontMode: 'embedded',
     fontFamily: '',
@@ -50,9 +51,11 @@ const DEFAULTS = {
     vMargin: 32,
     columnGap: 64,
     zipImageScale: 1,
-    bgColor: '#1a1b1e',
-    textColor: '#d1d5db',
-    showTitleBar: true,
+    bgColor: '#fbfaf6',
+    textColor: '#38342f',
+    showTitleBar: false,
+    showZipBookmarkBar: true,
+    keyboardShortcutsEnabled: true,
     lang: 'en',
 }
 
@@ -78,6 +81,9 @@ function loadSaved() {
                 ? Math.max(0.5, Math.min(2.5, parsedZipScale))
                 : DEFAULTS.zipImageScale
             merged.layout = merged.layout === 'dual' || merged.layout === 'spread' ? 'dual' : 'single'
+            merged.showTitleBar = false
+            merged.showZipBookmarkBar = merged.showZipBookmarkBar !== false
+            merged.keyboardShortcutsEnabled = merged.keyboardShortcutsEnabled !== false
             if (safeMode) {
                 return { ...merged, theme: 'light', bgColor: SAFE_APP_BG, textColor: SAFE_APP_FG }
             }
@@ -91,24 +97,36 @@ function loadSaved() {
 }
 
 export function useReaderSettings() {
+    const windowDisplay = useWindowDisplay()
+    const {
+        keyboardShortcutsEnabled,
+        setKeyboardShortcutsEnabled,
+    } = useKeyboardShortcuts()
     const [s, setS] = useState(loadSaved)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [resetToast, setResetToast] = useState(false)
-    const latestSettingsRef = useRef(s)
+    const latestSettingsRef = useRef({ ...s, keyboardShortcutsEnabled })
+    const settingsDirtyRef = useRef(false)
 
     useEffect(() => {
-        latestSettingsRef.current = s
-    }, [s])
+        latestSettingsRef.current = { ...s, keyboardShortcutsEnabled }
+    }, [keyboardShortcutsEnabled, s])
 
     useEffect(() => {
+        if (!settingsDirtyRef.current) return undefined
         const timer = window.setTimeout(() => {
             persistSettings(latestSettingsRef.current)
+            settingsDirtyRef.current = false
         }, 120)
         return () => window.clearTimeout(timer)
     }, [s])
 
     useEffect(() => {
-        const flush = () => persistSettings(latestSettingsRef.current)
+        const flush = () => {
+            if (!settingsDirtyRef.current) return
+            persistSettings(latestSettingsRef.current)
+            settingsDirtyRef.current = false
+        }
         window.addEventListener('pagehide', flush)
         return () => {
             window.removeEventListener('pagehide', flush)
@@ -116,7 +134,10 @@ export function useReaderSettings() {
         }
     }, [])
 
-    const set = useCallback((key, val) => setS(prev => ({ ...prev, [key]: val })), [])
+    const set = useCallback((key, val) => {
+        settingsDirtyRef.current = true
+        setS(prev => ({ ...prev, [key]: val }))
+    }, [])
 
     const incFont = useCallback(() => set('fontSize', Math.min(36, s.fontSize + 2)), [s.fontSize])
     const decFont = useCallback(() => set('fontSize', Math.max(10, s.fontSize - 2)), [s.fontSize])
@@ -127,10 +148,12 @@ export function useReaderSettings() {
         const lang = s.lang
         const next = { ...DEFAULTS, lang }
         setS(next)
+        setKeyboardShortcutsEnabled(true)
         persistSettings(next)
+        settingsDirtyRef.current = false
         setResetToast(true)
         setTimeout(() => setResetToast(false), 2500)
-    }, [s.lang])
+    }, [s.lang, setKeyboardShortcutsEnabled])
 
     const baseThemeStyle = THEMES[s.theme] || THEMES.dark
     const fallbackFontFamily = (FONTS[s.font] || FONTS.system).family
@@ -147,15 +170,9 @@ export function useReaderSettings() {
         }),
         [baseThemeStyle.accent, baseThemeStyle.name, bgColor, textColor],
     )
-    const showTitleBar = s.showTitleBar !== false
-
     useEffect(() => {
         setAppThemeVars(themeStyle)
     }, [themeStyle])
-
-    useEffect(() => {
-        emitTitleBarVisibility(showTitleBar)
-    }, [showTitleBar])
 
     const tt = createT(s.lang)
 
@@ -193,13 +210,17 @@ export function useReaderSettings() {
         },
         bgColor, setBgColor: v => set('bgColor', v),
         textColor, setTextColor: v => set('textColor', v),
-        showTitleBar, setShowTitleBar: v => set('showTitleBar', !!v),
-        toggleTitleBar: () => set('showTitleBar', !showTitleBar),
+        showTitleBar: false,
+        showZipBookmarkBar: s.showZipBookmarkBar !== false,
+        setShowZipBookmarkBar: v => set('showZipBookmarkBar', !!v),
+        keyboardShortcutsEnabled,
+        setKeyboardShortcutsEnabled,
         lang: s.lang, setLang: v => set('lang', v),
         resetDefaults, resetToast,
         settingsOpen, toggleSettings,
         themeStyle, fontFamily, contentStyle,
         THEMES, FONTS,
         tt,
+        ...windowDisplay,
     }
 }

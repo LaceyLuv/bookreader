@@ -1,9 +1,84 @@
+from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
 from main import app
 
 
 client = TestClient(app)
+
+
+def test_large_txt_open_does_not_schedule_full_text_search_prewarm(monkeypatch):
+    from routers import books as books_router
+
+    tasks = BackgroundTasks()
+    monkeypatch.setattr(books_router, "should_prewarm_txt_search", lambda path: False)
+
+    books_router._schedule_search_prewarm(tasks, books_router.Path("large.txt"), "txt")
+
+    assert tasks.tasks == []
+
+
+def test_txt_encoding_preview_is_read_only_and_uses_persisted_override(monkeypatch):
+    from routers import books as books_router
+
+    captured = {}
+    monkeypatch.setattr(
+        books_router,
+        "_resolve_book_file",
+        lambda book_id: ({"id": book_id, "file_type": "txt", "txt_encoding_override": "cp949"}, "fake-path"),
+    )
+
+    def _preview(file_path, encoding_override):
+        captured["args"] = (file_path, encoding_override)
+        return {
+            "encoding": "cp949",
+            "detected_encoding": "euc-kr",
+            "encoding_confidence": 0.72,
+            "encoding_override": "cp949",
+            "encoding_source": "override",
+            "encoding_candidates": [{
+                "encoding": "cp949",
+                "label": "CP949",
+                "valid": True,
+                "strict_valid": True,
+                "preview": "한글",
+                "replacement_count": 0,
+            }],
+            "warnings": [],
+            "sampled_bytes": 4,
+        }
+
+    monkeypatch.setattr(books_router, "read_txt_encoding_preview", _preview)
+    response = client.get("/api/books/txt-1/txt-encoding-preview")
+
+    assert response.status_code == 200
+    assert captured["args"] == ("fake-path", "cp949")
+    assert response.json()["encoding_source"] == "override"
+    assert response.json()["encoding_candidates"][0]["preview"] == "한글"
+
+
+def test_txt_manifest_uses_persisted_encoding_override(monkeypatch):
+    from routers import books as books_router
+
+    captured = {}
+    monkeypatch.setattr(
+        books_router,
+        "_resolve_book_file",
+        lambda book_id: ({"id": book_id, "file_type": "txt", "txt_encoding_override": "euc-kr"}, "fake-path"),
+    )
+    monkeypatch.setattr(books_router, "_touch_book_open", lambda record: record)
+    monkeypatch.setattr(books_router, "_schedule_search_prewarm", lambda *args, **kwargs: None)
+
+    def _manifest(file_path, **kwargs):
+        captured.update(kwargs)
+        return {"encoding": "euc-kr", "total_chars": 2, "segment_count": 1}
+
+    monkeypatch.setattr(books_router, "read_txt_manifest", _manifest)
+    response = client.get("/api/books/txt-1/txt-manifest")
+
+    assert response.status_code == 200
+    assert captured["encoding_override"] == "euc-kr"
+    assert response.json()["encoding"] == "euc-kr"
 
 
 def test_txt_manifest_endpoint_returns_summary_fields(monkeypatch):
@@ -160,7 +235,7 @@ def test_transformed_manifest_and_segment_window_counts_stay_aligned(monkeypatch
     monkeypatch.setattr(
         books_router,
         "read_txt_segment_window",
-        lambda file_path, start=0, limit=40, transform_options=None: {
+        lambda file_path, start=0, limit=40, transform_options=None, **kwargs: {
             "start": start,
             "limit": limit,
             "total": 30,
@@ -171,7 +246,7 @@ def test_transformed_manifest_and_segment_window_counts_stay_aligned(monkeypatch
                     "display_text": f"display {index}",
                     "source_start_offset": index * 10,
                     "source_end_offset": index * 10 + 9,
-                    "display_to_source": list(range(index * 10, index * 10 + 10)),
+                    "display_to_source_runs": [[0, index * 10, 10]],
                 }
                 for index in range(start, min(start + limit, 30))
             ],
@@ -206,8 +281,10 @@ def test_txt_segments_endpoint_returns_transform_aware_window(monkeypatch):
         lambda book_id: ({"id": book_id, "file_type": "txt"}, "fake-path"),
     )
 
-    def _read_segment_window(file_path, start=0, limit=40, transform_options=None):
+    def _read_segment_window(file_path, start=0, limit=40, transform_options=None, **kwargs):
         captured_transform_options["value"] = transform_options
+        captured_transform_options["cursor"] = kwargs.get("cursor")
+        captured_transform_options["max_chars"] = kwargs.get("max_chars")
         return {
             "start": start,
             "limit": limit,
@@ -219,7 +296,7 @@ def test_txt_segments_endpoint_returns_transform_aware_window(monkeypatch):
                     "display_text": f"display {index}",
                     "source_start_offset": index * 10,
                     "source_end_offset": index * 10 + 9,
-                    "display_to_source": list(range(index * 10, index * 10 + 10)),
+                    "display_to_source_runs": [[0, index * 10, 10]],
                 }
                 for index in range(start, start + limit)
             ],
@@ -239,12 +316,15 @@ def test_txt_segments_endpoint_returns_transform_aware_window(monkeypatch):
         "remove_empty_lines": True,
         "split_paragraphs": False,
     }
+    assert captured_transform_options["cursor"] is None
+    assert captured_transform_options["max_chars"] == 128 * 1024
     assert payload["start"] == 10
     assert payload["limit"] == 4
     assert payload["total"] == 30
     assert len(payload["display_fragments"]) == 4
     assert payload["display_fragments"][0]["segment_id"] == 10
     assert payload["display_fragments"][0]["display_text"] == "display 10"
+    assert payload["display_fragments"][0]["display_to_source_runs"] == [[0, 100, 10]]
     assert "segments" not in payload
 
 
@@ -260,7 +340,7 @@ def test_txt_search_endpoint_threads_transform_options(monkeypatch):
     )
     monkeypatch.setattr(books_router, "_touch_book_open", lambda record: record)
 
-    def _search_txt_file(file_path, query, limit=100, transform_options=None):
+    def _search_txt_file(file_path, query, limit=100, transform_options=None, **kwargs):
         captured["file_path"] = file_path
         captured["query"] = query
         captured["limit"] = limit
@@ -317,7 +397,11 @@ def test_search_endpoint_returns_empty_result_for_blank_query_without_searching(
     response = client.get("/api/books/txt-1/search?q=%20%20%20")
 
     assert response.status_code == 200
-    assert response.json() == {"query": "", "total": 0, "results": []}
+    assert response.json() == {
+        "query": "", "total": 0, "results": [], "complete": True,
+        "partial_reason": None, "results_truncated": False,
+        "scanned_units": 0, "total_units": None,
+    }
 
 
 def test_search_endpoint_rejects_too_long_query(monkeypatch):
@@ -345,7 +429,7 @@ def test_search_endpoint_preserves_special_character_query(monkeypatch):
     )
     monkeypatch.setattr(books_router, "_touch_book_open", lambda record: record)
 
-    def _search_txt_file(file_path, query, limit=100, transform_options=None):
+    def _search_txt_file(file_path, query, limit=100, transform_options=None, **kwargs):
         captured["query"] = query
         return {"query": query, "total": 0, "results": []}
 

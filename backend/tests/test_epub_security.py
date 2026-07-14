@@ -127,3 +127,94 @@ def test_epub_parsed_limits_reject_oversized_asset(monkeypatch):
 
     with pytest.raises(epub_service.EpubSafetyError, match="asset is too large"):
         epub_service.get_epub_asset("book.epub", "OPS/images/cover.png")
+
+
+CONTAINER_XML = b'''<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>'''
+PACKAGE_XML = b'''<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"></package>'''
+
+
+def _minimal_package_members(extra=()):
+    return [
+        ("mimetype", b"application/epub+zip"),
+        ("META-INF/container.xml", CONTAINER_XML),
+        ("OPS/package.opf", PACKAGE_XML),
+        *extra,
+    ]
+
+
+def test_epub_preflight_reports_missing_container_separately(tmp_path):
+    from services import epub_service
+
+    path = tmp_path / "missing-container.epub"
+    _write_zip(path, [("mimetype", b"application/epub+zip")])
+
+    with pytest.raises(epub_service.EpubSafetyError) as captured:
+        epub_service._preflight_epub(str(path))
+
+    assert captured.value.code == "epub_missing_container"
+    assert captured.value.stage == "container"
+
+
+def test_epub_preflight_rejects_drm_encryption_with_stable_code(tmp_path):
+    from services import epub_service
+
+    path = tmp_path / "drm.epub"
+    encryption = b'''<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+        xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+      <enc:EncryptedData><enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes256-cbc"/></enc:EncryptedData>
+    </encryption>'''
+    _write_zip(path, _minimal_package_members([("META-INF/encryption.xml", encryption)]))
+
+    with pytest.raises(epub_service.EpubSafetyError) as captured:
+        epub_service._preflight_epub(str(path))
+
+    assert captured.value.code == "epub_drm_unsupported"
+    assert captured.value.to_problem()["recovery"] == "choose_another_file"
+
+
+def test_epub_preflight_allows_font_obfuscation_but_reports_it(tmp_path):
+    from services import epub_service
+
+    path = tmp_path / "font-obfuscation.epub"
+    encryption = b'''<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+        xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+      <enc:EncryptedData><enc:EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/></enc:EncryptedData>
+    </encryption>'''
+    _write_zip(path, _minimal_package_members([("META-INF/encryption.xml", encryption)]))
+
+    stats = epub_service._preflight_epub(str(path))
+
+    assert stats["font_obfuscation_algorithms"] == ["http://www.idpf.org/2008/embedding"]
+
+
+def test_epub_preflight_rejects_casefold_member_collision(tmp_path):
+    from services import epub_service
+
+    path = tmp_path / "collision.epub"
+    _write_zip(path, _minimal_package_members([("OPS/Image.PNG", b"a"), ("ops/image.png", b"b")]))
+
+    with pytest.raises(epub_service.EpubSafetyError) as captured:
+        epub_service._preflight_epub(str(path))
+
+    assert captured.value.code == "epub_duplicate_member"
+
+
+def test_epub_preflight_rejects_symlink_member(tmp_path):
+    from services import epub_service
+
+    path = tmp_path / "symlink.epub"
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in _minimal_package_members():
+            archive.writestr(name, content)
+        link = zipfile.ZipInfo("OPS/link.xhtml")
+        link.create_system = 3
+        link.external_attr = 0o120777 << 16
+        archive.writestr(link, "target.xhtml")
+
+    with pytest.raises(epub_service.EpubSafetyError) as captured:
+        epub_service._preflight_epub(str(path))
+
+    assert captured.value.code == "epub_unsafe_member"

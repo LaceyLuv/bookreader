@@ -1,15 +1,35 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { API_BOOKS_BASE } from '../lib/apiBase'
-import { getBookProgress, removeBookProgress } from '../hooks/useReadingProgress'
+import { clearLocalBookProgress, getBookProgress, pruneLocalBookProgress } from '../hooks/useReadingProgress'
 import { createT } from '../i18n'
 import { readErrorDetail } from '../lib/readErrorDetail'
+import DashboardSettingsPanel from '../components/DashboardSettingsPanel'
+import AnnotationExportControls from '../components/AnnotationExportControls'
+import gyeolTypography from '../assets/brand/gyeol-typography.png'
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 
 const API = API_BOOKS_BASE
 const FOLDER_API = API_BOOKS_BASE.replace(/\/books$/, '/library/folders')
 const STATUS_VALUES = ['unread', 'reading', 'completed', 'paused']
 const SORT_VALUES = ['recent_read', 'recent_added', 'title', 'author', 'completed']
 const FLAG_FILTER_VALUES = ['all', 'favorite', 'pinned', 'duplicates']
+const FOLDER_COLORS_KEY = 'bookreader_folder_colors'
+const FOLDER_COLOR_PALETTE = ['#b28b67', '#78938a', '#7e8fac', '#9a7fa0', '#b07c78', '#8b956c', '#648fa0', '#aa8d55']
+
+function getDefaultFolderColor(folderId) {
+    const hash = String(folderId || '').split('').reduce((total, char) => total + char.charCodeAt(0), 0)
+    return FOLDER_COLOR_PALETTE[hash % FOLDER_COLOR_PALETTE.length]
+}
+
+function loadFolderColors() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(FOLDER_COLORS_KEY) || '{}')
+        return saved && typeof saved === 'object' ? saved : {}
+    } catch {
+        return {}
+    }
+}
 
 function parseTimestamp(value) {
     const parsed = Date.parse(value || '')
@@ -311,6 +331,7 @@ function getStatusLabel(status, statusOptions, fallbackLabel) {
 
 function Dashboard() {
     const navigate = useNavigate()
+    const { keyboardShortcutsEnabled } = useKeyboardShortcuts()
     const [books, setBooks] = useState([])
     const [folders, setFolders] = useState([])
     const [loading, setLoading] = useState(true)
@@ -336,7 +357,13 @@ function Dashboard() {
     const [selectedBookIds, setSelectedBookIds] = useState([])
     const [bulkFolderId, setBulkFolderId] = useState('')
     const [bulkMoving, setBulkMoving] = useState(false)
+    const [settingsOpen, setSettingsOpen] = useState(false)
+    const [selectionMode, setSelectionMode] = useState(false)
+    const [selectionActionsOpen, setSelectionActionsOpen] = useState(false)
+    const [folderColors, setFolderColors] = useState(loadFolderColors)
     const fileInputRef = useRef(null)
+    const libraryRef = useRef(null)
+    const selectionActionsRef = useRef(null)
 
     const savedLang = (() => {
         try {
@@ -373,6 +400,7 @@ function Dashboard() {
             if (!res.ok) throw new Error(`HTTP ${res.status}`)
             const data = await res.json()
             const list = Array.isArray(data) ? data : (Array.isArray(data?.books) ? data.books : [])
+            pruneLocalBookProgress(list)
             setBooks(list)
         } catch (err) {
             console.error('Failed to fetch books', err)
@@ -395,6 +423,16 @@ function Dashboard() {
         fetchBooks()
         fetchFolders()
     }, [fetchBooks, fetchFolders])
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(FOLDER_COLORS_KEY, JSON.stringify(folderColors))
+        } catch { /* keep folder colors usable in memory */ }
+    }, [folderColors])
+
+    useEffect(() => {
+        if (selectionActionsOpen) selectionActionsRef.current?.focus()
+    }, [selectionActionsOpen])
 
     useEffect(() => {
         const bookIdSet = new Set(books.map((book) => book.id))
@@ -561,7 +599,13 @@ function Dashboard() {
 
     const clearSelection = useCallback(() => {
         setSelectedBookIds([])
+        setSelectionActionsOpen(false)
     }, [])
+
+    const handleSelectionModeChange = useCallback((enabled) => {
+        setSelectionMode(enabled)
+        setSelectionActionsOpen(!enabled && selectedBookIds.length > 0)
+    }, [selectedBookIds.length])
 
     const handleBulkMove = useCallback(async (targetFolderId = bulkFolderId || null) => {
         if (selectedBookIds.length === 0) {
@@ -591,6 +635,7 @@ function Dashboard() {
             })
             await Promise.all([fetchBooks(), fetchFolders()])
             setSelectedBookIds([])
+            setSelectionActionsOpen(false)
         } catch (err) {
             console.error('Failed to move selected books', err)
             alert(err.message || tt('moveSelectedFailed'))
@@ -606,10 +651,15 @@ function Dashboard() {
             setBooks((prev) => prev.filter((item) => item.id !== book.id))
             setSelectedInfo((prev) => (prev?.id === book.id ? null : prev))
             setSelectedBookIds((prev) => prev.filter((id) => id !== book.id))
-            removeBookProgress(book.id, book.legacy_id ?? null)
-            await fetchFolders()
+            clearLocalBookProgress(book.id, book.legacy_id ?? null)
+            try {
+                await fetchFolders()
+            } catch (refreshError) {
+                console.error('Folder refresh after deletion failed', refreshError)
+            }
         } catch (err) {
             console.error('Delete failed', err)
+            await Promise.allSettled([fetchBooks(), fetchFolders()])
         }
     }
 
@@ -738,8 +788,8 @@ function Dashboard() {
     const formatEditionLabel = (value) => (isKo ? `?? ${value}` : `Editions ${value}`)
     const formatVersionDetailLabel = (value) => (isKo ? `${tt('version')} ${value}` : `Version ${value}`)
     const formatFolderDetailLabel = (value) => (isKo ? `${tt('folder')} ${value}` : `Folder ${value}`)
-    const formatShownSummary = (shown, total) => (isKo ? `${shown}? ?? / ?? ${total}?` : `${shown} shown / ${total} total`)
-    const formatSelectedSummary = (count) => (isKo ? `?? ????? ???? ${count}? ???.` : `${count} selected across the current library view.`)
+    const formatShownSummary = (shown, total) => (isKo ? `${shown}권 표시 / 전체 ${total}권` : `${shown} shown / ${total} total`)
+    const formatSelectedSummary = (count) => (isKo ? `현재 라이브러리에서 ${count}권을 선택했습니다.` : `${count} selected across the current library view.`)
     const formatSeriesVolume = (index) => (isKo ? `? ${index}` : `Vol. ${index}`)
     const formatSeriesDisplay = (name, index) => {
         if (!name) return tt('none')
@@ -859,6 +909,63 @@ function Dashboard() {
         })
     }, [visibleBookIds])
 
+    const focusDashboardSearch = useCallback(() => {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.querySelector('[data-dashboard-search="true"]')?.focus()
+            })
+        })
+    }, [])
+
+    useEffect(() => {
+        if (!keyboardShortcutsEnabled) return undefined
+
+        const handleDashboardShortcut = (event) => {
+            if (event.defaultPrevented || event.repeat || event.isComposing) return
+            const ctrlOnly = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+            if (!ctrlOnly) return
+
+            const isComma = event.code === 'Comma' || event.key === ','
+            const isSearch = event.code === 'KeyF' || event.key?.toLowerCase() === 'f'
+            if (isComma && !selectedInfo) {
+                event.preventDefault()
+                setSettingsOpen((open) => !open)
+                return
+            }
+            if (isSearch && !selectedInfo) {
+                event.preventDefault()
+                if (!settingsOpen) setSettingsOpen(true)
+                focusDashboardSearch()
+                return
+            }
+            if (settingsOpen || selectedInfo) return
+
+            if ((event.code === 'KeyO' || event.key?.toLowerCase() === 'o') && !uploading) {
+                event.preventDefault()
+                fileInputRef.current?.click()
+                return
+            }
+
+            const libraryFocused = libraryRef.current?.contains(document.activeElement)
+            if ((event.code === 'KeyA' || event.key?.toLowerCase() === 'a') && libraryFocused && visibleBookIds.length > 0) {
+                event.preventDefault()
+                handleSelectionModeChange(true)
+                setSelectedBookIds(visibleBookIds)
+            }
+        }
+
+        window.addEventListener('keydown', handleDashboardShortcut, true)
+        return () => window.removeEventListener('keydown', handleDashboardShortcut, true)
+    }, [
+        focusDashboardSearch,
+        handleSelectionModeChange,
+        keyboardShortcutsEnabled,
+        selectedInfo,
+        settingsOpen,
+        uploading,
+        visibleBookIds,
+    ])
+
     const mutedTextColor = 'color-mix(in srgb, var(--app-fg) 72%, var(--app-bg) 28%)'
     const subtleTextColor = 'color-mix(in srgb, var(--app-fg) 58%, var(--app-bg) 42%)'
     const buttonBorder = '1px solid color-mix(in srgb, var(--app-fg) 10%, var(--app-bg) 90%)'
@@ -877,17 +984,19 @@ function Dashboard() {
         const folderLabel = String(book.library_folder_name || '').trim()
 
         return (
-            <div key={book.id} className={nested ? 'ml-4 border-l pl-4' : ''} style={nested ? { borderColor: 'color-mix(in srgb, var(--app-fg) 10%, var(--app-bg) 90%)' } : undefined}>
-                <div className="glass-card flex flex-col gap-3 px-5 py-4 md:flex-row md:items-start">
-                    <label className="flex items-start pt-1" onClick={(event) => event.stopPropagation()}>
+            <article key={book.id} className={`dashboard-book-card ${nested ? 'dashboard-book-card-nested' : ''}`} style={selectedFolderId !== 'all' && selectedFolderId !== 'none' && book.library_folder_id === selectedFolderId ? { '--folder-color': folderColors[book.library_folder_id] || getDefaultFolderColor(book.library_folder_id) } : undefined}>
+                <button type="button" className={`dashboard-book-cover dashboard-book-cover-${book.file_type}`} onClick={() => openBook(book)} aria-label={`${book.title} - ${tt('read')}`}><span>{book.file_type.toUpperCase()}</span><i aria-hidden="true" /></button>
+                <div className="dashboard-book-body">
+                    {selectionMode && <label className="dashboard-book-select" onClick={(event) => event.stopPropagation()}>
                         <input
                             type="checkbox"
                             checked={isSelected}
                             onChange={(event) => toggleBookSelection(book.id, event.target.checked)}
+                            aria-label={`${tt('selection')}: ${book.title}`}
                             className="mt-1 h-4 w-4 rounded"
                         />
-                    </label>
-                    <button type="button" className="min-w-0 flex-1 text-left" onClick={() => openBook(book)}>
+                    </label>}
+                    <button type="button" className="dashboard-book-main" onClick={() => openBook(book)}>
                         <div className="mb-2 flex flex-wrap items-center gap-2">
                             <span className={typeBadgeClass(book.file_type)}>{book.file_type.toUpperCase()}</span>
                             <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: mutedTextColor }}>{getStatusLabel(book.reading_status, statusOptions, tt('statusUnread'))}</span>
@@ -930,7 +1039,7 @@ function Dashboard() {
                             </div>
                         )}
                     </button>
-                    <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                    <div className="dashboard-book-actions">
                         <select
                             value={book.reading_status || 'unread'}
                             disabled={isUpdating}
@@ -979,27 +1088,41 @@ function Dashboard() {
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                         </button>
                     </div>
-                </div>
-            </div>
+                    </div>
+            </article>
         )
     }
 
     const hasUnassignedBooks = books.some((book) => !book.library_folder_id)
 
+    const goToLibrary = useCallback((closeSettings = false) => {
+        if (closeSettings) setSettingsOpen(false)
+        requestAnimationFrame(() => libraryRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }))
+    }, [])
+
     return (
-        <div className="min-h-screen" style={{ backgroundColor: 'var(--app-bg)', color: 'var(--app-fg)' }}>
-            <div className="mx-auto max-w-6xl px-6 py-12">
-                <div className="mb-10 text-center">
-                    <h1 className="mb-2 text-3xl font-bold tracking-tight">{tt('appTitle')}</h1>
-                    <p className="text-sm" style={{ color: mutedTextColor }}>{tt('appSubtitle')}</p>
-                </div>
+        <div className="dashboard-page min-h-screen">
+            <div className="dashboard-shell">
+                <header className="dashboard-hero" data-tauri-drag-region>
+                    <div className="dashboard-brand-copy" data-tauri-drag-region>
+                        <h1 className="dashboard-brand-heading" data-tauri-drag-region>
+                            <span className="dashboard-brand-typography-frame" data-tauri-drag-region>
+                                <img className="dashboard-brand-typography" src={gyeolTypography} alt={tt('appTitle')} data-testid="dashboard-brand-typography" data-tauri-drag-region />
+                            </span>
+                        </h1>
+                        <p data-tauri-drag-region>{tt('appSubtitle')}</p>
+                    </div>
+                    <button type="button" className="dashboard-settings-button" onClick={() => setSettingsOpen(true)} aria-label={tt('librarySettings')} aria-keyshortcuts={keyboardShortcutsEnabled ? 'Control+,' : undefined} title={tt('librarySettings')}>⚙</button>
+                </header>
 
                 <div
-                    className={`glass-card mb-8 flex cursor-pointer flex-col items-center justify-center px-6 py-10 transition-all ${dragOver ? 'scale-[1.01] ring-2 ring-[#5c7cfa]' : 'hover:shadow-sm'}`}
+                    className={`dashboard-upload ${dragOver ? 'dashboard-upload-active' : ''}`}
                     onDrop={handleDrop}
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={(event) => {
+                        if (event.target !== fileInputRef.current) fileInputRef.current?.click()
+                    }}
                 >
                     <input
                         ref={fileInputRef}
@@ -1018,14 +1141,14 @@ function Dashboard() {
                         </div>
                     ) : (
                         <>
-                            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3 opacity-30"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+                            <div className="dashboard-upload-book" aria-hidden="true"><span>+</span></div>
                             <p className="mb-1 text-sm" style={{ color: mutedTextColor }}>{tt('uploadPrompt')}</p>
                             <p className="text-[11px]" style={{ color: subtleTextColor }}>{tt('supportedFiles')}</p>
                         </>
                     )}
                 </div>
 
-                <div className="glass-card mb-8 px-5 py-4">
+                <div className="hidden">
                     <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                         <div>
                             <h2 className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('libraryFoldersTitle')}</h2>
@@ -1089,7 +1212,7 @@ function Dashboard() {
                 </div>
 
                 {recentBooks.length > 0 && (
-                    <div className="mb-8">
+                    <div className="hidden">
                         <h2 className="mb-4 text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('recentReads')}</h2>
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                             {recentBooks.map((book) => {
@@ -1123,7 +1246,7 @@ function Dashboard() {
                     </div>
                 )}
 
-                <div className="glass-card mb-6 px-5 py-4">
+                <div className="hidden">
                     <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
                         <input
                             value={searchQuery}
@@ -1193,39 +1316,77 @@ function Dashboard() {
                     )}
                 </div>
 
-                {visibleBookIds.length > 0 && (
-                    <div className="glass-card mb-6 px-5 py-4">
+                {selectionMode && (
+                    <section className="glass-card sticky top-4 z-30 mb-6 px-5 py-4" aria-labelledby="dashboard-selection-mode-title">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                             <div>
-                                <h2 className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('selection')}</h2>
-                                <p className="mt-1 text-sm" style={{ color: subtleTextColor }}>{formatSelectedSummary(selectedBookIds.length)}</p>
+                                <h2 id="dashboard-selection-mode-title" className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('selectionMode')}</h2>
+                                <p role="status" aria-live="polite" className="mt-1 text-sm" style={{ color: subtleTextColor }}>{formatSelectedSummary(selectedBookIds.length)}</p>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <button type="button" onClick={toggleVisibleSelection} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
                                     {allVisibleSelected ? tt('unselectVisible') : tt('selectVisible')}
                                 </button>
                                 {selectedBookIds.length > 0 && (
-                                    <>
-                                        <select value={bulkFolderId} onChange={(event) => setBulkFolderId(event.target.value)} className="h-10 rounded-xl px-3 text-sm" style={inputStyle}>
-                                            <option value="">{tt('noFolder')}</option>
-                                            {folders.map((folder) => (
-                                                <option key={folder.id} value={folder.id}>{folder.name}</option>
-                                            ))}
-                                        </select>
-                                        <button type="button" onClick={() => handleBulkMove()} disabled={bulkMoving} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed" style={chipBaseStyle}>
-                                            {bulkMoving ? tt('moving') : tt('moveSelected')}
-                                        </button>
-                                        <button type="button" onClick={clearSelection} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
-                                            {tt('clear')}
-                                        </button>
-                                    </>
+                                    <button type="button" onClick={clearSelection} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
+                                        {tt('clear')}
+                                    </button>
                                 )}
+                                <button
+                                    type="button"
+                                    onClick={() => handleSelectionModeChange(false)}
+                                    aria-controls="dashboard-selection-actions"
+                                    className="h-10 rounded-xl bg-[#b7864b] px-4 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                                >
+                                    {tt('finishSelection')}
+                                </button>
                             </div>
                         </div>
-                    </div>
+                    </section>
                 )}
 
-                <div>
+                {!selectionMode && selectionActionsOpen && selectedBookIds.length > 0 && (
+                    <section
+                        ref={selectionActionsRef}
+                        id="dashboard-selection-actions"
+                        tabIndex={-1}
+                        className="glass-card sticky top-4 z-30 mb-6 px-5 py-4 outline-none focus-visible:ring-2 focus-visible:ring-[#b7864b]"
+                        aria-labelledby="dashboard-selection-actions-title"
+                    >
+                        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                            <div>
+                                <h2 id="dashboard-selection-actions-title" className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('selectedBooks')}</h2>
+                                <p role="status" aria-live="polite" className="mt-1 text-sm" style={{ color: subtleTextColor }}>{formatSelectedSummary(selectedBookIds.length)}</p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button type="button" onClick={() => handleSelectionModeChange(true)} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
+                                    {tt('editSelection')}
+                                </button>
+                                <label className="sr-only" htmlFor="dashboard-selection-folder">{tt('libraryFolder')}</label>
+                                <select id="dashboard-selection-folder" value={bulkFolderId} onChange={(event) => setBulkFolderId(event.target.value)} className="h-10 rounded-xl px-3 text-sm" style={inputStyle}>
+                                    <option value="">{tt('noFolder')}</option>
+                                    {folders.map((folder) => (
+                                        <option key={folder.id} value={folder.id}>{folder.name}</option>
+                                    ))}
+                                </select>
+                                <button type="button" onClick={() => handleBulkMove()} disabled={bulkMoving} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed" style={chipBaseStyle}>
+                                    {bulkMoving ? tt('moving') : tt('moveSelected')}
+                                </button>
+                                <button type="button" onClick={clearSelection} className="h-10 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-80" style={chipBaseStyle}>
+                                    {tt('clear')}
+                                </button>
+                            </div>
+                        </div>
+                    </section>
+                )}
+
+                <section ref={libraryRef} className="dashboard-library">
+                    <div className="dashboard-library-heading"><span className="dashboard-folder-symbol" aria-hidden="true" /><h2>{tt('libraryFoldersTitle')}</h2></div>
+                    <nav className="dashboard-folder-chips" aria-label={tt('libraryFoldersTitle')}>
+                        <button type="button" className={selectedFolderId === 'all' ? 'active' : ''} onClick={() => setSelectedFolderId('all')}><span />{isKo ? '전체 책' : tt('flagAllBooks')}</button>
+                        {hasUnassignedBooks && <button type="button" className={selectedFolderId === 'none' ? 'active' : ''} onClick={() => setSelectedFolderId('none')}><span />{tt('unassigned')}</button>}
+                        {folders.map(folder => <button type="button" key={folder.id} style={{ '--folder-color': folderColors[folder.id] || getDefaultFolderColor(folder.id) }} className={`folder-colored ${selectedFolderId === folder.id ? 'active' : ''}`} onClick={() => setSelectedFolderId(folder.id)}><span />{folder.name}</button>)}
+                    </nav>
                     <div className="mb-4 flex items-center justify-between gap-3">
                         <h2 className="text-[11px] font-bold uppercase tracking-widest" style={{ color: mutedTextColor }}>{tt('library')}</h2>
                         <span className="text-[11px]" style={{ color: subtleTextColor }}>{formatShownSummary(filteredBooks.length, books.length)}</span>
@@ -1241,7 +1402,7 @@ function Dashboard() {
                             <p className="text-sm" style={{ color: subtleTextColor }}>{tt('widenLibraryView')}</p>
                         </div>
                     ) : (
-                        <div className="space-y-3">
+                        <div className="dashboard-book-grid">
                             {libraryEntries.map((entry) => {
                                 if (entry.type === 'duplicate') {
                                     const leadBook = entry.books.find((book) => book.duplicate_lead) || entry.books[0]
@@ -1290,8 +1451,15 @@ function Dashboard() {
                             })}
                         </div>
                     )}
-                </div>
+                </section>
             </div>
+
+            <DashboardSettingsPanel
+                open={settingsOpen} onClose={() => setSettingsOpen(false)} onGoToLibrary={goToLibrary} onDataRestored={() => window.location.reload()} tt={tt}
+                filters={{ searchQuery, setSearchQuery, sortBy, setSortBy, statusFilter, setStatusFilter, flagFilter, setFlagFilter, sortOptions, statusOptions, flagFilterOptions, groupSeries, setGroupSeries, groupDuplicates, setGroupDuplicates, allTags, selectedTag, setSelectedTag, allCollections, selectedCollection, setSelectedCollection, clearFilters, activeFilterCount }}
+                folders={folders} folderColors={folderColors} getDefaultFolderColor={getDefaultFolderColor} onFolderColorChange={(folderId, color) => setFolderColors(prev => ({ ...prev, [folderId]: color }))} folderDraft={folderDraft} setFolderDraft={setFolderDraft} folderSaving={folderSaving} onAddFolder={handleAddFolder} onRenameFolder={handleRenameFolder} onRemoveFolder={handleRemoveFolder} folderStatsById={folderStatsById}
+                selection={{ selectionMode, setSelectionMode: handleSelectionModeChange, summary: formatSelectedSummary(selectedBookIds.length), selectedCount: selectedBookIds.length, allVisibleSelected, toggleVisibleSelection, bulkFolderId, setBulkFolderId, bulkMoving, handleBulkMove, clearSelection }}
+            />
 
             {selectedInfo && (
                 <div className="fixed inset-0 z-50 overflow-y-auto bg-black/45 p-4" onClick={closeInfo}>
@@ -1409,6 +1577,7 @@ function Dashboard() {
                                         <div style={{ color: mutedTextColor }}>{tt('lastRead')}</div>
                                         <div>{formatDateTime(selectedInfo.last_read_at)}</div>
                                     </div>
+                                    <AnnotationExportControls bookId={selectedInfo.id} annotationCount={selectedInfo.annotation_count || 0} tt={tt} />
                                 </div>
                             )}
                         </div>

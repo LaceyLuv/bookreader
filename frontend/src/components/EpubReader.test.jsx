@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
 
@@ -32,7 +32,7 @@ vi.mock('./ReaderProgressBar', () => ({
 }))
 vi.mock('./ResumeToast', () => ({ default: () => null }))
 
-import EpubReader from './EpubReader'
+import EpubReader, { getEpubSpreadNavigationGap } from './EpubReader'
 
 function createSettings(overrides = {}) {
     return {
@@ -69,9 +69,8 @@ function createProgress(overrides = {}) {
         addBookmark: vi.fn(),
         removeBookmark: vi.fn(),
         goToBookmark: vi.fn(),
-        resumePrompt: null,
-        resumeReading: vi.fn(),
-        dismissResume: vi.fn(),
+        restoredProgress: null,
+        startOver: vi.fn(),
         ...overrides,
     }
 }
@@ -126,11 +125,36 @@ beforeEach(() => {
                 total: 2,
             })
         }
+        if (requestUrl.endsWith('/api/books/epub-1/diagnostics')) {
+            return jsonResponse({ format: 'epub', status: 'supported', issues: [], stats: {} })
+        }
         if (requestUrl.endsWith('/api/books/epub-1/annotations')) {
             return jsonResponse([])
         }
         throw new Error(`Unexpected fetch: ${requestUrl}`)
     })
+})
+
+test('opens the bookmark panel and adds the current EPUB location', async () => {
+    const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800)
+    const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600)
+    const scrollWidthSpy = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(800)
+    const addBookmark = vi.fn()
+    mockUseReadingProgress.mockReturnValue(createProgress({ addBookmark }))
+    renderReader()
+
+    await screen.findByText('Chapter One')
+    fireEvent.click(screen.getByRole('button', { name: 'Open bookmarks' }))
+    const panel = screen.getByRole('complementary', { name: 'Bookmarks' })
+    const addButton = within(panel).getByRole('button', { name: 'Add bookmark' })
+    await waitFor(() => expect(addButton.disabled).toBe(false))
+    fireEvent.click(addButton)
+
+    expect(addBookmark).toHaveBeenCalledTimes(1)
+    expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ enabled: false }))
+    widthSpy.mockRestore()
+    heightSpy.mockRestore()
+    scrollWidthSpy.mockRestore()
 })
 
 test('loads toc and renders sanitized chapter html', async () => {
@@ -140,8 +164,8 @@ test('loads toc and renders sanitized chapter html', async () => {
     expect(screen.getByText('reader')).toBeTruthy()
 
     await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/toc')
-        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/0')
+        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/toc', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/0', expect.objectContaining({ signal: expect.any(AbortSignal) }))
         expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/annotations')
     })
 
@@ -155,6 +179,165 @@ test('loads toc and renders sanitized chapter html', async () => {
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
 })
 
+test('does not reload annotations when reader settings return a new translation function', async () => {
+    mockUseReaderSettings.mockImplementation(() => createSettings())
+    renderReader()
+
+    await screen.findByText('Chapter One')
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    const annotationCalls = global.fetch.mock.calls.filter(([url]) => String(url).endsWith('/api/books/epub-1/annotations'))
+    expect(annotationCalls).toHaveLength(1)
+})
+
+test('shows a non-blocking warning for EPUB features limited by safe rendering', async () => {
+    const regularFetch = global.fetch.getMockImplementation()
+    global.fetch.mockImplementation((url, options = {}) => {
+        if (String(url).endsWith('/api/books/epub-1/diagnostics')) {
+            return Promise.resolve(jsonResponse({
+                format: 'epub',
+                status: 'degraded',
+                issues: [{ code: 'epub_mathml_limited', severity: 'warning' }],
+                stats: {},
+            }))
+        }
+        return regularFetch(url, options)
+    })
+
+    renderReader()
+
+    expect((await screen.findByText(/limitedFormatSupport/)).textContent).toContain('epub_mathml_limited')
+    expect(await screen.findByText('reader')).toBeTruthy()
+})
+
+test('shows a structured initial EPUB error instead of a blank stage and retries', async () => {
+    const regularFetch = global.fetch.getMockImplementation()
+    let tocAttempts = 0
+    global.fetch.mockImplementation((url, options = {}) => {
+        if (String(url).endsWith('/api/books/epub-1/toc') && tocAttempts++ === 0) {
+            return Promise.resolve(jsonResponse({
+                detail: {
+                    code: 'epub.invalid_archive',
+                    message: 'Damaged EPUB archive',
+                    severity: 'error',
+                    stage: 'archive',
+                    retryable: false,
+                    recovery: 'choose_another_file',
+                    context: {},
+                },
+            }, { status: 422 }))
+        }
+        return regularFetch(url, options)
+    })
+
+    renderReader()
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Damaged EPUB archive')
+    expect(screen.getByTestId('epub-reader-stage').childNodes.length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: 'retry' }))
+
+    expect(await screen.findByText('reader')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+})
+
+test('keeps the last good EPUB chapter when the next chapter fails and retries it', async () => {
+    const regularFetch = global.fetch.getMockImplementation()
+    let chapterTwoAttempts = 0
+    global.fetch.mockImplementation((url, options = {}) => {
+        if (String(url).endsWith('/api/books/epub-1/chapter/1') && chapterTwoAttempts++ === 0) {
+            return Promise.resolve(jsonResponse({
+                detail: {
+                    code: 'epub.chapter_unreadable',
+                    message: 'Chapter payload is damaged',
+                    severity: 'error',
+                    stage: 'chapter',
+                    retryable: false,
+                    recovery: null,
+                    context: { chapter_index: 1 },
+                },
+            }, { status: 422 }))
+        }
+        return regularFetch(url, options)
+    })
+
+    renderReader()
+    await screen.findByText('Next chapter')
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    fireEvent.click(screen.getByText('Next chapter'))
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Chapter payload is damaged')
+    expect(screen.getByText('reader')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'retry' }))
+
+    expect(await screen.findByText('Second body.')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+})
+
+test('dual EPUB layout applies horizontal margins to both pages around one center gutter', async () => {
+    mockUseReaderSettings.mockReturnValue(createSettings({ layout: 'dual', hMargin: 20, columnGap: 32 }))
+    renderReader()
+
+    await screen.findByText('Chapter One')
+    const stage = screen.getByTestId('epub-reader-stage')
+    const content = document.querySelector('.epub-content')
+
+    expect(stage.style.paddingLeft).toBe('0px')
+    expect(stage.style.paddingRight).toBe('0px')
+    expect(content.style.paddingLeft).toBe('20px')
+    expect(content.style.paddingRight).toBe('20px')
+    expect(content.style.columnGap).toBe('72px')
+    expect(content.style.getPropertyPriority('padding')).toBe('important')
+    expect(content.style.getPropertyPriority('column-gap')).toBe('important')
+})
+
+test('dual EPUB navigation removes per-page margins from the spread step', () => {
+    const viewportWidth = 1000
+    const effectiveGap = 72
+    const navigationGap = getEpubSpreadNavigationGap(effectiveGap, true, 20)
+
+    expect(navigationGap).toBe(32)
+    expect(viewportWidth + navigationGap).toBe(1032)
+    expect(Math.ceil((2032 + navigationGap) / (viewportWidth + navigationGap))).toBe(2)
+    expect(getEpubSpreadNavigationGap(effectiveGap, false, 20)).toBe(effectiveGap)
+})
+
+test('automatically opens the restored EPUB chapter', async () => {
+    mockUseReadingProgress.mockReturnValue(createProgress({
+        currentPosition: 1,
+        restoredProgress: {
+            position: 1,
+            locator: { kind: 'epub', chapterIndex: 1, chapterPage: 0 },
+            updatedAt: '2026-07-12T00:00:00.000Z',
+        },
+    }))
+
+    renderReader()
+
+    expect(await screen.findByText('Second body.')).toBeTruthy()
+    expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+})
+
+test('restores chapter zero progress by href before a stale chapter index', async () => {
+    mockUseReadingProgress.mockReturnValue(createProgress({
+        currentPosition: 0,
+        restoredProgress: {
+            position: 0,
+            locator: {
+                version: 2,
+                kind: 'epub',
+                chapterHref: 'Text/chapter2.xhtml',
+                chapterIndex: 0,
+                chapterPage: 0,
+            },
+            updatedAt: '2026-07-12T00:00:00.000Z',
+        },
+    }))
+
+    renderReader()
+
+    expect(await screen.findByText('Second body.')).toBeTruthy()
+    expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+})
+
 test('clicking an internal chapter link loads the mapped chapter', async () => {
     renderReader()
 
@@ -163,7 +346,7 @@ test('clicking an internal chapter link loads the mapped chapter', async () => {
     fireEvent.click(screen.getByText('Next chapter'))
 
     await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1')
+        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     })
     expect(await screen.findByText('Second body.')).toBeTruthy()
 })
@@ -182,7 +365,30 @@ test('EPUB links cannot trigger the WebView default navigation', async () => {
     fireEvent(internalLink, click)
     expect(click.defaultPrevented).toBe(true)
     await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1')
+        expect(global.fetch).toHaveBeenCalledWith('/api/books/epub-1/chapter/1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     })
     expect(await screen.findByText('Second body.')).toBeTruthy()
+})
+
+test('closing search aborts the active request and disables page keyboard navigation', async () => {
+    const regularFetch = global.fetch.getMockImplementation()
+    let searchSignal
+    global.fetch.mockImplementation((url, options = {}) => {
+        if (String(url).includes('/search?q=target')) {
+            searchSignal = options.signal
+            return new Promise(() => {})
+        }
+        return regularFetch(url, options)
+    })
+    renderReader()
+    await screen.findByText('Chapter One')
+
+    fireEvent.click(screen.getByTitle('search'))
+    fireEvent.change(screen.getByLabelText('searchTextPlaceholder'), { target: { value: 'target' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'search' }).at(-1))
+
+    await waitFor(() => expect(searchSignal).toBeInstanceOf(AbortSignal))
+    expect(mockUseKeyboardNav.mock.calls.at(-1)[0].enabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'close' }))
+    expect(searchSignal.aborted).toBe(true)
 })

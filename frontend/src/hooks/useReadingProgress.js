@@ -1,8 +1,11 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react'
 
 import { API_BOOKS_BASE } from '../lib/apiBase'
+import { createReaderLocator, hasMeaningfulLocator } from '../lib/readerLocator'
 
 const STORAGE_KEY = 'bookreader_progress'
+const BOOKMARK_COLORS = ['#f59e0b', '#8b5cf6', '#22c55e', '#f43f5e', '#3b82f6', '#d97706']
+let fallbackBookmarkId = 0
 
 function getAllProgress() {
     try {
@@ -26,6 +29,72 @@ function clampPosition(position, totalPages) {
     const maxPosition = Math.max(0, (Number.isFinite(totalPages) ? totalPages : 1) - 1)
     const safePosition = Number.isFinite(position) ? position : 0
     return Math.max(0, Math.min(safePosition, maxPosition))
+}
+
+function resolveBookmarkMetadata(source) {
+    const candidate = typeof source === 'function' ? source() : source
+    if (!candidate || typeof candidate !== 'object' || candidate.nativeEvent) return {}
+
+    const metadata = {}
+    if (typeof candidate.label === 'string' && candidate.label.trim()) metadata.label = candidate.label.trim()
+    if (typeof candidate.excerpt === 'string') metadata.excerpt = candidate.excerpt.trim().slice(0, 320)
+    if (typeof candidate.note === 'string') metadata.note = candidate.note.trim().slice(0, 1000)
+    if (typeof candidate.tag === 'string') metadata.tag = candidate.tag.trim().slice(0, 40)
+    if (typeof candidate.color === 'string' && candidate.color.trim()) metadata.color = candidate.color.trim()
+    if (typeof candidate.important === 'boolean') metadata.important = candidate.important
+    return metadata
+}
+
+function createBookmarkId(timestamp) {
+    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID()
+    fallbackBookmarkId += 1
+    return `${timestamp}-${fallbackBookmarkId}`
+}
+
+function isSameBookmarkLocation(bookmark, locator, position) {
+    const saved = bookmark?.locator
+    if (!saved || !locator) return bookmark?.position === position
+
+    const kind = locator.kind ?? saved.kind
+    if (kind === 'epub') {
+        const sameChapter = locator.chapterHref && saved.chapterHref
+            ? locator.chapterHref === saved.chapterHref
+            : locator.chapterIndex === saved.chapterIndex
+        if (!sameChapter) return false
+        if (Number.isFinite(locator.textOffset) && Number.isFinite(saved.textOffset)) {
+            return locator.textOffset === saved.textOffset
+        }
+        const nextPage = locator.chapterPage ?? locator.fallbackPage
+        const savedPage = saved.chapterPage ?? saved.fallbackPage
+        return Number.isFinite(nextPage) && Number.isFinite(savedPage) && nextPage === savedPage
+    }
+    if (kind === 'zip') {
+        if (locator.memberName && saved.memberName) return locator.memberName === saved.memberName
+        const nextPage = locator.page ?? locator.fallbackPage
+        const savedPage = saved.page ?? saved.fallbackPage
+        return Number.isFinite(nextPage) && Number.isFinite(savedPage) && nextPage === savedPage
+    }
+    if (kind === 'txt') {
+        if (locator.sourceRevision && saved.sourceRevision && locator.sourceRevision !== saved.sourceRevision) return false
+        if (Number.isFinite(locator.segmentId) && Number.isFinite(saved.segmentId)
+            && Number.isFinite(locator.sourceOffset) && Number.isFinite(saved.sourceOffset)) {
+            return locator.segmentId === saved.segmentId && locator.sourceOffset === saved.sourceOffset
+        }
+        const nextPage = locator.page ?? locator.fallbackPage
+        const savedPage = saved.page ?? saved.fallbackPage
+        return Number.isFinite(nextPage) && Number.isFinite(savedPage) && nextPage === savedPage
+    }
+
+    return bookmark?.position === position
+}
+
+function isSameBookmark(bookmark, target) {
+    if (target && typeof target === 'object') {
+        if (target.id && bookmark.id) return target.id === bookmark.id
+        if (target.savedAt && bookmark.savedAt) return target.savedAt === bookmark.savedAt
+        return bookmark === target
+    }
+    return bookmark.position === target
 }
 
 function buildProgressEntry(currentPosition, totalPages, type, bookmarks, locator = null) {
@@ -78,7 +147,7 @@ function persistProgressEntry(bookId, legacyId, entry) {
     saveAllProgress(all)
 }
 
-export function removeBookProgress(bookId, legacyId = null) {
+export function clearLocalBookProgress(bookId, legacyId = null) {
     if (!bookId && !legacyId) return
     const all = getAllProgress()
     if (bookId) delete all[bookId]
@@ -88,6 +157,28 @@ export function removeBookProgress(bookId, legacyId = null) {
     } catch {
         // Ignore storage failures; deletion already succeeded server-side.
     }
+}
+
+export function pruneLocalBookProgress(books) {
+    if (!Array.isArray(books)) return
+    const validIds = new Set()
+    books.forEach((book) => {
+        if (book?.id) validIds.add(String(book.id))
+        if (book?.legacy_id) validIds.add(String(book.legacy_id))
+    })
+    const all = getAllProgress()
+    const retained = Object.fromEntries(Object.entries(all).filter(([bookId]) => validIds.has(bookId)))
+    if (Object.keys(retained).length !== Object.keys(all).length) {
+        try {
+            saveAllProgress(retained)
+        } catch {
+            // A stale local entry is harmless until storage is writable again.
+        }
+    }
+}
+
+export function removeBookProgress(bookId, legacyId = null) {
+    clearLocalBookProgress(bookId, legacyId)
     if (bookId && typeof fetch === 'function') {
         void fetch(`${API_BOOKS_BASE}/${encodeURIComponent(bookId)}/progress`, { method: 'DELETE' }).catch(() => {})
     }
@@ -127,13 +218,15 @@ export function useReadingProgress(bookId, {
     paginationReady = true,
     locator = null,
     locatorToPosition = null,
+    bookmarkSnapshot = null,
 } = {}) {
     const [currentPosition, setCurrentPosition] = useState(0)
     const [bookmarks, setBookmarks] = useState([])
-    const [resumePrompt, setResumePrompt] = useState(null)
+    const [restoredProgress, setRestoredProgress] = useState(null)
     const [hydratedBookId, setHydratedBookId] = useState(null)
     const [remoteHydratedBookId, setRemoteHydratedBookId] = useState(null)
     const latestEntryRef = useRef(buildProgressEntry(0, totalPages, type, []))
+    const progressVersionRef = useRef(0)
     const locatorToPositionRef = useRef(locatorToPosition)
     const appliedLocatorKeyRef = useRef(null)
     locatorToPositionRef.current = locatorToPosition
@@ -142,13 +235,14 @@ export function useReadingProgress(bookId, {
     const canAdjustPagination = hydratedBookId === bookId && paginationReady
     const resolveLocator = useCallback(() => {
         const value = typeof locator === 'function' ? locator() : locator
-        return value && typeof value === 'object' ? { version: 1, ...value } : null
-    }, [locator])
+        return createReaderLocator(type, value)
+    }, [locator, type])
 
     useEffect(() => {
+        progressVersionRef.current += 1
         setCurrentPosition(0)
         setBookmarks([])
-        setResumePrompt(null)
+        setRestoredProgress(null)
         setHydratedBookId(null)
         setRemoteHydratedBookId(null)
         latestEntryRef.current = buildProgressEntry(0, totalPages, type, [])
@@ -171,10 +265,12 @@ export function useReadingProgress(bookId, {
         latestEntryRef.current = normalized
         setCurrentPosition(normalized.position)
         setBookmarks(normalized.bookmarks)
-        if (normalized.position > 0) {
-            setResumePrompt({
+        if (normalized.position > 0 || hasMeaningfulLocator(normalized.locator)) {
+            setRestoredProgress({
                 position: normalized.position,
                 percent: calculatePercent(normalized.position, totalPages),
+                locator: normalized.locator,
+                updatedAt: normalized.updatedAt,
             })
         }
 
@@ -195,10 +291,12 @@ export function useReadingProgress(bookId, {
             return () => { cancelled = true }
         }
         const localAtRequestStart = resolveStoredEntry(getAllProgress(), bookId, legacyId).entry
+        const progressVersionAtRequestStart = progressVersionRef.current
         ;(async () => {
             try {
                 const remote = await readRemoteProgress(bookId)
                 if (cancelled) return
+                if (progressVersionRef.current !== progressVersionAtRequestStart) return
                 if (remote && (!localAtRequestStart || isNewer(remote, localAtRequestStart))) {
                     const normalized = normalizeProgressEntry(remote, type)
                     persistProgressEntry(bookId, legacyId, normalized)
@@ -206,11 +304,16 @@ export function useReadingProgress(bookId, {
                     appliedLocatorKeyRef.current = null
                     setCurrentPosition(normalized.position)
                     setBookmarks(normalized.bookmarks)
-                    if (normalized.position > 0) {
-                        setResumePrompt({ position: normalized.position, percent: normalized.percent })
+                    if (normalized.position > 0 || hasMeaningfulLocator(normalized.locator)) {
+                        setRestoredProgress({
+                            position: normalized.position,
+                            percent: normalized.percent,
+                            locator: normalized.locator,
+                            updatedAt: normalized.updatedAt,
+                        })
+                    } else {
+                        setRestoredProgress(null)
                     }
-                } else if (localAtRequestStart) {
-                    void writeRemoteProgress(bookId, normalizeProgressEntry(localAtRequestStart, type)).catch(() => {})
                 }
             } catch {
                 // Offline and browser-only use continue safely with local storage.
@@ -230,16 +333,10 @@ export function useReadingProgress(bookId, {
             ? locatorToPositionRef.current(savedLocator)
             : null
         if (locatorKey) appliedLocatorKeyRef.current = locatorKey
-        setCurrentPosition((position) => clampPosition(Number.isFinite(resolvedPosition) ? resolvedPosition : position, totalPages))
-        setResumePrompt((prompt) => {
-            if (!prompt) return prompt
-            const nextPosition = clampPosition(prompt.position, totalPages)
-            return {
-                ...prompt,
-                position: nextPosition,
-                percent: calculatePercent(nextPosition, totalPages),
-            }
-        })
+        setCurrentPosition((position) => clampPosition(
+            Number.isFinite(resolvedPosition) ? resolvedPosition : position,
+            totalPages,
+        ))
         setBookmarks((items) => items.map((bookmark) => {
             const anchored = typeof locatorToPositionRef.current === 'function' && bookmark?.locator
                 ? locatorToPositionRef.current(bookmark.locator)
@@ -249,8 +346,9 @@ export function useReadingProgress(bookId, {
     }, [bookId, canAdjustPagination, remoteHydratedBookId, totalPages])
 
     useEffect(() => {
+        if (!canPersist) return
         latestEntryRef.current = buildProgressEntry(currentPosition, totalPages, type, bookmarks, resolveLocator())
-    }, [currentPosition, totalPages, type, bookmarks, resolveLocator])
+    }, [bookmarks, canPersist, currentPosition, resolveLocator, totalPages, type])
 
     useEffect(() => {
         if (!bookId || !canPersist) return
@@ -274,41 +372,80 @@ export function useReadingProgress(bookId, {
         }
     }, [bookId, legacyId, canPersist, canPersistRemote])
 
-    const resumeReading = useCallback(() => {
-        if (resumePrompt) {
-            setCurrentPosition(resumePrompt.position)
-            setResumePrompt(null)
+    const startOver = useCallback(() => {
+        progressVersionRef.current += 1
+        const resetEntry = buildProgressEntry(0, Math.max(1, totalPages), type, bookmarks, null)
+        latestEntryRef.current = resetEntry
+        setCurrentPosition(0)
+        setRestoredProgress(null)
+        appliedLocatorKeyRef.current = null
+        if (bookId) {
+            persistProgressEntry(bookId, legacyId, resetEntry)
+            if (canPersistRemote) void writeRemoteProgress(bookId, resetEntry).catch(() => {})
         }
-    }, [resumePrompt])
+    }, [bookId, bookmarks, canPersistRemote, legacyId, totalPages, type])
 
-    const dismissResume = useCallback(() => {
-        setResumePrompt(null)
-    }, [])
-
-    const addBookmark = useCallback(() => {
-        const label = `Page ${currentPosition + 1}`
+    const addBookmark = useCallback((metadataOverride = null) => {
+        const metadata = {
+            ...resolveBookmarkMetadata(bookmarkSnapshot),
+            ...resolveBookmarkMetadata(metadataOverride),
+        }
         const ts = new Date().toISOString()
+        const nextLocator = resolveLocator()
+        progressVersionRef.current += 1
         setBookmarks(prev => {
-            if (prev.some(b => b.position === currentPosition)) return prev
-            return [...prev, { position: currentPosition, label, savedAt: ts, locator: resolveLocator() }]
+            if (prev.some((bookmark) => {
+                if (isSameBookmarkLocation(bookmark, nextLocator, currentPosition)) {
+                    const nextExcerpt = metadata.excerpt || ''
+                    const savedExcerpt = typeof bookmark.excerpt === 'string' ? bookmark.excerpt : ''
+                    return !nextExcerpt || !savedExcerpt || nextExcerpt === savedExcerpt
+                }
+                return false
+            })) return prev
+            return [...prev, {
+                id: createBookmarkId(ts),
+                position: currentPosition,
+                ...(metadata.label ? { label: metadata.label } : {}),
+                savedAt: ts,
+                locator: nextLocator,
+                excerpt: metadata.excerpt || '',
+                note: metadata.note || '',
+                tag: metadata.tag || '',
+                color: metadata.color || BOOKMARK_COLORS[prev.length % BOOKMARK_COLORS.length],
+                important: metadata.important === true,
+            }]
         })
-    }, [currentPosition, resolveLocator])
+    }, [bookmarkSnapshot, currentPosition, resolveLocator])
 
-    const removeBookmark = useCallback((position) => {
-        setBookmarks(prev => prev.filter(b => b.position !== position))
+    const removeBookmark = useCallback((target) => {
+        progressVersionRef.current += 1
+        setBookmarks((items) => items.filter((bookmark) => !isSameBookmark(bookmark, target)))
     }, [])
 
-    const goToBookmark = useCallback((position) => {
-        setCurrentPosition(position)
+    const updateBookmark = useCallback((target, patch) => {
+        const metadata = resolveBookmarkMetadata(patch)
+        if (Object.keys(metadata).length === 0) return
+        progressVersionRef.current += 1
+        setBookmarks((items) => items.map((bookmark) => (
+            isSameBookmark(bookmark, target)
+                ? { ...bookmark, ...metadata, updatedAt: new Date().toISOString() }
+                : bookmark
+        )))
+    }, [])
+
+    const goToBookmark = useCallback((target) => {
+        const position = target && typeof target === 'object' ? target.position : target
+        if (Number.isFinite(position)) setCurrentPosition(position)
     }, [])
 
     const percent = calculatePercent(currentPosition, totalPages)
+    const isCurrentPageBookmarked = bookmarks.some((bookmark) => bookmark.position === currentPosition)
 
     return {
         currentPosition, setCurrentPosition,
         percent,
-        bookmarks, addBookmark, removeBookmark, goToBookmark,
-        resumePrompt, resumeReading, dismissResume,
+        bookmarks, addBookmark, removeBookmark, updateBookmark, goToBookmark, isCurrentPageBookmarked,
+        restoredProgress, startOver,
     }
 }
 

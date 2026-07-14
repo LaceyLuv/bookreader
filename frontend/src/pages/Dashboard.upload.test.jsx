@@ -1,17 +1,22 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
 import Dashboard from './Dashboard'
 
 vi.mock('../hooks/useReadingProgress', () => ({
+    clearLocalBookProgress: vi.fn(),
     getBookProgress: () => null,
+    pruneLocalBookProgress: vi.fn(),
 }))
 
 vi.mock('../i18n', () => ({
-    createT: () => (key) => key,
+    createT: () => (key) => ({
+        appTitle: '글결',
+        appSubtitle: '내 파일을, 내 방식으로.',
+    }[key] || key),
 }))
 
 const mockNavigate = vi.fn()
@@ -33,6 +38,7 @@ function createJsonResponse(body) {
 }
 
 beforeEach(() => {
+    mockNavigate.mockClear()
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
         const url = String(input)
         const book = {
@@ -73,6 +79,24 @@ beforeEach(() => {
     })
 })
 
+test('dashboard presents the Gyeol typography without the separate icon or plain title', async () => {
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+
+    const heading = await screen.findByRole('heading', { name: '글결' })
+    expect(heading.textContent).toBe('')
+    expect(screen.getByText('내 파일을, 내 방식으로.')).toBeTruthy()
+    expect(screen.getByTestId('dashboard-brand-typography').getAttribute('src')).toContain('gyeol-typography.png')
+    expect(screen.queryByTestId('dashboard-brand-icon')).toBeNull()
+})
+
+test('clicking a book cover opens the reader', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('button', { name: 'Clean Upload - read' }))
+    expect(mockNavigate).toHaveBeenCalledWith('/read/epub/book-1', expect.objectContaining({ state: expect.any(Object) }))
+})
+
 test('file info keeps the original filename visible and hides storage-only details', async () => {
     const user = userEvent.setup()
 
@@ -89,4 +113,43 @@ test('file info keeps the original filename visible and hides storage-only detai
     expect(screen.getByText('Clean Upload.epub')).toBeTruthy()
     expect(screen.queryByText('9f3c2a1b-Clean Upload.epub')).toBeNull()
     expect(screen.queryByText('/books/9f3c2a1b-Clean Upload.epub')).toBeNull()
+})
+
+test('dropping a TXT file uploads it and refreshes the library', async () => {
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+
+    await screen.findByText('Clean Upload')
+    const file = new File(['dropped text'], 'Dropped Book.txt', { type: 'text/plain' })
+    const uploadArea = screen.getByText('uploadPrompt').closest('.dashboard-upload')
+
+    fireEvent.drop(uploadArea, { dataTransfer: { files: [file] } })
+
+    await waitFor(() => {
+        const uploadCall = globalThis.fetch.mock.calls.find(([, init]) => init?.method === 'POST')
+        expect(uploadCall).toBeTruthy()
+        expect(uploadCall[1].body.get('file')).toBe(file)
+    })
+
+    await waitFor(() => {
+        const libraryRequests = globalThis.fetch.mock.calls.filter(([input, init]) => (
+            String(input).endsWith('/api/books') && !init?.method
+        ))
+        expect(libraryRequests).toHaveLength(2)
+    })
+})
+
+test('library controls live in the settings panel and selection mode reveals book checkboxes', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><Dashboard /></MemoryRouter>)
+
+    await screen.findByText('Clean Upload')
+    expect(screen.getByRole('button', { name: 'librarySettings' })).toBeTruthy()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'librarySettings' }))
+    const selectionMode = await screen.findByRole('checkbox', { name: 'selectionMode' })
+    await user.click(selectionMode)
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
 })

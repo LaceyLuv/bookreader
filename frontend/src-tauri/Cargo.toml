@@ -1,7 +1,7 @@
 [package]
 name = "bookreader_desktop"
 version = "0.1.1"
-description = "BookReader desktop shell"
+description = "Gyeol Reader desktop shell"
 authors = ["bookreader"]
 edition = "2021"
 rust-version = "1.77.2"
@@ -21,3 +21,4 @@ tauri = { version = "2", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 rand = "0.8"
+sha2 = "0.10"

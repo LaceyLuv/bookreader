@@ -1,3 +1,8 @@
+import { utf16IndexToCodePoint } from './txtUnicodeOffsets'
+
+const SENTENCE_BREAK_RE = /[.!?。！？…]/u
+const SENTENCE_CLOSER_RE = /["'’”〉》」』】〕〗〙）]/u
+
 function normalizeSegment(segment) {
   const segmentId = Number.isFinite(segment?.segmentId) ? segment.segmentId : segment?.segment_id
   const startOffset = Number.isFinite(segment?.startOffset)
@@ -27,6 +32,76 @@ function normalizeSegment(segment) {
   }
 }
 
+function getMappedSourceOffset(segment, displayIndex) {
+  const mapping = Array.isArray(segment?.display_to_source) ? segment.display_to_source : null
+  if (mapping?.length) return mapping[displayIndex] ?? null
+
+  const runs = Array.isArray(segment?.display_to_source_runs) ? segment.display_to_source_runs : null
+  if (!runs?.length) return null
+
+  for (const run of runs) {
+    if (!Array.isArray(run) || run.length !== 3) continue
+    const [displayStart, sourceStart, length] = run
+    if (displayIndex >= displayStart && displayIndex < displayStart + length) {
+      return sourceStart + displayIndex - displayStart
+    }
+  }
+
+  return null
+}
+
+function getSliceSourceRange(segment, sliceStart, sliceEnd) {
+  const displayStart = utf16IndexToCodePoint(segment.text, sliceStart)
+  const displayEnd = utf16IndexToCodePoint(segment.text, sliceEnd)
+  const mappedStart = getMappedSourceOffset(segment, displayStart)
+  const mappedEndCharacter = getMappedSourceOffset(segment, displayEnd - 1)
+  const fallbackStart = Number.isFinite(segment.startOffset) ? segment.startOffset + displayStart : null
+  const fallbackEnd = Number.isFinite(segment.startOffset) ? segment.startOffset + displayEnd : null
+
+  return {
+    sourceStartOffset: Number.isFinite(mappedStart) ? mappedStart : fallbackStart,
+    sourceEndOffset: Number.isFinite(mappedEndCharacter) ? mappedEndCharacter + 1 : fallbackEnd,
+  }
+}
+
+function clampToCodePointBoundary(text, sliceStart, sliceEnd) {
+  if (sliceEnd <= sliceStart || sliceEnd >= text.length) return sliceEnd
+  const previousCodeUnit = text.charCodeAt(sliceEnd - 1)
+  const nextCodeUnit = text.charCodeAt(sliceEnd)
+  const splitsSurrogatePair = previousCodeUnit >= 0xD800 && previousCodeUnit <= 0xDBFF
+    && nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF
+  if (!splitsSurrogatePair) return sliceEnd
+  return sliceEnd - 1 > sliceStart ? sliceEnd - 1 : Math.min(text.length, sliceEnd + 1)
+}
+
+function findLastBreak(text, sliceStart, sliceEnd, predicate) {
+  for (let index = sliceEnd - 1; index >= sliceStart; index -= 1) {
+    if (predicate(text[index])) return index
+  }
+  return -1
+}
+
+function findPreferredSliceEnd(segment, sliceStart, measuredEnd, hardEnd) {
+  if (measuredEnd >= hardEnd) return hardEnd
+
+  const text = segment.text
+  const newlineIndex = findLastBreak(text, sliceStart, measuredEnd, (character) => character === '\n')
+  if (newlineIndex >= sliceStart) return newlineIndex + 1
+
+  const sentenceIndex = findLastBreak(text, sliceStart, measuredEnd, (character) => SENTENCE_BREAK_RE.test(character))
+  if (sentenceIndex >= sliceStart) {
+    let preferredEnd = sentenceIndex + 1
+    while (preferredEnd < measuredEnd && SENTENCE_CLOSER_RE.test(text[preferredEnd])) preferredEnd += 1
+    while (preferredEnd < measuredEnd && /[ \t]/u.test(text[preferredEnd])) preferredEnd += 1
+    return preferredEnd
+  }
+
+  const whitespaceIndex = findLastBreak(text, sliceStart, measuredEnd, (character) => /[ \t]/u.test(character))
+  if (whitespaceIndex >= sliceStart) return whitespaceIndex + 1
+
+  return clampToCodePointBoundary(text, sliceStart, measuredEnd)
+}
+
 function getSliceHeight(measureSliceHeight, slice) {
   const measuredHeight = Number(measureSliceHeight(slice))
   if (Number.isFinite(measuredHeight) && measuredHeight > 0) return measuredHeight
@@ -41,8 +116,7 @@ function getPageHeight(measurePageHeight, pageSlices) {
 
 function createSlice(segment, sliceStart, sliceEnd) {
   const text = segment.text.slice(sliceStart, sliceEnd)
-  const sourceStartOffset = Number.isFinite(segment.startOffset) ? segment.startOffset + sliceStart : null
-  const sourceEndOffset = Number.isFinite(sourceStartOffset) ? sourceStartOffset + text.length : null
+  const { sourceStartOffset, sourceEndOffset } = getSliceSourceRange(segment, sliceStart, sliceEnd)
 
   return {
     ...segment,
@@ -149,13 +223,14 @@ export function splitOversizedSegmentIntoSlices(segment, options = {}) {
   let currentStart = sliceStart
 
   while (currentStart < sliceEnd) {
-    const currentEnd = findSliceEnd(
+    const measuredEnd = findSliceEnd(
       normalizedSegment,
       currentStart,
       sliceEnd,
       maxSliceHeight,
       measureSliceHeight,
     )
+    const currentEnd = findPreferredSliceEnd(normalizedSegment, currentStart, measuredEnd, sliceEnd)
     const slice = createSlice(normalizedSegment, currentStart, currentEnd)
     slices.push(slice)
     currentStart = currentEnd
@@ -196,25 +271,37 @@ export function buildMeasuredPages(segments, options = {}) {
         continue
       }
 
+      if (sliceStart === 0 && pageSlices.length > 0) {
+        const fullSegmentSlice = createSlice(segment, 0, segment.text.length)
+        const fullSegmentHeight = getPageHeight(measurePageHeight, [fullSegmentSlice])
+        const pageWithFullSegmentHeight = getPageHeight(measurePageHeight, [...pageSlices, fullSegmentSlice])
+        if (fullSegmentHeight <= pageHeight && pageWithFullSegmentHeight > pageHeight) {
+          flushPage()
+          continue
+        }
+      }
+
       const availableHeight = Math.max(1, pageHeight - currentPageHeight)
-      const sliceEnd = findSliceEnd(
+      const measuredSliceEnd = findSliceEnd(
         segment,
         sliceStart,
         segment.text.length,
         availableHeight,
         measureSliceHeight,
       )
+      const sliceEnd = findPreferredSliceEnd(segment, sliceStart, measuredSliceEnd, segment.text.length)
       let nextSlice = createSlice(segment, sliceStart, sliceEnd)
       let nextPageHeight = getPageHeight(measurePageHeight, [...pageSlices, nextSlice])
 
       if (pageSlices.length > 0 && nextPageHeight > pageHeight) {
-        const fittedEnd = findSliceEndForPage(
+        const measuredFittedEnd = findSliceEndForPage(
           segment,
           sliceStart,
           sliceEnd,
           pageHeight,
           (candidateSlices) => measurePageHeight([...pageSlices, ...candidateSlices]),
         )
+        const fittedEnd = findPreferredSliceEnd(segment, sliceStart, measuredFittedEnd, segment.text.length)
         if (fittedEnd > sliceStart) {
           const leavesTrailingSlice = fittedEnd < segment.text.length
           if (leavesTrailingSlice && minTrailingSliceHeight > 0) {
@@ -246,13 +333,14 @@ export function buildMeasuredPages(segments, options = {}) {
           )
         }
 
-        const fittedEnd = findSliceEndForPage(
+        const measuredFittedEnd = findSliceEndForPage(
           segment,
           sliceStart,
           segment.text.length,
           pageHeight,
           measurePageHeight,
         )
+        const fittedEnd = findPreferredSliceEnd(segment, sliceStart, measuredFittedEnd, segment.text.length)
         nextSlice = createSlice(segment, sliceStart, fittedEnd)
         nextPageHeight = getPageHeight(measurePageHeight, [nextSlice])
       }

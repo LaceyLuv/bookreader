@@ -22,9 +22,12 @@ function ReaderSearchPanel({
     submittedQuery = '',
     loading,
     results,
+    meta = {},
+    error = '',
     activeIndex = null,
     onQueryChange,
     onSubmit,
+    onCancel,
     onClose,
     onResultClick,
     formatResultLocation,
@@ -38,13 +41,13 @@ function ReaderSearchPanel({
     const hasSubmittedQuery = Boolean(trimmedSubmittedQuery)
 
     return (
-        <div className="absolute top-4 right-4 bottom-4 z-30 w-[22rem] rounded-2xl border backdrop-blur-xl shadow-2xl overflow-hidden" style={{ backgroundColor: `${themeStyle.card}f2`, borderColor: themeStyle.border, color: themeStyle.text }}>
+        <div role="dialog" aria-label={tt('insideThisBook')} onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose?.() } }} className="absolute top-4 right-4 bottom-4 z-30 w-[22rem] rounded-2xl border backdrop-blur-xl shadow-2xl overflow-hidden" style={{ backgroundColor: `${themeStyle.card}f2`, borderColor: themeStyle.border, color: themeStyle.text }}>
             <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
                 <div>
                     <div className="text-[10px] uppercase tracking-widest opacity-40">{tt('search')}</div>
                     <div className="text-sm font-semibold">{tt('insideThisBook')}</div>
                 </div>
-                <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg transition-opacity hover:opacity-70" style={{ color: themeStyle.text }}>
+                <button type="button" aria-label={tt('close')} onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg transition-opacity hover:opacity-70" style={{ color: themeStyle.text }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
                 </button>
             </div>
@@ -58,6 +61,8 @@ function ReaderSearchPanel({
             >
                 <div className="flex items-center gap-2">
                     <input
+                        autoFocus
+                        aria-label={tt('searchTextPlaceholder')}
                         value={query}
                         onChange={(event) => onQueryChange(event.target.value)}
                         placeholder={tt('searchTextPlaceholder')}
@@ -65,20 +70,32 @@ function ReaderSearchPanel({
                         style={{ backgroundColor: 'transparent', color: themeStyle.text, border: `1px solid ${themeStyle.border}` }}
                     />
                     <button
-                        type="submit"
-                        disabled={!canSubmit}
+                        type={loading ? 'button' : 'submit'}
+                        disabled={loading ? !onCancel : !canSubmit}
+                        onClick={loading ? onCancel : undefined}
                         className="h-10 shrink-0 rounded-xl px-3 text-sm font-medium transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-45"
                         style={{ backgroundColor: themeStyle.border, color: themeStyle.text }}
                     >
-                        {tt('search')}
+                        {loading ? tt('cancelSearch') : tt('search')}
                     </button>
                 </div>
             </form>
+            {hasSubmittedQuery && !loading && <div className="px-4 py-2 text-[11px] opacity-60" role="status" aria-live="polite" style={{ borderBottom: `1px solid ${themeStyle.border}` }}>
+                {meta.results_truncated
+                    ? `${results.length}+ ${tt('result')}`
+                    : `${Number.isFinite(meta.total) ? meta.total : results.length} ${tt('result')}`}
+                {meta.partial_reason === 'timeout' ? ` · ${tt('searchTimedOut')}` : ''}
+                {meta.partial_reason === 'cancelled' ? ` · ${tt('searchCancelled')}` : ''}
+            </div>}
             <div className="h-[calc(100%-7.25rem)] overflow-y-auto px-3 py-3">
                 {!trimmedQuery || !hasSubmittedQuery ? (
                     <div className="px-2 py-8 text-sm opacity-50">{tt('searchEmptyPrompt')}</div>
                 ) : loading ? (
                     <div className="flex justify-center py-10"><div className="h-7 w-7 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" /></div>
+                ) : error ? (
+                    <div className="px-2 py-8 text-sm" role="alert">{error}</div>
+                ) : meta.complete === false && results.length === 0 ? (
+                    <div className="px-2 py-8 text-sm opacity-60">{tt('searchIncomplete')}</div>
                 ) : results.length === 0 ? (
                     <div className="px-2 py-8 text-sm opacity-50">{tt('noMatchesFound')}</div>
                 ) : (

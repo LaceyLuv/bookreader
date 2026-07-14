@@ -58,6 +58,8 @@ describe('desktop backend authentication', () => {
         expect(fetchImpl.mock.calls[1][1]).toEqual({})
         expect(authenticateAssetUrl('http://127.0.0.1:43123/api/books/1/asset/cover.png'))
             .toBe(`http://127.0.0.1:43123/api/books/1/asset/cover.png?asset_token=${'b'.repeat(64)}`)
+        expect(authenticateAssetUrl('http://127.0.0.1:43123/api/books/1/image/page%201.png?retry=1'))
+            .toBe(`http://127.0.0.1:43123/api/books/1/image/page%201.png?retry=1&asset_token=${'b'.repeat(64)}`)
         expect(authenticateAssetUrl('http://127.0.0.1:43123/api/health'))
             .toBe('http://127.0.0.1:43123/api/health')
     })

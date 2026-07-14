@@ -16,6 +16,7 @@ from paths import BOOKS_DIR, LIBRARY_DATA_PATH
 LIBRARY_VERSION = 4
 ALLOWED_BOOK_EXTENSIONS = {'txt', 'epub', 'zip'}
 READING_STATUSES = {'unread', 'reading', 'completed', 'paused'}
+TXT_ENCODING_OVERRIDES = {'utf-8', 'utf-8-sig', 'utf-16', 'utf-16-le', 'utf-16-be', 'cp949', 'euc-kr', 'latin-1'}
 SAFE_STORAGE_RE = re.compile(r'[^A-Za-z0-9._-]+')
 STORE_WRITE_ENCODING = 'utf-8'
 STORE_DATE_FORMAT_SECONDS = 'seconds'
@@ -26,6 +27,10 @@ _STORE_LOCK = threading.Lock()
 
 
 class StoreCorruptionError(RuntimeError):
+    pass
+
+
+class UnsupportedStoreVersionError(StoreCorruptionError):
     pass
 
 
@@ -57,6 +62,14 @@ def _normalize_fingerprint(value: Any) -> str | None:
         return None
     text = str(value).strip().lower()
     return text or None
+
+
+def _normalize_txt_encoding_override(value: Any) -> str | None:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None
+    normalized = normalized.lower()
+    return normalized if normalized in TXT_ENCODING_OVERRIDES else None
 
 
 def _normalize_name_list(value: Any) -> list[str]:
@@ -100,16 +113,13 @@ def make_legacy_id(filename: str | None) -> str:
     return hashlib.md5(_safe_display_name(filename).encode('utf-8')).hexdigest()[:12]
 
 
-def _sanitize_storage_stem(filename: str | None) -> str:
-    stem = SAFE_STORAGE_RE.sub('-', Path(_safe_display_name(filename)).stem).strip('-.')
-    return stem or 'book'
-
-
 def build_storage_name(book_id: str, filename: str | None) -> str:
     display_name = _safe_display_name(filename)
     suffix = Path(display_name).suffix.lower()
-    safe_stem = _sanitize_storage_stem(display_name)
-    return f'{book_id}-{safe_stem}{suffix}'
+    safe_id = SAFE_STORAGE_RE.sub('-', str(book_id or '')).strip('-.')[:64]
+    if not safe_id:
+        raise ValueError('Book id cannot produce a safe storage filename')
+    return f'{safe_id}{suffix}'
 
 
 def _hash_file_sha1(file_path: Path) -> str:
@@ -189,6 +199,13 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 def _validate_store_data(data: Any, source_path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise StoreCorruptionError(f'Library store must be a JSON object: {source_path}')
+    source_version = data.get('version', 1)
+    if isinstance(source_version, bool) or not isinstance(source_version, int) or source_version < 1:
+        raise StoreCorruptionError(f'Library store has an invalid version: {source_path}')
+    if source_version > LIBRARY_VERSION:
+        raise UnsupportedStoreVersionError(
+            f'Library store version {source_version} is newer than supported version {LIBRARY_VERSION}: {source_path}'
+        )
     books = data.get('books')
     folders = data.get('folders')
     if 'books' in data and not isinstance(books, list):
@@ -200,7 +217,7 @@ def _validate_store_data(data: Any, source_path: Path) -> dict[str, Any]:
     if folders is None:
         folders = []
     return {
-        'version': LIBRARY_VERSION,
+        'version': source_version,
         'books': books,
         'folders': folders,
     }
@@ -212,6 +229,8 @@ def _recover_store_from_backup(exc: Exception) -> dict[str, Any]:
         raise StoreCorruptionError(f'Unable to read library store: {LIBRARY_DATA_PATH}') from exc
     try:
         recovered = _read_json_file(backup_path)
+    except UnsupportedStoreVersionError:
+        raise
     except (OSError, json.JSONDecodeError, StoreCorruptionError) as backup_exc:
         raise StoreCorruptionError(f'Unable to read library store or backup: {LIBRARY_DATA_PATH}') from backup_exc
     _replace_store_file(recovered, keep_backup=False)
@@ -223,6 +242,8 @@ def _read_store_unlocked() -> dict[str, Any]:
         return _empty_store()
     try:
         return _read_json_file(LIBRARY_DATA_PATH)
+    except UnsupportedStoreVersionError:
+        raise
     except (OSError, json.JSONDecodeError, StoreCorruptionError) as exc:
         return _recover_store_from_backup(exc)
 
@@ -293,6 +314,7 @@ def _new_record(display_name: str, stored_filename: str, file_path: Path, *, boo
         'duplicate_group': None,
         'version_label': None,
         'duplicate_lead': False,
+        'txt_encoding_override': None,
         'content_fingerprint': fingerprint,
         'content_fingerprint_size': fingerprint_size,
         'content_fingerprint_mtime_ns': fingerprint_mtime_ns,
@@ -332,6 +354,8 @@ def _record_preference_score(record: dict[str, Any]) -> int:
     if _normalize_optional_text(record.get('version_label')):
         score += 1
     if record.get('duplicate_lead'):
+        score += 1
+    if _normalize_txt_encoding_override(record.get('txt_encoding_override')):
         score += 1
     return score
 
@@ -380,6 +404,7 @@ def _normalize_record(raw: dict[str, Any], file_path: Path, folder_name_by_id: d
         'duplicate_group': _normalize_optional_text(raw.get('duplicate_group')),
         'version_label': _normalize_optional_text(raw.get('version_label')),
         'duplicate_lead': bool(raw.get('duplicate_lead', False)),
+        'txt_encoding_override': _normalize_txt_encoding_override(raw.get('txt_encoding_override')) if file_type == 'txt' else None,
         'file_missing': False,
         'content_fingerprint': fingerprint,
         'content_fingerprint_size': fingerprint_size,
@@ -423,6 +448,7 @@ def _normalize_missing_record(raw: dict[str, Any], folder_name_by_id: dict[str, 
         'duplicate_group': _normalize_optional_text(raw.get('duplicate_group')),
         'version_label': _normalize_optional_text(raw.get('version_label')),
         'duplicate_lead': bool(raw.get('duplicate_lead', False)),
+        'txt_encoding_override': _normalize_txt_encoding_override(raw.get('txt_encoding_override')) if file_type == 'txt' else None,
         'file_missing': True,
         'content_fingerprint': _normalize_fingerprint(raw.get('content_fingerprint')),
         'content_fingerprint_size': _normalize_nonnegative_int(raw.get('content_fingerprint_size')),
@@ -434,7 +460,7 @@ def _sync_store_unlocked() -> dict[str, Any]:
     BOOKS_DIR.mkdir(parents=True, exist_ok=True)
     data = _read_store_unlocked()
 
-    changed = not LIBRARY_DATA_PATH.exists()
+    changed = not LIBRARY_DATA_PATH.exists() or data.get('version') != LIBRARY_VERSION
     normalized_folders: list[dict[str, Any]] = []
     folder_name_by_id: dict[str, str] = {}
     used_folder_names: set[str] = set()
@@ -806,6 +832,7 @@ def update_book_record(book_id: str, updates: dict[str, Any]) -> dict[str, Any] 
         'duplicate_lead',
         'last_opened_at',
         'last_read_at',
+        'txt_encoding_override',
     }
     filtered = {key: value for key, value in updates.items() if key in allowed_keys}
     if not filtered:
@@ -855,6 +882,13 @@ def update_book_record(book_id: str, updates: dict[str, Any]) -> dict[str, Any] 
                 next_record['last_opened_at'] = _normalize_optional_text(filtered['last_opened_at'])
             if 'last_read_at' in filtered:
                 next_record['last_read_at'] = _normalize_optional_text(filtered['last_read_at'])
+            if 'txt_encoding_override' in filtered:
+                if next_record.get('file_type') != 'txt':
+                    raise ValueError('TXT encoding can only be set for TXT books')
+                requested_encoding = _normalize_optional_text(filtered['txt_encoding_override'])
+                if requested_encoding is not None and requested_encoding.lower() not in TXT_ENCODING_OVERRIDES:
+                    raise ValueError('Unsupported TXT encoding')
+                next_record['txt_encoding_override'] = requested_encoding.lower() if requested_encoding else None
             books[index] = next_record
             data['books'] = books
             _write_store_unlocked(data)

@@ -42,3 +42,31 @@ def test_clean_upload_uses_original_filename_and_lists_once(tmp_path, monkeypatc
     assert len(books) == 1
     assert books[0]["filename"] == original_filename
     assert books[0]["id"] == "real-upload-1"
+
+
+def test_malformed_zip_upload_returns_structured_problem_and_cleans_file(tmp_path, monkeypatch):
+    from routers import books as books_router
+    from services import library_store
+
+    books_dir = tmp_path / "books"
+    fonts_dir = tmp_path / "fonts"
+    books_dir.mkdir()
+    fonts_dir.mkdir()
+    library_path = tmp_path / "library.json"
+    library_path.write_text(json.dumps({"version": 4, "books": [], "folders": []}), encoding="utf-8")
+    monkeypatch.setattr(main, "BOOKS_DIR", books_dir)
+    monkeypatch.setattr(main, "FONTS_DIR", fonts_dir)
+    monkeypatch.setattr(main, "ensure_annotation_store", lambda: None)
+    monkeypatch.setattr(library_store, "BOOKS_DIR", books_dir)
+    monkeypatch.setattr(library_store, "LIBRARY_DATA_PATH", library_path)
+    monkeypatch.setattr(books_router, "BOOKS_DIR", books_dir)
+
+    response = TestClient(main.app).post(
+        "/api/books",
+        files={"file": ("broken.zip", b"not a zip", "application/zip")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_archive"
+    assert list(books_dir.iterdir()) == []
+    assert json.loads(library_path.read_text(encoding="utf-8"))["books"] == []

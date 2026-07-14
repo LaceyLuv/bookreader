@@ -248,7 +248,7 @@ def test_upload_temp_files_are_ignored_during_library_sync(tmp_path, monkeypatch
     assert [record["stored_filename"] for record in store["books"]] == ["complete.txt"]
 
 
-def test_delete_book_rolls_back_file_when_annotation_delete_fails(tmp_path, monkeypatch):
+def test_delete_book_keeps_forward_recovery_intent_when_annotation_delete_fails(tmp_path, monkeypatch):
     from routers import books as books_router
 
     book_path = tmp_path / "book.txt"
@@ -262,6 +262,7 @@ def test_delete_book_rolls_back_file_when_annotation_delete_fails(tmp_path, monk
     deleted_records = []
 
     monkeypatch.setattr(books_router, "BOOKS_DIR", tmp_path)
+    monkeypatch.setattr(books_router, "_delete_journal_path", lambda: tmp_path / "delete-journal.json")
     monkeypatch.setattr(books_router, "get_book_record", lambda book_id: record)
     monkeypatch.setattr(books_router, "get_book_path", lambda item: book_path)
     monkeypatch.setattr(books_router, "delete_book_record", lambda book_id: deleted_records.append(book_id))
@@ -276,12 +277,13 @@ def test_delete_book_rolls_back_file_when_annotation_delete_fails(tmp_path, monk
         asyncio.run(books_router.delete_book("book-1"))
 
     assert exc_info.value.status_code == 500
-    assert book_path.exists()
-    assert book_path.read_text(encoding="utf-8") == "content"
+    assert not book_path.exists()
+    assert list((tmp_path / ".trash").glob("*.trash"))
+    assert (tmp_path / "delete-journal.json").exists()
     assert deleted_records == ["book-1"]
 
 
-def test_delete_book_rolls_back_file_when_library_delete_fails(tmp_path, monkeypatch):
+def test_delete_book_keeps_forward_recovery_intent_when_library_delete_fails(tmp_path, monkeypatch):
     from routers import books as books_router
 
     book_path = tmp_path / "book.txt"
@@ -295,6 +297,7 @@ def test_delete_book_rolls_back_file_when_library_delete_fails(tmp_path, monkeyp
     deleted_annotations = []
 
     monkeypatch.setattr(books_router, "BOOKS_DIR", tmp_path)
+    monkeypatch.setattr(books_router, "_delete_journal_path", lambda: tmp_path / "delete-journal.json")
     monkeypatch.setattr(books_router, "get_book_record", lambda book_id: record)
     monkeypatch.setattr(books_router, "get_book_path", lambda item: book_path)
     monkeypatch.setattr(books_router, "delete_book_annotations", lambda book_id: deleted_annotations.append(book_id))
@@ -309,12 +312,13 @@ def test_delete_book_rolls_back_file_when_library_delete_fails(tmp_path, monkeyp
         asyncio.run(books_router.delete_book("book-1"))
 
     assert exc_info.value.status_code == 500
-    assert book_path.exists()
-    assert book_path.read_text(encoding="utf-8") == "content"
+    assert not book_path.exists()
+    assert list((tmp_path / ".trash").glob("*.trash"))
+    assert (tmp_path / "delete-journal.json").exists()
     assert deleted_annotations == []
 
 
-def test_delete_book_restores_library_record_without_orphan_duplicate_when_annotations_fail(tmp_path, monkeypatch):
+def test_delete_book_does_not_resurrect_metadata_after_annotation_delete_fails(tmp_path, monkeypatch):
     from routers import books as books_router
     from services import library_store
 
@@ -344,6 +348,7 @@ def test_delete_book_restores_library_record_without_orphan_duplicate_when_annot
     monkeypatch.setattr(library_store, "BOOKS_DIR", books_dir)
     monkeypatch.setattr(library_store, "LIBRARY_DATA_PATH", library_path)
     monkeypatch.setattr(books_router, "BOOKS_DIR", books_dir)
+    monkeypatch.setattr(books_router, "_delete_journal_path", lambda: tmp_path / "delete-journal.json")
 
     def _fail_annotations(book_id):
         raise OSError("annotation write failed")
@@ -355,9 +360,40 @@ def test_delete_book_restores_library_record_without_orphan_duplicate_when_annot
         asyncio.run(books_router.delete_book("book-1"))
 
     records = library_store.list_book_records()
-    assert [record["id"] for record in records] == ["book-1"]
-    assert records[0]["title"] == "Keep me"
-    assert records[0]["file_missing"] is False
+    assert records == []
+    assert list((books_dir / ".trash").glob("*.trash"))
+    assert (tmp_path / "delete-journal.json").exists()
+
+
+def test_delete_book_commits_progress_and_removes_journal(tmp_path, monkeypatch):
+    from routers import books as books_router
+
+    book_path = tmp_path / "book.txt"
+    book_path.write_text("content", encoding="utf-8")
+    record = {
+        "id": "book-1",
+        "legacy_id": "legacy-1",
+        "file_type": "txt",
+        "stored_filename": "book.txt",
+    }
+    deleted = {"library": [], "annotations": [], "progress": []}
+
+    monkeypatch.setattr(books_router, "BOOKS_DIR", tmp_path)
+    monkeypatch.setattr(books_router, "_delete_journal_path", lambda: tmp_path / "delete-journal.json")
+    monkeypatch.setattr(books_router, "get_book_record", lambda _book_id: record)
+    monkeypatch.setattr(books_router, "get_book_path", lambda _record: book_path)
+    monkeypatch.setattr(books_router, "delete_book_record", lambda book_id: deleted["library"].append(book_id))
+    monkeypatch.setattr(books_router, "delete_book_annotations", lambda book_id: deleted["annotations"].append(book_id))
+    monkeypatch.setattr(books_router, "delete_reading_progress", lambda book_id: deleted["progress"].append(book_id))
+    monkeypatch.setattr(books_router, "_clear_related_caches", lambda _file_type: None)
+
+    result = asyncio.run(books_router.delete_book("book-1"))
+
+    assert result == {"detail": "Book deleted"}
+    assert deleted == {"library": ["book-1"], "annotations": ["book-1"], "progress": ["book-1"]}
+    assert not book_path.exists()
+    assert not list((tmp_path / ".trash").glob("*.trash"))
+    assert not (tmp_path / "delete-journal.json").exists()
 
 
 def test_corrupt_library_store_is_not_replaced_with_empty_store(tmp_path, monkeypatch):

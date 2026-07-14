@@ -2,7 +2,9 @@ import { describe, expect, test, vi } from 'vitest'
 
 import {
     checkBackendStartup,
+    classifyBackendFailure,
     normalizeBackendStatus,
+    restartBookReader,
     waitForBackendHealth,
 } from './backendStartup'
 
@@ -48,6 +50,26 @@ describe('backendStartup', () => {
         })
     })
 
+    test('times out a health request that never responds', async () => {
+        const fetchImpl = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => {
+                const error = new Error('aborted')
+                error.name = 'AbortError'
+                reject(error)
+            })
+        }))
+
+        const result = await waitForBackendHealth({
+            healthUrl: '/api/health',
+            fetchImpl,
+            attempts: 1,
+            requestTimeoutMs: 5,
+        })
+
+        expect(result.ok).toBe(false)
+        expect(result.message).toContain('timed out after 5ms')
+    })
+
     test('includes sidecar spawn failure status when desktop readiness fails', async () => {
         const result = await checkBackendStartup({
             isTauri: true,
@@ -57,6 +79,7 @@ describe('backendStartup', () => {
                 expect(command).toBe('backend_status')
                 return {
                     state: 'failed',
+                    code: 'sidecar_spawn_failed',
                     message: 'backend sidecar spawn failed: missing binary',
                     pid: null,
                     owned: false,
@@ -69,12 +92,35 @@ describe('backendStartup', () => {
 
         expect(result.ready).toBe(false)
         expect(result.status.state).toBe('failed')
+        expect(result.problem.code).toBe('sidecar_missing')
         expect(result.message).toContain('missing binary')
+    })
+
+    test('classifies access-denied spawn errors without recommending antivirus disablement', () => {
+        const problem = classifyBackendFailure({
+            state: 'failed',
+            code: 'sidecar_spawn_failed',
+            message: 'Access is denied (os error 5)',
+            pid: null,
+            owned: false,
+        })
+
+        expect(problem.code).toBe('sidecar_blocked_or_denied')
+        expect(problem.recoveryKey).toBe('backendSidecarBlockedRecovery')
+    })
+
+    test('requests an application restart through the narrow Tauri command', async () => {
+        const invoke = vi.fn(async () => undefined)
+
+        await restartBookReader(invoke)
+
+        expect(invoke).toHaveBeenCalledWith('restart_application')
     })
 
     test('normalizes unknown sidecar status into a user-facing fallback', () => {
         expect(normalizeBackendStatus(null)).toEqual({
             state: 'unknown',
+            code: 'backend_status_unavailable',
             message: 'Backend status is unavailable.',
             pid: null,
             owned: false,

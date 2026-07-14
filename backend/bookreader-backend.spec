@@ -8,9 +8,12 @@ hiddenimports = [
     "paths",
     "routers.annotations",
     "routers.books",
+    "routers.data_backup",
     "routers.fonts",
     "routers.library_folders",
     "services.annotation_store",
+    "services.annotation_export_service",
+    "services.backup_service",
     "services.library_store",
     "services.search_service",
     "services.txt_transform_service",
@@ -35,6 +38,13 @@ datas = []
 datas += collect_data_files("ebooklib")
 datas += collect_data_files("bs4")
 
+# Force UTF-8 mode during embedded interpreter pre-initialization. This is a
+# PyInstaller bootloader option (not an environment variable) and keeps the
+# one-file sidecar startable from Korean and other non-ASCII install paths.
+interpreter_options = [
+    ("X utf8", None, "OPTION"),
+]
+
 a = Analysis(
     ['run_server.py'],
     pathex=[],
@@ -55,7 +65,7 @@ exe = EXE(
     a.scripts,
     a.binaries,
     a.datas,
-    [],
+    interpreter_options,
     name='bookreader-backend',
     debug=False,
     bootloader_ignore_signals=False,

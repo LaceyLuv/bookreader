@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value))
@@ -30,6 +31,7 @@ function ReaderProgressBar({
     readerFocusRef = null,
     onVisibilityChange,
 }) {
+    const { keyboardShortcutsEnabled } = useKeyboardShortcuts()
     const hasTotalPages = Number.isFinite(totalPages) && totalPages > 0
     const canSeekPage = hasTotalPages && typeof onSeekPage === 'function'
     const canSeekProgress = typeof onSeekProgress === 'function'
@@ -44,7 +46,28 @@ function ReaderProgressBar({
     const [pageInput, setPageInput] = useState(String(currentPage))
     const [isEditingPage, setIsEditingPage] = useState(false)
     const skipPageCommitRef = useRef(false)
+    const pageInputRef = useRef(null)
     const [isCollapsed, setIsCollapsed] = useState(false)
+
+    useEffect(() => {
+        const handleProgressShortcut = (event) => {
+            if (!keyboardShortcutsEnabled || event.repeat || event.isComposing) return
+            const target = event.target
+            const isEditing = target instanceof HTMLElement
+                && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+            const isHKey = event.code === 'KeyH' || event.key?.toLowerCase() === 'h' || event.key === 'ㅗ'
+            if (!event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || !isHKey || isEditing) return
+
+            event.preventDefault()
+            const nextCollapsed = !isCollapsed
+            setIsCollapsed(nextCollapsed)
+            onVisibilityChange?.(!nextCollapsed)
+            restoreReaderFocus(readerFocusRef)
+        }
+
+        window.addEventListener('keydown', handleProgressShortcut)
+        return () => window.removeEventListener('keydown', handleProgressShortcut)
+    }, [isCollapsed, keyboardShortcutsEnabled, onVisibilityChange, readerFocusRef])
 
     useEffect(() => {
         if (!isDragging) setDraftProgress(normalizedProgress)
@@ -53,6 +76,12 @@ function ReaderProgressBar({
     useEffect(() => {
         if (!isEditingPage) setPageInput(String(currentPage))
     }, [currentPage, isEditingPage])
+
+    useEffect(() => {
+        if (!isEditingPage) return
+        pageInputRef.current?.focus()
+        pageInputRef.current?.select()
+    }, [isEditingPage])
 
     const markPointerInteraction = () => {
         pointerFocusGuardRef.current = true
@@ -102,6 +131,13 @@ function ReaderProgressBar({
         restoreReaderFocus(readerFocusRef)
     }
 
+    const cancelPageSeek = () => {
+        skipPageCommitRef.current = true
+        setPageInput(String(currentPage))
+        setIsEditingPage(false)
+        restoreReaderFocus(readerFocusRef)
+    }
+
     const handleRangeInput = (e) => {
         const raw = Number(e.target.value)
         if (!Number.isFinite(raw)) return
@@ -114,11 +150,12 @@ function ReaderProgressBar({
 
     if (isCollapsed) {
         return (
-            <div className="group relative shrink-0 h-3" style={{ borderTop: '1px solid var(--panel-border)' }}>
+            <div className="reader-progress-layer group h-3" style={{ borderTop: '1px solid var(--panel-border)' }}>
                 <button
                     type="button"
-                    title="Show progress bar"
+                    title={keyboardShortcutsEnabled ? 'Show progress bar (Ctrl+H)' : 'Show progress bar'}
                     aria-label="Show progress bar"
+                    aria-keyshortcuts={keyboardShortcutsEnabled ? 'Control+H' : undefined}
                     data-reader-progress-control="true"
                     onPointerDown={markPointerInteraction}
                     onFocus={handleControlFocus}
@@ -128,7 +165,7 @@ function ReaderProgressBar({
                         onVisibilityChange?.(true)
                         releaseControlFocus(event, readerFocusRef)
                     }}
-                    className="absolute left-1/2 bottom-0 z-10 h-5 w-10 -translate-x-1/2 rounded-t-md border border-b-0 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+                    className="reader-progress-expand absolute bottom-0 left-4 z-10 h-7 w-7 rounded-t-md border border-b-0 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
                     style={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--panel-border)', color: 'var(--reader-page-fg)' }}
                 >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" className="mx-auto">
@@ -140,11 +177,12 @@ function ReaderProgressBar({
     }
 
     return (
-        <div className="relative shrink-0 px-4 py-1" style={{ borderTop: '1px solid var(--panel-border)' }}>
+        <div className="reader-progress reader-progress-layer" style={{ borderTop: '1px solid var(--panel-border)' }}>
             <button
                 type="button"
-                title="Hide progress bar"
+                title={keyboardShortcutsEnabled ? 'Hide progress bar (Ctrl+H)' : 'Hide progress bar'}
                 aria-label="Hide progress bar"
+                aria-keyshortcuts={keyboardShortcutsEnabled ? 'Control+H' : undefined}
                 data-reader-progress-control="true"
                 onPointerDown={markPointerInteraction}
                 onFocus={handleControlFocus}
@@ -154,7 +192,7 @@ function ReaderProgressBar({
                     onVisibilityChange?.(false)
                     releaseControlFocus(event, readerFocusRef)
                 }}
-                className="absolute left-1/2 top-0 z-10 h-5 w-10 -translate-x-1/2 -translate-y-[55%] rounded-t-md border border-b-0"
+                className="reader-progress-collapse absolute left-4 top-1/2 z-10 h-7 w-7 -translate-y-1/2 rounded-md"
                 style={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--panel-border)', color: 'var(--reader-page-fg)' }}
             >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" className="mx-auto">
@@ -162,16 +200,60 @@ function ReaderProgressBar({
                 </svg>
             </button>
 
-            <div className="mx-auto w-full max-w-4xl rounded-lg border px-3 py-1.5 shadow-sm"
-                style={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--panel-border)' }}>
-                <div className="mb-1 flex items-center justify-between text-[10px] tabular-nums opacity-80">
-                    <span>{previewPage} / {maxPageText}</span>
-                    <span>{previewPercent}%</span>
+            <div className="reader-progress-inner" style={{ backgroundColor: 'var(--panel-bg)' }}>
+                <div className="reader-progress-summary tabular-nums">
+                    <span aria-hidden="true" />
+                    <div className="reader-progress-pages">
+                        {isEditingPage ? (
+                            <span className="reader-progress-page-editor">
+                                <input
+                                    ref={pageInputRef}
+                                    type="number"
+                                    min={1}
+                                    max={hasTotalPages ? totalPages : undefined}
+                                    aria-label="Page number"
+                                    data-reader-progress-control="true"
+                                    value={hasTotalPages ? pageInput : ''}
+                                    disabled={!canSeekPage}
+                                    placeholder="?"
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter') event.currentTarget.blur()
+                                        else if (event.key === 'Escape') {
+                                            event.preventDefault()
+                                            cancelPageSeek()
+                                        }
+                                    }}
+                                    onBlur={() => {
+                                        setIsEditingPage(false)
+                                        if (skipPageCommitRef.current) {
+                                            skipPageCommitRef.current = false
+                                            return
+                                        }
+                                        commitPageSeek()
+                                    }}
+                                    onChange={(event) => setPageInput(event.target.value)}
+                                />
+                                <span>/ {maxPageText}</span>
+                            </span>
+                        ) : (
+                            <button
+                                type="button"
+                                className="reader-progress-page-button"
+                                aria-label="Edit page number"
+                                disabled={!canSeekPage}
+                                onClick={() => setIsEditingPage(true)}
+                            >
+                                {previewPage} / {maxPageText}
+                            </button>
+                        )}
+                    </div>
+                    <span className="reader-progress-percent">{previewPercent}%</span>
                 </div>
 
                 <input
                     type="range" min={0} max={100}
                     data-reader-progress-control="true"
+                    disabled={!canSeekProgress}
                     value={Math.round(draftProgress * 100)}
                     onInput={handleRangeInput}
                     onChange={commitProgressSeek}
@@ -199,48 +281,10 @@ function ReaderProgressBar({
                         commitProgressSeek()
                         releaseControlFocus(event, readerFocusRef)
                     }}
-                    className="h-2 w-full cursor-pointer"
+                    className="reader-progress-range w-full cursor-pointer"
                     style={{ accentColor: 'var(--accent)' }}
                 />
 
-                <div className="mt-1.5 flex items-center justify-between">
-                    <div className="text-[10px] opacity-55 truncate pr-2">{extraInfo}</div>
-                    <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
-                        <input
-                            type="number" min={1} max={hasTotalPages ? totalPages : undefined}
-                            data-reader-progress-control="true"
-                            value={hasTotalPages ? pageInput : ''} disabled={!canSeekPage} placeholder="?"
-                            onPointerDown={markPointerInteraction}
-                            onFocus={() => setIsEditingPage(true)}
-                            onKeyDown={(e) => {
-                                handleControlKeyDown(e)
-                                if (e.defaultPrevented) return
-                                if (e.key === 'Enter') e.currentTarget.blur()
-                                else if (e.key === 'Escape') {
-                                    e.preventDefault(); skipPageCommitRef.current = true
-                                    setPageInput(String(currentPage)); setIsEditingPage(false); e.currentTarget.blur()
-                                    restoreReaderFocus(readerFocusRef)
-                                }
-                            }}
-                            onClick={() => {
-                                if (pointerFocusGuardRef.current) {
-                                    setIsEditingPage(false)
-                                    restoreReaderFocus(readerFocusRef)
-                                    releasePointerGuard()
-                                }
-                            }}
-                            onBlur={() => {
-                                setIsEditingPage(false)
-                                if (skipPageCommitRef.current) { skipPageCommitRef.current = false; return }
-                                commitPageSeek()
-                            }}
-                            onChange={(e) => setPageInput(e.target.value)}
-                            className="w-14 rounded-md border px-2 py-0.5 text-right leading-none outline-none disabled:opacity-40"
-                            style={{ borderColor: 'var(--panel-border)', backgroundColor: 'color-mix(in srgb, var(--panel-bg) 85%, transparent)', color: 'var(--reader-page-fg)' }}
-                        />
-                        <span className="opacity-55">/ {maxPageText}</span>
-                    </div>
-                </div>
             </div>
         </div>
     )

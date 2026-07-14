@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 const mockUseKeyboardNav = vi.fn()
 const mockUseReaderSettings = vi.fn()
 const mockUseReadingProgress = vi.fn()
+const mockAuthenticateAssetUrl = vi.fn((url) => url)
+
+vi.mock('../lib/apiBase', () => ({
+    API_BOOKS_BASE: '/api/books',
+    authenticateAssetUrl: (...args) => mockAuthenticateAssetUrl(...args),
+}))
 
 vi.mock('../hooks/useReaderSettings', () => ({
     useReaderSettings: (...args) => mockUseReaderSettings(...args),
@@ -47,6 +53,7 @@ function createSettings(overrides = {}) {
         hMargin: 20,
         vMargin: 20,
         zipImageScale: 1,
+        showZipBookmarkBar: true,
         tt: (key) => key,
         toggleTitleBar: vi.fn(),
         ...overrides,
@@ -62,9 +69,8 @@ function createProgress(overrides = {}) {
         addBookmark: vi.fn(),
         removeBookmark: vi.fn(),
         goToBookmark: setCurrentPosition,
-        resumePrompt: null,
-        resumeReading: vi.fn(),
-        dismissResume: vi.fn(),
+        restoredProgress: null,
+        startOver: vi.fn(),
         ...overrides,
     }
 }
@@ -80,6 +86,8 @@ function renderReader() {
 }
 
 beforeEach(() => {
+    mockAuthenticateAssetUrl.mockReset()
+    mockAuthenticateAssetUrl.mockImplementation((url) => url)
     mockUseKeyboardNav.mockReturnValue(undefined)
     mockUseReaderSettings.mockImplementation(() => createSettings())
     mockUseReadingProgress.mockImplementation((_bookId, _options) => createProgress())
@@ -94,26 +102,153 @@ beforeEach(() => {
     }))
 })
 
+test('routes ZIP image sources through desktop asset authentication', async () => {
+    mockAuthenticateAssetUrl.mockImplementation((url) => `${url}?asset_token=desktop-secret`)
+    renderReader()
+
+    const image = await screen.findByAltText('page 1')
+    expect(mockAuthenticateAssetUrl).toHaveBeenCalledWith('/api/books/zip-1/image/1.jpg')
+    expect(image.getAttribute('src')).toBe('/api/books/zip-1/image/1.jpg?asset_token=desktop-secret')
+})
+
 test('dual ZIP view shows only the final odd page after seeking to the last image', async () => {
     mockUseReaderSettings.mockImplementation(() => createSettings({ layout: 'dual' }))
     renderReader()
 
-    await screen.findByAltText('Page 1')
+    await screen.findByAltText('page 1')
     fireEvent.click(screen.getByRole('button', { name: 'seek-last-page' }))
 
     await waitFor(() => {
-        expect(screen.getByAltText('Page 3')).toBeTruthy()
+        expect(screen.getByAltText('page 3')).toBeTruthy()
     })
-    expect(screen.queryByAltText('Page 4')).toBeNull()
+    expect(screen.queryByAltText('page 4')).toBeNull()
     expect(screen.getByTestId('progress-extra').textContent).toBe('ZIP  3/3')
+})
+
+test('disables page keyboard navigation while reader settings are open', async () => {
+    mockUseReaderSettings.mockImplementation(() => createSettings({ settingsOpen: true }))
+    renderReader()
+
+    await screen.findByAltText('page 1')
+    expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ enabled: false }))
+})
+
+test('hides only the ZIP bookmark strip when the display preference is off', async () => {
+    mockUseReaderSettings.mockImplementation(() => createSettings({ showZipBookmarkBar: false }))
+    mockUseReadingProgress.mockImplementation(() => createProgress({
+        bookmarks: [{ id: 'bookmark-2', position: 1, locator: { kind: 'zip', memberName: '2.jpg', page: 1 } }],
+    }))
+
+    renderReader()
+
+    expect(await screen.findByAltText('page 1')).toBeTruthy()
+    expect(screen.queryByRole('option', { name: 'Page 2' })).toBeNull()
+    expect(screen.getByTestId('progress-current-page').textContent).toBe('1')
+})
+
+test('shows the bookmark navigator when the ZIP bookmark-bar preference is on', async () => {
+    mockUseReadingProgress.mockImplementation(() => createProgress({
+        bookmarks: [{ id: 'bookmark-2', position: 1, locator: { kind: 'zip', memberName: '2.jpg', page: 1 } }],
+    }))
+
+    renderReader()
+
+    expect(await screen.findByRole('option', { name: 'Page 2' })).toBeTruthy()
+})
+
+test('opens the bookmark panel and adds the current ZIP page from the panel action', async () => {
+    const addBookmark = vi.fn()
+    mockUseReadingProgress.mockImplementation(() => createProgress({ addBookmark }))
+    renderReader()
+
+    await screen.findByAltText('page 1')
+    fireEvent.click(screen.getByRole('button', { name: 'Open bookmarks' }))
+    const panel = screen.getByRole('complementary', { name: 'Bookmarks' })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Add bookmark' }))
+
+    expect(addBookmark).toHaveBeenCalledTimes(1)
+    expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ enabled: false }))
 })
 
 test('ZIP image load failures show a per-page error without removing the reader', async () => {
     renderReader()
 
-    const image = await screen.findByAltText('Page 1')
+    const image = await screen.findByAltText('page 1')
     fireEvent.error(image)
 
     expect(screen.getByText('imageLoadFailed')).toBeTruthy()
     expect(screen.getByTestId('reader-progress-bar')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'retryImage' }))
+    const retriedImage = await screen.findByAltText('page 1')
+    expect(retriedImage.getAttribute('src')).toContain('?retry=1')
+})
+
+test('automatically shows the restored ZIP image', async () => {
+    mockUseReadingProgress.mockImplementation(() => createProgress({
+        currentPosition: 1,
+        restoredProgress: {
+            position: 1,
+            locator: { kind: 'zip', memberName: '2.jpg', page: 1 },
+            updatedAt: '2026-07-12T00:00:00.000Z',
+        },
+    }))
+
+    renderReader()
+
+    expect(await screen.findByAltText('page 2')).toBeTruthy()
+    expect(screen.getByTestId('progress-extra').textContent).toBe('ZIP  2/3')
+})
+
+test('ZIP listing errors are distinct from an empty archive and can be retried', async () => {
+    global.fetch
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+            detail: {
+                code: 'zip.invalid_archive',
+                message: 'Damaged ZIP archive',
+                severity: 'error',
+                stage: 'archive',
+                retryable: false,
+                recovery: 'choose_another_file',
+                context: {},
+            },
+        }), { status: 422, headers: { 'Content-Type': 'application/json' } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ images: ['1.jpg'], total: 1 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }))
+
+    renderReader()
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Damaged ZIP archive')
+    expect(screen.queryByText('noImagesFound')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'retry' }))
+
+    expect(await screen.findByAltText('page 1')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+})
+
+test('a successful empty ZIP keeps the separate no-images state', async () => {
+    global.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ images: [], total: 0 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+    }))
+
+    renderReader()
+
+    expect(await screen.findByText('noImagesFound')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+})
+
+test('shows skipped ZIP entries as a non-blocking safety warning', async () => {
+    global.fetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        images: ['1.jpg'],
+        total: 1,
+        diagnostics: [{ code: 'unsafe_member', severity: 'warning' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    renderReader()
+
+    expect((await screen.findByText(/archiveEntriesSkipped/)).textContent).toContain('unsafe_member')
+    expect(await screen.findByAltText('page 1')).toBeTruthy()
 })

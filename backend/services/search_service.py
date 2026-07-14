@@ -1,4 +1,5 @@
 import re
+import time
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -6,14 +7,14 @@ from threading import Lock
 from bs4 import BeautifulSoup
 
 from services.epub_service import _decode_text_bytes, _get_spine_items, _read_epub_cached
-from services.txt_service import read_txt_file, read_txt_manifest
+from services.txt_service import TXT_WINDOW_MAX_CHARS, read_txt_file, read_txt_segment_window
 
 RESULT_LIMIT = 100
 SNIPPET_RADIUS = 72
 WHITESPACE_RE = re.compile(r'\s+')
 HEADING_TAGS = ["h1", "h2", "h3", "h4", "title"]
 _PREWARM_LOCK = Lock()
-_INFLIGHT_PREWARMS: set[tuple[str, str, int, int]] = set()
+_INFLIGHT_PREWARMS: set[tuple[str, str, int, int, str]] = set()
 
 
 def clear_search_caches() -> None:
@@ -42,16 +43,41 @@ def _resolve_cache_key(file_path: str) -> tuple[str, int, int]:
     return str(resolved), stat.st_size, stat.st_mtime_ns
 
 
-def _iter_match_spans(lower_text: str, lower_query: str):
-    start = 0
-    query_length = len(lower_query)
-    while True:
-        match_at = lower_text.find(lower_query, start)
-        if match_at < 0:
-            break
-        end = match_at + query_length
-        yield match_at, end
-        start = end
+def _iter_match_spans(text: str, query: str):
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    for match in pattern.finditer(text):
+        yield match.span()
+
+
+def _stop_reason(cancel_event, deadline: float | None) -> str | None:
+    if cancel_event is not None and cancel_event.is_set():
+        return 'cancelled'
+    if deadline is not None and time.monotonic() >= deadline:
+        return 'timeout'
+    return None
+
+
+def _search_response(
+    query: str,
+    total: int,
+    results: list[dict],
+    *,
+    complete: bool = True,
+    partial_reason: str | None = None,
+    results_truncated: bool = False,
+    scanned_units: int = 0,
+    total_units: int | None = None,
+) -> dict:
+    return {
+        'query': query,
+        'total': total,
+        'results': results,
+        'complete': complete,
+        'partial_reason': partial_reason,
+        'results_truncated': results_truncated,
+        'scanned_units': scanned_units,
+        'total_units': total_units,
+    }
 
 
 def _get_fragment_text(fragment: dict) -> str:
@@ -121,8 +147,8 @@ def _get_segment_start_offsets(manifest: dict, search_fragments: list[dict]) -> 
 
 
 @lru_cache(maxsize=24)
-def _get_txt_search_source(file_path: str, size: int, mtime_ns: int) -> tuple[str, str]:
-    payload = read_txt_file(file_path)
+def _get_txt_search_source(file_path: str, size: int, mtime_ns: int, encoding_override: str | None = None) -> tuple[str, str]:
+    payload = read_txt_file(file_path, encoding_override)
     text = payload.get('text', '')
     return text, text.lower()
 
@@ -143,7 +169,7 @@ def _get_epub_search_source(file_path: str, size: int, mtime_ns: int) -> tuple[t
     return tuple(chapters)
 
 
-def prewarm_search_cache(file_path: str, file_type: str) -> None:
+def prewarm_search_cache(file_path: str, file_type: str, encoding_override: str | None = None) -> None:
     if file_type not in {'txt', 'epub'}:
         return
 
@@ -152,7 +178,8 @@ def prewarm_search_cache(file_path: str, file_type: str) -> None:
     except OSError:
         return
 
-    inflight_key = (file_type, *cache_key)
+    encoding_key = encoding_override or "auto"
+    inflight_key = (file_type, *cache_key, encoding_key)
     with _PREWARM_LOCK:
         if inflight_key in _INFLIGHT_PREWARMS:
             return
@@ -160,7 +187,7 @@ def prewarm_search_cache(file_path: str, file_type: str) -> None:
 
     try:
         if file_type == 'txt':
-            _get_txt_search_source(*cache_key)
+            _get_txt_search_source(*cache_key, encoding_override)
         else:
             _get_epub_search_source(*cache_key)
     finally:
@@ -168,94 +195,206 @@ def prewarm_search_cache(file_path: str, file_type: str) -> None:
             _INFLIGHT_PREWARMS.discard(inflight_key)
 
 
-def search_txt_file(file_path: str, query: str, limit: int = RESULT_LIMIT, transform_options: dict | None = None) -> dict:
+def search_txt_file(
+    file_path: str,
+    query: str,
+    limit: int = RESULT_LIMIT,
+    transform_options: dict | None = None,
+    *,
+    cancel_event=None,
+    timeout_seconds: float | None = None,
+    encoding_override: str | None = None,
+) -> dict:
     trimmed_query = (query or '').strip()
     if not trimmed_query:
-        return {'query': '', 'total': 0, 'results': []}
+        return _search_response('', 0, [])
 
-    manifest = read_txt_manifest(file_path, transform_options=transform_options)
-    lower_query = trimmed_query.lower()
-    search_fragments = manifest.get('display_fragments') or manifest.get('segments') or []
-    segment_start_offsets = _get_segment_start_offsets(manifest, search_fragments)
-
-    results = []
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    safe_limit = max(1, min(int(limit), RESULT_LIMIT))
+    results: list[dict] = []
     total = 0
-    for fragment in search_fragments:
-        text = _get_fragment_text(fragment)
-        if not text:
-            continue
+    total_units: int | None = None
+    scanned_units = 0
+    start_index = 0
+    cursor = None
+    segment_starts: dict[int, int] = {}
+    tail_text = ''
+    tail_offsets: list[int | None] = []
+    tail_segment_id = None
+    tail_source_end = None
+    carry_length = max(0, len(trimmed_query) - 1)
+    allow_cross_fragment_matches = not any((transform_options or {}).values())
 
-        lower_text = text.lower()
-        segment_id = fragment.get('segment_id')
-        absolute_segment_start = segment_start_offsets.get(segment_id) if isinstance(segment_id, int) else None
-
-        for start, end in _iter_match_spans(lower_text, lower_query):
-            absolute_start = _get_source_offset_for_display_index(fragment, start)
-            absolute_end_char = _get_source_offset_for_display_index(fragment, end - 1)
-
-            total += 1
-            if len(results) >= limit:
+    while True:
+        reason = _stop_reason(cancel_event, deadline)
+        if reason:
+            return _search_response(
+                trimmed_query, total, results, complete=False, partial_reason=reason,
+                scanned_units=scanned_units, total_units=total_units,
+            )
+        window_kwargs = {
+            'start': start_index,
+            'limit': 120,
+            'cursor': cursor,
+            'max_chars': TXT_WINDOW_MAX_CHARS,
+            'transform_options': transform_options,
+        }
+        if encoding_override is not None:
+            window_kwargs['encoding_override'] = encoding_override
+        window = read_txt_segment_window(file_path, **window_kwargs)
+        total_units = window.get('total') if isinstance(window.get('total'), int) else total_units
+        fragments = window.get('display_fragments') or []
+        for fragment in fragments:
+            reason = _stop_reason(cancel_event, deadline)
+            if reason:
+                return _search_response(
+                    trimmed_query, total, results, complete=False, partial_reason=reason,
+                    scanned_units=scanned_units, total_units=total_units,
+                )
+            text = _get_fragment_text(fragment)
+            segment_id = fragment.get('segment_id')
+            if not text or not isinstance(segment_id, int):
                 continue
-
-            segment_local_start = (
-                absolute_start - absolute_segment_start
-                if absolute_start is not None and absolute_segment_start is not None
-                else None
+            source_start = _get_fragment_source_start(fragment)
+            if source_start is not None:
+                segment_starts.setdefault(segment_id, source_start)
+            fragment_source_start = _get_fragment_source_start(fragment)
+            is_contiguous_plain_text = (
+                allow_cross_fragment_matches
+                and isinstance(fragment_source_start, int)
+                and isinstance(tail_source_end, int)
+                and fragment_source_start == tail_source_end
             )
-            segment_local_end = (
-                absolute_end_char + 1 - absolute_segment_start
-                if absolute_end_char is not None and absolute_segment_start is not None
-                else None
-            )
+            if (tail_segment_id != segment_id and not is_contiguous_plain_text) or not allow_cross_fragment_matches:
+                tail_text = ''
+                tail_offsets = []
+            combined = tail_text + text
+            tail_length = len(tail_text)
 
-            results.append({
-                'index': total - 1,
-                'snippet': _build_snippet(text, start, end),
-                'position': absolute_start,
-                'locator': f"segment:{segment_id}:offset:{segment_local_start}" if isinstance(segment_id, int) and isinstance(segment_local_start, int) else None,
-                'segment_id': segment_id,
-                'segment_local_start': segment_local_start,
-                'segment_local_end': segment_local_end,
-                'chapter_match_index': total - 1,
-            })
+            def source_offset(combined_index: int) -> int | None:
+                if combined_index < tail_length:
+                    return tail_offsets[combined_index]
+                return _get_source_offset_for_display_index(fragment, combined_index - tail_length)
 
-    return {
-        'query': trimmed_query,
-        'total': total,
-        'results': results,
-    }
-
-
-def search_epub_file(file_path: str, query: str, limit: int = RESULT_LIMIT) -> dict:
-    trimmed_query = (query or '').strip()
-    if not trimmed_query:
-        return {'query': '', 'total': 0, 'results': []}
-
-    cache_key = _resolve_cache_key(file_path)
-    chapters = _get_epub_search_source(*cache_key)
-    lower_query = trimmed_query.lower()
-
-    results = []
-    total = 0
-
-    for chapter_index, (chapter_title, chapter_text, lower_text) in enumerate(chapters):
-        chapter_match_index = 0
-        for start, end in _iter_match_spans(lower_text, lower_query):
-            total += 1
-            if len(results) < limit:
+            for match_start, match_end in _iter_match_spans(combined, trimmed_query):
+                if match_end <= tail_length:
+                    continue
+                reason = _stop_reason(cancel_event, deadline)
+                if reason:
+                    return _search_response(
+                        trimmed_query, total, results, complete=False, partial_reason=reason,
+                        scanned_units=scanned_units, total_units=total_units,
+                    )
+                absolute_start = source_offset(match_start)
+                absolute_end_char = source_offset(match_end - 1)
+                absolute_segment_start = segment_starts.get(segment_id)
+                segment_local_start = (
+                    absolute_start - absolute_segment_start
+                    if absolute_start is not None and absolute_segment_start is not None
+                    else None
+                )
+                segment_local_end = (
+                    absolute_end_char + 1 - absolute_segment_start
+                    if absolute_end_char is not None and absolute_segment_start is not None
+                    else None
+                )
+                total += 1
+                if len(results) >= safe_limit:
+                    return _search_response(
+                        trimmed_query, total, results, complete=False, results_truncated=True,
+                        scanned_units=scanned_units, total_units=total_units,
+                    )
                 results.append({
                     'index': total - 1,
-                    'snippet': _build_snippet(chapter_text, start, end),
-                    'position': start,
-                    'locator': f'chapter:{chapter_index}:offset:{start}',
-                    'chapter_index': chapter_index,
-                    'chapter_title': chapter_title,
-                    'chapter_match_index': chapter_match_index,
+                    'snippet': _build_snippet(combined, match_start, match_end),
+                    'position': absolute_start,
+                    'locator': f"segment:{segment_id}:offset:{segment_local_start}" if isinstance(segment_local_start, int) else None,
+                    'segment_id': segment_id,
+                    'segment_local_start': segment_local_start,
+                    'segment_local_end': segment_local_end,
+                    'chapter_match_index': total - 1,
                 })
-            chapter_match_index += 1
+            if carry_length:
+                tail_start = max(0, len(combined) - carry_length)
+                tail_text = combined[tail_start:]
+                tail_offsets = [source_offset(index) for index in range(tail_start, len(combined))]
+            else:
+                tail_text = ''
+                tail_offsets = []
+            tail_segment_id = segment_id
+            tail_source_end = _get_fragment_source_end(fragment)
+            scanned_units = max(scanned_units, int(fragment.get('fragment_index') or segment_id) + 1)
 
-    return {
-        'query': trimmed_query,
-        'total': total,
-        'results': results,
-    }
+        next_cursor = window.get('next_cursor')
+        if not next_cursor:
+            break
+        next_fragment, next_offset = (int(value) for value in str(next_cursor).split(':', 1))
+        start_index = next_fragment
+        cursor = next_cursor if next_offset else None
+
+    return _search_response(
+        trimmed_query, total, results, scanned_units=scanned_units, total_units=total_units,
+    )
+
+
+def search_epub_file(
+    file_path: str,
+    query: str,
+    limit: int = RESULT_LIMIT,
+    *,
+    cancel_event=None,
+    timeout_seconds: float | None = None,
+) -> dict:
+    trimmed_query = (query or '').strip()
+    if not trimmed_query:
+        return _search_response('', 0, [])
+
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    book = _read_epub_cached(file_path)
+    chapters = _get_spine_items(book)
+    safe_limit = max(1, min(int(limit), RESULT_LIMIT))
+    results: list[dict] = []
+    total = 0
+    scanned_units = 0
+
+    for chapter_index, item in enumerate(chapters):
+        reason = _stop_reason(cancel_event, deadline)
+        if reason:
+            return _search_response(
+                trimmed_query, total, results, complete=False, partial_reason=reason,
+                scanned_units=scanned_units, total_units=len(chapters),
+            )
+        html_content = _decode_text_bytes(item.get_content())
+        soup = BeautifulSoup(html_content, 'html.parser')
+        heading = soup.find(HEADING_TAGS)
+        chapter_title = heading.get_text(strip=True) if heading else f'Chapter {chapter_index + 1}'
+        chapter_text = _compact_text(soup.get_text(' ', strip=True))
+        chapter_match_index = 0
+        for start, end in _iter_match_spans(chapter_text, trimmed_query):
+            reason = _stop_reason(cancel_event, deadline)
+            if reason:
+                return _search_response(
+                    trimmed_query, total, results, complete=False, partial_reason=reason,
+                    scanned_units=scanned_units, total_units=len(chapters),
+                )
+            total += 1
+            if len(results) >= safe_limit:
+                return _search_response(
+                    trimmed_query, total, results, complete=False, results_truncated=True,
+                    scanned_units=scanned_units, total_units=len(chapters),
+                )
+            results.append({
+                'index': total - 1,
+                'snippet': _build_snippet(chapter_text, start, end),
+                'position': start,
+                'locator': f'chapter:{chapter_index}:offset:{start}',
+                'chapter_index': chapter_index,
+                'chapter_title': chapter_title,
+                'chapter_match_index': chapter_match_index,
+            })
+            chapter_match_index += 1
+        scanned_units = chapter_index + 1
+
+    return _search_response(
+        trimmed_query, total, results, scanned_units=scanned_units, total_units=len(chapters),
+    )

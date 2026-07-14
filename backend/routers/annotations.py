@@ -1,8 +1,16 @@
-from typing import List
+from typing import List, Literal
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 
 from models import Annotation, AnnotationCreate, AnnotationUpdate
+from services.annotation_export_service import (
+    annotation_export_disposition,
+    annotation_export_filename,
+    build_annotation_export,
+    render_annotation_json,
+    render_annotation_markdown,
+)
 from services.annotation_store import create_annotation, delete_annotation, list_book_annotations, update_annotation
 from services.library_store import get_book_record
 
@@ -18,6 +26,32 @@ def _ensure_book_exists(book_id: str) -> None:
 async def get_book_annotations(book_id: str):
     _ensure_book_exists(book_id)
     return [Annotation(**record) for record in list_book_annotations(book_id)]
+
+
+@router.get("/books/{book_id}/annotations/export")
+def export_book_annotations(book_id: str, format: Literal["json", "markdown"]):
+    book = get_book_record(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    export = build_annotation_export(book, list_book_annotations(book_id))
+    if format == "json":
+        content = render_annotation_json(export)
+        media_type = "application/json"
+    else:
+        content = render_annotation_markdown(export)
+        media_type = "text/markdown"
+
+    filename = annotation_export_filename(book, format, export.get("exported_at"))
+    return Response(
+        content=content.encode("utf-8"),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": annotation_export_disposition(filename, book_id),
+            "Cache-Control": "no-store, max-age=0",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/books/{book_id}/annotations", response_model=Annotation)

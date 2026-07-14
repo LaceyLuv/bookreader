@@ -1,5 +1,7 @@
 # Desktop Build Guide (Windows)
 
+Last updated: 2026-07-14
+
 This document describes how to run and build the Tauri desktop app, how the Python sidecar is produced, where outputs are written, and what to check after install.
 
 ## 1) Run desktop:dev
@@ -26,11 +28,14 @@ npm run desktop:info
 npm run desktop:build
 ```
 
+`desktop:build` is an unsigned developer build. Do not publish it. Public builds must use `npm run desktop:release:signed` and satisfy [windows-release.md](windows-release.md).
+
 Build pipeline:
 - `beforeBuildCommand`: `npm run desktop:sidecar && npm run build:desktop`
 - Rust release build
 - Sidecar generation runs inside `beforeBuildCommand` via `npm run desktop:sidecar`
 - NSIS installer bundling
+- `scripts/package-shortcut-guide.mjs` copies the bundled shortcut guide beside the installer with the application version in its filename
 
 ## 3) Sidecar build flow
 
@@ -45,7 +50,9 @@ Build pipeline:
 
 Runtime data:
 - Source/dev runs use `backend/books`, `backend/fonts`, `backend/library.json`, and `backend/annotations.json`.
-- Packaged/frozen runs use the platform app data directory, or `BOOKREADER_DATA_DIR` when that environment variable is set.
+- Tauri packaged runs explicitly pass `app_local_data_dir()` as `BOOKREADER_DATA_DIR`; mutable data never belongs beside installed binaries.
+- Standalone sidecar smokes must always set an isolated `BOOKREADER_DATA_DIR`.
+- Existing `%LOCALAPPDATA%\BookReader` data is allowlist-copied through a resumable, source-preserving one-time migration with a per-file SHA-256 journal. A destination containing only the backend's exact empty default stores is safely cleared before migration; real conflicting data or invalid journals fail closed.
 - Local `books/` and `fonts/` folders are not bundled into the sidecar.
 
 ## 4) Where to find build outputs
@@ -67,8 +74,11 @@ and read the `host:` value.
 Outputs:
 - Frontend dist: `frontend/dist/`
 - Sidecar exe: `frontend/src-tauri/binaries/bookreader-backend-<triple>.exe`
-- Desktop app exe: `frontend/src-tauri/target/release/bookreader_desktop.exe`
+- Desktop app exe: `frontend/src-tauri/target/release/Gyeol.exe`
 - NSIS installer: `frontend/src-tauri/target/release/bundle/nsis/*-setup.exe`
+- Separately distributed shortcut guide: `frontend/src-tauri/target/release/bundle/nsis/글결_<version>_단축키_안내.txt`
+
+The canonical UTF-8 guide is `frontend/src-tauri/resources/글결_단축키_안내.txt`. Tauri includes that file in the installed application resources, while the packaging script makes an exact versioned copy beside the NSIS installer. Edit only the canonical file; never maintain the release copy by hand.
 
 Example:
 
@@ -83,9 +93,11 @@ Get-ChildItem C:\dev\bookreader\frontend\src-tauri\target\release\bundle\nsis
 3. Upload/open a TXT file.
 4. Upload/open an EPUB file and navigate TOC/chapters.
 5. Upload/open a ZIP comic and navigate images.
-6. While app is running, verify backend health:
-- `http://127.0.0.1:8000/api/health`
-7. Close app and verify sidecar process is terminated.
+6. Confirm the UI does not show a backend diagnostic and can list/open books.
+7. Confirm the versioned shortcut guide exists beside the installer and opens as Korean UTF-8 text.
+8. Close app and verify sidecar process is terminated.
+
+Packaged builds use a random loopback port and a per-launch nonce. Port `8000` is debug-only; do not expose or log the release nonce just to probe the installed app. Build the desktop first, then use `npm run desktop:migration-fixtures` and `npm run desktop:fault-smoke` for authenticated, migration, and forced-exit checks.
 
 The Windows sidecar is a PyInstaller onefile process tree. Desktop exit cleanup must terminate the launched sidecar and its worker process; checking only the direct child can miss a leftover backend.
 
@@ -136,7 +148,7 @@ Fix:
 
 ```powershell
 cd C:\dev\bookreader\frontend
-npm run tauri -- icon app-icon.svg
+npm run tauri -- icon src-tauri/icons/gyeol-icon-master.png
 ```
 
 ### D) Sidecar missing/copy failure
@@ -158,3 +170,7 @@ Symptom example:
 
 Fix:
 - Guard dev-only code with `#[cfg(debug_assertions)]` so release build does not compile that code path.
+
+### F) Windows signing or updater readiness fails
+
+Run `npm run desktop:release:check`, then follow `docs/windows-release.md`. Never bypass failed signature, timestamp, migration, or rollback checks with `--no-sign` for a public artifact.

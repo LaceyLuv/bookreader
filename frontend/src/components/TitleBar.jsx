@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react'
-import { IS_TAURI_RUNTIME } from '../lib/apiBase'
 import { TITLE_BAR_HEIGHT } from '../lib/appChrome'
+import gyeolIcon from '../assets/brand/gyeol-icon.png'
 
 export default function TitleBar({ visible = true }) {
     if (!visible) return null
@@ -15,8 +14,9 @@ export default function TitleBar({ visible = true }) {
                 borderBottom: '1px solid var(--panel-border)',
             }}
         >
-            <div className="flex h-full flex-1 select-none items-center px-2 text-xs opacity-70">
-                BookReader
+            <div className="flex h-full flex-1 select-none items-center gap-2 px-2 text-xs opacity-80">
+                <img src={gyeolIcon} alt="" aria-hidden="true" className="h-4 w-4 rounded-[4px]" />
+                <span>글결</span>
             </div>
         </div>
     )

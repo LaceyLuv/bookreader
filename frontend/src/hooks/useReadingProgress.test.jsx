@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { removeBookProgress, useReadingProgress } from './useReadingProgress'
+import { clearLocalBookProgress, pruneLocalBookProgress, removeBookProgress, useReadingProgress } from './useReadingProgress'
 
 beforeEach(() => {
     localStorage.clear()
@@ -58,8 +58,231 @@ test('prefers newer backend progress then dual-writes locator and bookmarks', as
 
     const put = requests.find((options) => options.method === 'PUT')
     const written = JSON.parse(put.body)
-    expect(written.locator).toEqual({ version: 1, ...locator })
-    expect(written.bookmarks.at(-1).locator).toEqual({ version: 1, ...locator })
+    expect(written.locator).toEqual({ ...locator, version: 2 })
+    expect(written.bookmarks.at(-1).locator).toEqual({ ...locator, version: 2 })
+})
+
+test('restores a meaningful EPUB locator inside chapter zero', async () => {
+    const savedLocator = {
+        version: 1,
+        kind: 'epub',
+        chapterHref: 'chapter-1.xhtml',
+        chapterIndex: 0,
+        chapterPage: 3,
+    }
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        'epub-1': {
+            position: 0,
+            totalPages: 5,
+            type: 'epub',
+            bookmarks: [],
+            locator: savedLocator,
+        },
+    }))
+
+    const { result } = renderHook(() => useReadingProgress('epub-1', {
+        totalPages: 5,
+        type: 'epub',
+        locatorToPosition: () => 0,
+    }))
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.restoredProgress).toMatchObject({ position: 0, locator: savedLocator })
+})
+
+test('keeps two bookmarks on different pages of the same EPUB chapter', async () => {
+    const { result, rerender } = renderHook(
+        ({ chapterPage }) => useReadingProgress('epub-1', {
+            totalPages: 4,
+            type: 'epub',
+            locator: { kind: 'epub', chapterHref: 'chapter-1.xhtml', chapterIndex: 0, chapterPage },
+        }),
+        { initialProps: { chapterPage: 1 } },
+    )
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    act(() => result.current.addBookmark())
+    rerender({ chapterPage: 2 })
+    act(() => result.current.addBookmark())
+
+    expect(result.current.bookmarks).toHaveLength(2)
+    expect(result.current.bookmarks.map((bookmark) => bookmark.locator.chapterPage)).toEqual([1, 2])
+    expect(result.current.bookmarks.every((bookmark) => bookmark.locator.version === 2)).toBe(true)
+})
+
+test('captures, edits, and rehydrates bookmark card metadata', async () => {
+    const options = {
+        totalPages: 5,
+        type: 'txt',
+        locator: { kind: 'txt', page: 2 },
+        bookmarkSnapshot: {
+            label: 'Page 3',
+            excerpt: '  A saved passage from the current page.  ',
+            tag: 'Thought',
+            color: '#22c55e',
+        },
+    }
+    const { result, unmount } = renderHook(() => useReadingProgress('txt-1', options))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    act(() => result.current.setCurrentPosition(2))
+    act(() => result.current.addBookmark())
+
+    expect(result.current.bookmarks[0]).toMatchObject({
+        position: 2,
+        label: 'Page 3',
+        excerpt: 'A saved passage from the current page.',
+        note: '',
+        tag: 'Thought',
+        color: '#22c55e',
+        important: false,
+    })
+    expect(result.current.isCurrentPageBookmarked).toBe(true)
+
+    const saved = result.current.bookmarks[0]
+    act(() => result.current.updateBookmark(saved, {
+        note: 'Review this argument',
+        important: true,
+    }))
+
+    expect(result.current.bookmarks[0]).toMatchObject({
+        note: 'Review this argument',
+        important: true,
+    })
+    expect(result.current.bookmarks[0].updatedAt).toBeTruthy()
+
+    act(() => vi.advanceTimersByTime(200))
+    unmount()
+    const restored = renderHook(() => useReadingProgress('txt-1', options))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(restored.result.current.bookmarks[0]).toMatchObject({
+        excerpt: 'A saved passage from the current page.',
+        note: 'Review this argument',
+        tag: 'Thought',
+        color: '#22c55e',
+        important: true,
+    })
+    restored.unmount()
+})
+
+test('allows distinct excerpts at the same locator while rejecting an exact duplicate', async () => {
+    const locator = { kind: 'txt', page: 0 }
+    const { result, rerender } = renderHook(
+        ({ excerpt }) => useReadingProgress('txt-1', {
+            totalPages: 2,
+            type: 'txt',
+            locator,
+            bookmarkSnapshot: { excerpt },
+        }),
+        { initialProps: { excerpt: 'First passage' } },
+    )
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    act(() => result.current.addBookmark())
+    act(() => result.current.addBookmark())
+    expect(result.current.bookmarks).toHaveLength(1)
+
+    rerender({ excerpt: 'Second passage' })
+    act(() => result.current.addBookmark())
+    expect(result.current.bookmarks.map((bookmark) => bookmark.excerpt)).toEqual([
+        'First passage',
+        'Second passage',
+    ])
+    expect(new Set(result.current.bookmarks.map((bookmark) => bookmark.id)).size).toBe(2)
+
+    const second = result.current.bookmarks[1]
+    act(() => result.current.updateBookmark(second, { note: 'Only the second bookmark' }))
+    expect(result.current.bookmarks.map((bookmark) => bookmark.note)).toEqual([
+        '',
+        'Only the second bookmark',
+    ])
+})
+
+test('treats reordered and versioned locators at the same durable position as duplicates', async () => {
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        'epub-1': {
+            position: 0,
+            totalPages: 2,
+            type: 'epub',
+            bookmarks: [{
+                id: 'legacy-bookmark',
+                position: 0,
+                excerpt: 'Same passage',
+                locator: { chapterPage: 1, chapterIndex: 0, kind: 'epub', version: 1 },
+            }],
+        },
+    }))
+    const { result } = renderHook(() => useReadingProgress('epub-1', {
+        totalPages: 2,
+        type: 'epub',
+        locator: { version: 2, kind: 'epub', chapterIndex: 0, chapterPage: 1 },
+        bookmarkSnapshot: { excerpt: 'Same passage' },
+    }))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    act(() => result.current.addBookmark())
+
+    expect(result.current.bookmarks).toHaveLength(1)
+    expect(result.current.bookmarks[0].id).toBe('legacy-bookmark')
+})
+
+test('uses the EPUB text anchor instead of a repaginated chapter page for duplicate detection', async () => {
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        'epub-1': {
+            position: 0,
+            totalPages: 1,
+            type: 'epub',
+            bookmarks: [{
+                id: 'anchored-bookmark',
+                position: 0,
+                excerpt: 'Anchored passage',
+                locator: { kind: 'epub', chapterIndex: 0, chapterPage: 4, textOffset: 240 },
+            }],
+        },
+    }))
+    const { result } = renderHook(() => useReadingProgress('epub-1', {
+        totalPages: 1,
+        type: 'epub',
+        locator: { kind: 'epub', chapterIndex: 0, chapterPage: 2, textOffset: 240 },
+        bookmarkSnapshot: { excerpt: 'Anchored passage' },
+    }))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    act(() => result.current.addBookmark())
+
+    expect(result.current.bookmarks).toHaveLength(1)
+})
+
+test('does not let delayed remote hydration overwrite a local bookmark mutation', async () => {
+    let resolveRemote
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((resolve) => { resolveRemote = resolve })))
+    const { result } = renderHook(() => useReadingProgress('txt-1', {
+        totalPages: 2,
+        type: 'txt',
+        locator: { kind: 'txt', page: 0 },
+        bookmarkSnapshot: { excerpt: 'Local passage' },
+    }))
+    await act(async () => { await Promise.resolve() })
+
+    act(() => result.current.addBookmark())
+    await act(async () => {
+        resolveRemote({
+            status: 200,
+            ok: true,
+            json: async () => ({
+                position: 1,
+                totalPages: 2,
+                type: 'txt',
+                bookmarks: [],
+                updatedAt: '2099-01-01T00:00:00.000Z',
+            }),
+        })
+        await Promise.resolve()
+        await Promise.resolve()
+    })
+
+    expect(result.current.bookmarks).toHaveLength(1)
+    expect(result.current.bookmarks[0].excerpt).toBe('Local passage')
 })
 
 test('restored progress is clamped when pagination shrinks after layout changes', async () => {
@@ -76,14 +299,8 @@ test('restored progress is clamped when pagination shrinks after layout changes'
     const { result } = renderHook(() => useReadingProgress('txt-1', { totalPages: 5, type: 'txt' }))
     await act(async () => { await Promise.resolve() })
 
-    expect(result.current.resumePrompt.position).toBe(4)
-
-    act(() => {
-        result.current.resumeReading()
-        vi.runOnlyPendingTimers()
-    })
-
     expect(result.current.currentPosition).toBe(4)
+    expect(result.current.restoredProgress.position).toBe(12)
 })
 
 test('hydrates position and preserves saved data until pagination is ready', async () => {
@@ -127,6 +344,36 @@ test('hydrates position and preserves saved data until pagination is ready', asy
     expect(JSON.parse(localStorage.getItem('bookreader_progress'))['txt-1'].position).toBe(4)
 })
 
+test('automatically restores TXT progress and exposes the saved locator', async () => {
+    const savedLocator = { version: 1, kind: 'txt', segmentId: 4, sourceOffset: 120, page: 12 }
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        'txt-1': {
+            position: 12,
+            totalPages: 20,
+            type: 'txt',
+            percent: 65,
+            bookmarks: [],
+            locator: savedLocator,
+        },
+    }))
+
+    const { result } = renderHook(() => useReadingProgress('txt-1', {
+        totalPages: 20,
+        type: 'txt',
+        locatorToPosition: () => 14,
+    }))
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.currentPosition).toBe(14)
+    expect(result.current.restoredProgress).toMatchObject({ position: 12, locator: savedLocator })
+
+    act(() => result.current.startOver())
+
+    expect(result.current.currentPosition).toBe(0)
+    expect(result.current.restoredProgress).toBeNull()
+    expect(JSON.parse(localStorage.getItem('bookreader_progress'))['txt-1'].position).toBe(0)
+})
+
 test('removeBookProgress deletes current and legacy progress entries', () => {
     localStorage.setItem('bookreader_progress', JSON.stringify({
         'book-1': { position: 3, totalPages: 10, type: 'txt', bookmarks: [{ position: 3 }] },
@@ -138,5 +385,31 @@ test('removeBookProgress deletes current and legacy progress entries', () => {
 
     expect(JSON.parse(localStorage.getItem('bookreader_progress'))).toEqual({
         'book-2': { position: 1, totalPages: 5, type: 'txt', bookmarks: [] },
+    })
+})
+
+test('clearLocalBookProgress does not repeat the backend progress deletion', () => {
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        'book-1': { position: 3, totalPages: 10, type: 'txt', bookmarks: [] },
+    }))
+
+    clearLocalBookProgress('book-1')
+
+    expect(JSON.parse(localStorage.getItem('bookreader_progress'))).toEqual({})
+    expect(fetch).not.toHaveBeenCalled()
+})
+
+test('pruneLocalBookProgress removes crash-recovery orphans and keeps current and legacy ids', () => {
+    localStorage.setItem('bookreader_progress', JSON.stringify({
+        current: { position: 1 },
+        legacy: { position: 2 },
+        deleted: { position: 3 },
+    }))
+
+    pruneLocalBookProgress([{ id: 'current', legacy_id: 'legacy' }])
+
+    expect(JSON.parse(localStorage.getItem('bookreader_progress'))).toEqual({
+        current: { position: 1 },
+        legacy: { position: 2 },
     })
 })

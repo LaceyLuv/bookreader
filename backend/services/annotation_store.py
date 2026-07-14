@@ -22,6 +22,10 @@ class StoreCorruptionError(RuntimeError):
     pass
 
 
+class UnsupportedStoreVersionError(StoreCorruptionError):
+    pass
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -48,6 +52,20 @@ def _normalize_color(value: Any) -> str | None:
     if not text:
         return None
     return text[:32]
+
+
+def _normalize_locator_v2(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("version") != 2:
+        return None
+    if value.get("kind") not in {"txt", "epub", "zip"}:
+        return None
+    try:
+        serialized = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    if len(serialized) > 16 * 1024:
+        return None
+    return json.loads(serialized)
 
 
 def _empty_store() -> dict[str, Any]:
@@ -84,12 +102,19 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 def _validate_store_data(data: Any, source_path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise StoreCorruptionError(f"Annotation store must be a JSON object: {source_path}")
+    source_version = data.get("version", 1)
+    if isinstance(source_version, bool) or not isinstance(source_version, int) or source_version < 1:
+        raise StoreCorruptionError(f"Annotation store has an invalid version: {source_path}")
+    if source_version > ANNOTATIONS_VERSION:
+        raise UnsupportedStoreVersionError(
+            f"Annotation store version {source_version} is newer than supported version {ANNOTATIONS_VERSION}: {source_path}"
+        )
     annotations = data.get("annotations")
     if "annotations" in data and not isinstance(annotations, list):
         raise StoreCorruptionError(f"Annotation store annotations must be a list: {source_path}")
     if annotations is None:
         annotations = []
-    return {"version": ANNOTATIONS_VERSION, "annotations": annotations}
+    return {"version": source_version, "annotations": annotations}
 
 
 def _replace_store_file(payload: dict[str, Any], *, keep_backup: bool = True) -> None:
@@ -112,6 +137,8 @@ def _recover_store_from_backup(exc: Exception) -> dict[str, Any]:
         raise StoreCorruptionError(f"Unable to read annotation store: {ANNOTATIONS_DATA_PATH}") from exc
     try:
         recovered = _read_json_file(backup_path)
+    except UnsupportedStoreVersionError:
+        raise
     except (OSError, json.JSONDecodeError, StoreCorruptionError) as backup_exc:
         raise StoreCorruptionError(f"Unable to read annotation store or backup: {ANNOTATIONS_DATA_PATH}") from backup_exc
     _replace_store_file(recovered, keep_backup=False)
@@ -123,6 +150,8 @@ def _read_store_unlocked() -> dict[str, Any]:
         return _empty_store()
     try:
         return _read_json_file(ANNOTATIONS_DATA_PATH)
+    except UnsupportedStoreVersionError:
+        raise
     except (OSError, json.JSONDecodeError, StoreCorruptionError) as exc:
         return _recover_store_from_backup(exc)
 
@@ -166,6 +195,7 @@ def _normalize_annotation(raw: dict[str, Any]) -> dict[str, Any]:
         "book_id": str(raw.get("book_id") or "").strip(),
         "kind": kind,
         "locator": _normalize_optional_text(raw.get("locator")),
+        "locator_v2": _normalize_locator_v2(raw.get("locator_v2")),
         "page": _normalize_nonnegative_int(raw.get("page")),
         "chapter_index": _normalize_nonnegative_int(raw.get("chapter_index")),
         "chapter_title": _normalize_optional_text(raw.get("chapter_title")),
@@ -187,7 +217,7 @@ def _normalize_annotation(raw: dict[str, Any]) -> dict[str, Any]:
 def _sync_store_unlocked() -> dict[str, Any]:
     data = _read_store_unlocked()
     annotations = []
-    changed = not ANNOTATIONS_DATA_PATH.exists()
+    changed = not ANNOTATIONS_DATA_PATH.exists() or data.get("version") != ANNOTATIONS_VERSION
 
     for raw in data.get("annotations", []):
         if not isinstance(raw, dict):
@@ -272,6 +302,8 @@ def update_annotation(annotation_id: str, payload: dict[str, Any]) -> dict[str, 
                 next_record["note_text"] = note_text
             if "color" in payload:
                 next_record["color"] = _normalize_color(payload.get("color"))
+            if "locator_v2" in payload:
+                next_record["locator_v2"] = _normalize_locator_v2(payload.get("locator_v2"))
             next_record["snippet"] = _default_snippet(next_record.get("selected_text") or "", next_record.get("note_text"))
             next_record["updated_at"] = _now_iso()
             normalized = _normalize_annotation(next_record)
