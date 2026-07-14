@@ -105,6 +105,7 @@ def test_markdown_export_contains_quotes_notes_location_color_and_timestamps():
 def test_export_api_sets_safe_download_headers_and_supports_empty_exports(monkeypatch):
     monkeypatch.setattr(annotations_router, "get_book_record", lambda _book_id: BOOK)
     monkeypatch.setattr(annotations_router, "list_book_annotations", lambda _book_id: [])
+    monkeypatch.setattr("services.annotation_export_service._utc_now_iso", lambda: "2026-07-13T00:00:00+00:00")
     app = FastAPI()
     app.include_router(annotations_router.router)
 

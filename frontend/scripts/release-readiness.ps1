@@ -1,10 +1,16 @@
 param(
     [ValidateSet("Development", "Candidate", "Public", "Updater")]
     [string]$Profile = "Development",
+    [string]$SidecarPath = "",
+    [string]$DesktopPath = "",
+    [string]$InstallerPath = "",
     [string]$FaultReportPath = "",
     [string]$RollbackReportPath = "",
     [string]$MigrationReportPath = "",
     [string]$UpdaterManifestPath = "",
+    [string]$BuildId = "",
+    [string]$SourceCommit = "",
+    [string]$SourceBranch = "",
     [string]$OutputPath = ""
 )
 
@@ -27,12 +33,25 @@ function Add-Check {
     $script:checks += [ordered]@{ name = $Name; passed = $Passed; detail = $Detail }
 }
 
-function Resolve-LatestFile {
-    param([string]$Path, [string]$Filter)
-    if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    return Get-ChildItem -LiteralPath $Path -Filter $Filter -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 1
+function Resolve-ExplicitFile {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    return Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+}
+
+function Read-GitValue {
+    param([string[]]$Arguments)
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $lines = @(& git -C $RootDir @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    if ($exitCode -ne 0) {
+        throw "Git command failed: git $($Arguments -join ' ')"
+    }
+    return ($lines -join [Environment]::NewLine).Trim()
 }
 
 function Read-PassedReport {
@@ -43,7 +62,9 @@ function Read-PassedReport {
         [string]$ExpectedApplicationVersion = "",
         [hashtable]$ExpectedHashes = @{},
         [string[]]$RequiredCases = @(),
-        [string]$MinimumGeneratedAtUtc = ""
+        [string]$MinimumGeneratedAtUtc = "",
+        [string]$ExpectedBuildId = "",
+        [string]$ExpectedSourceCommit = ""
     )
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         Add-Check ($Label + "_report") $false ("Missing " + $Label + " report.")
@@ -59,6 +80,12 @@ function Read-PassedReport {
         if (-not [string]::IsNullOrWhiteSpace($ExpectedApplicationVersion)) {
             $reportedVersion = [string]$report.application_version
             Add-Check ($Label + "_application_version") ($validReport -and $reportedVersion -eq $ExpectedApplicationVersion) ("Expected application version " + $ExpectedApplicationVersion + "; report version " + $(if ($reportedVersion) { $reportedVersion } else { "(missing)" }))
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedBuildId)) {
+            Add-Check ($Label + "_build_id") ($validReport -and [string]$report.build_id -eq $ExpectedBuildId) ("Expected build session: " + $ExpectedBuildId)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceCommit)) {
+            Add-Check ($Label + "_source_commit") ($validReport -and [string]$report.source.commit -eq $ExpectedSourceCommit) ("Expected source commit: " + $ExpectedSourceCommit)
         }
         foreach ($hashName in $ExpectedHashes.Keys) {
             $property = $report.PSObject.Properties[[string]$hashName]
@@ -82,9 +109,21 @@ function Read-PassedReport {
     }
 }
 
+if ([string]::IsNullOrWhiteSpace($SourceCommit)) {
+    $SourceCommit = Read-GitValue @("rev-parse", "HEAD")
+}
+if ([string]::IsNullOrWhiteSpace($SourceBranch)) {
+    $SourceBranch = Read-GitValue @("rev-parse", "--abbrev-ref", "HEAD")
+}
+
 $policyProfile = $Profile.ToLowerInvariant()
-$policyLines = & node (Join-Path $ScriptDir "release-policy.mjs") --profile $policyProfile 2>&1
-$policyExit = $LASTEXITCODE
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $policyLines = & node (Join-Path $ScriptDir "release-policy.mjs") --profile $policyProfile 2>&1
+    $policyExit = $LASTEXITCODE
+}
+finally { $ErrorActionPreference = $previousErrorActionPreference }
 try {
     $policy = ($policyLines -join [Environment]::NewLine) | ConvertFrom-Json
     foreach ($item in $policy.checks) {
@@ -97,9 +136,26 @@ catch {
 }
 
 if ($Profile -ne "Development") {
-    $sidecar = Resolve-LatestFile (Join-Path $TauriDir "binaries") "bookreader-backend-*.exe"
-    $desktop = Get-Item -LiteralPath (Join-Path $TauriDir ("target\release\" + $mainBinaryName + ".exe")) -ErrorAction SilentlyContinue
-    $installer = Resolve-LatestFile (Join-Path $TauriDir "target\release\bundle\nsis") "*-setup.exe"
+    $currentCommit = Read-GitValue @("rev-parse", "HEAD")
+    $currentBranch = Read-GitValue @("rev-parse", "--abbrev-ref", "HEAD")
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $statusLines = @(& git -C $RootDir status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>&1)
+        $statusExit = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $dirtyEntries = @($statusLines | ForEach-Object { $_.ToString() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    Add-Check "evidence_build_id" ($BuildId -match '^[0-9a-fA-F-]{32,36}$') "Candidate and public readiness must be bound to one build UUID."
+    Add-Check "evidence_source_commit" ($SourceCommit -match '^[0-9a-fA-F]{40}$' -and $SourceCommit -eq $currentCommit) ("Expected current commit: " + $currentCommit)
+    Add-Check "evidence_source_branch" (-not [string]::IsNullOrWhiteSpace($SourceBranch) -and $SourceBranch -eq $currentBranch) ("Expected current branch: " + $currentBranch)
+    Add-Check "evidence_worktree_clean" ($statusExit -eq 0 -and $dirtyEntries.Count -eq 0) ($(if ($dirtyEntries.Count -eq 0) { "Git worktree is clean." } else { "Dirty entries: " + ($dirtyEntries -join "; ") }))
+}
+
+if ($Profile -ne "Development") {
+    $sidecar = Resolve-ExplicitFile $SidecarPath
+    $desktop = Resolve-ExplicitFile $DesktopPath
+    $installer = Resolve-ExplicitFile $InstallerPath
     $artifactItems = @(
         [ordered]@{ name = "sidecar"; item = $sidecar },
         [ordered]@{ name = "desktop"; item = $desktop },
@@ -227,22 +283,27 @@ if ($Profile -ne "Development") {
         "authenticated_long_path_api",
         "clean_process_tree_shutdown",
         "desktop_spawned_owned_sidecar",
+        "desktop_sidecar_hash_matches_release_artifact",
         "desktop_isolated_store_initialization",
         "desktop_crash_watchdog_shutdown",
         "invalid_data_root_fails_closed"
     )
-    Read-PassedReport -Path $FaultReportPath -Label "windows_fault" -ExpectedKind "bookreader-windows-fault-smoke" -ExpectedApplicationVersion ([string]$policy.version) -ExpectedHashes @{ sidecar_sha256 = $sidecarSha256; desktop_sha256 = $desktopSha256 } -RequiredCases $faultCases -MinimumGeneratedAtUtc $newestArtifactBuiltAtUtc.ToString('o')
+    Read-PassedReport -Path $FaultReportPath -Label "windows_fault" -ExpectedKind "bookreader-windows-fault-smoke" -ExpectedApplicationVersion ([string]$policy.version) -ExpectedHashes @{ sidecar_sha256 = $sidecarSha256; desktop_sha256 = $desktopSha256 } -RequiredCases $faultCases -MinimumGeneratedAtUtc $newestArtifactBuiltAtUtc.ToString('o') -ExpectedBuildId $BuildId -ExpectedSourceCommit $SourceCommit
 
-    if ($Profile -eq "Public" -or $Profile -eq "Updater") {
+    if ($Profile -eq "Candidate" -or $Profile -eq "Public" -or $Profile -eq "Updater") {
         $migrationCases = @(
             "legacy_data_migration_is_allowlisted_verified_and_non_destructive",
+            "legacy_data_migration_replaces_only_pristine_destination_scaffold",
+            "legacy_data_migration_does_not_partially_clear_non_pristine_scaffold",
             "legacy_data_migration_rejects_conflicting_destination_data",
             "legacy_data_migration_rejects_same_size_staged_tampering",
             "legacy_data_migration_rejects_invalid_completed_marker"
         )
         $migrationSourceSha256 = (Get-FileHash -LiteralPath (Join-Path $TauriDir "src\lib.rs") -Algorithm SHA256).Hash.ToLowerInvariant()
-        Read-PassedReport -Path $MigrationReportPath -Label "migration_fixtures" -ExpectedKind "bookreader-windows-migration-fixtures" -ExpectedApplicationVersion ([string]$policy.version) -ExpectedHashes @{ migration_source_sha256 = $migrationSourceSha256; desktop_sha256 = $desktopSha256 } -RequiredCases $migrationCases -MinimumGeneratedAtUtc $desktopBuiltAtUtc
+        Read-PassedReport -Path $MigrationReportPath -Label "migration_fixtures" -ExpectedKind "bookreader-windows-migration-fixtures" -ExpectedApplicationVersion ([string]$policy.version) -ExpectedHashes @{ migration_source_sha256 = $migrationSourceSha256; desktop_sha256 = $desktopSha256 } -RequiredCases $migrationCases -MinimumGeneratedAtUtc $desktopBuiltAtUtc -ExpectedBuildId $BuildId -ExpectedSourceCommit $SourceCommit
+    }
 
+    if ($Profile -eq "Public" -or $Profile -eq "Updater") {
         $expectedThumbprint = (([string]$env:BOOKREADER_WINDOWS_CERTIFICATE_THUMBPRINT) -replace '\s', '').ToUpperInvariant()
         $signers = @()
         foreach ($entry in $artifactItems) {
@@ -293,7 +354,14 @@ if ($Profile -eq "Updater") {
 $passed = @($checks | Where-Object { -not $_.passed }).Count -eq 0
 $result = [ordered]@{
     schema_version = 1
+    kind = "bookreader-windows-release-readiness"
+    application_version = [string]$tauriConfig.version
     profile = $Profile.ToLowerInvariant()
+    build_id = $(if ([string]::IsNullOrWhiteSpace($BuildId)) { $null } else { $BuildId })
+    source = [ordered]@{
+        commit = $SourceCommit
+        branch = $SourceBranch
+    }
     generated_at = (Get-Date).ToUniversalTime().ToString('o')
     passed = $passed
     checks = $checks
@@ -304,7 +372,8 @@ $json = $result | ConvertTo-Json -Depth 8
 if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     $parent = Split-Path -Parent $OutputPath
     if (-not [string]::IsNullOrWhiteSpace($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    Set-Content -LiteralPath $OutputPath -Value $json -Encoding UTF8
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText([IO.Path]::GetFullPath($OutputPath), $json, $utf8WithoutBom)
     Write-Host "[release] report written to $OutputPath"
 }
 

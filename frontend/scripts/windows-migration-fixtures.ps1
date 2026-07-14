@@ -1,6 +1,9 @@
 param(
     [string]$DesktopPath = "",
-    [string]$OutputPath = ""
+    [string]$OutputPath = "",
+    [string]$BuildId = "",
+    [string]$SourceCommit = "",
+    [string]$SourceBranch = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +12,29 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FrontendDir = Split-Path -Parent $ScriptDir
 $RootDir = Split-Path -Parent $FrontendDir
 $TauriDir = Join-Path $FrontendDir "src-tauri"
+
+function Read-GitValue {
+    param([string[]]$Arguments)
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $lines = @(& git -C $RootDir @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    if ($exitCode -ne 0) {
+        throw "Git command failed: git $($Arguments -join ' ')"
+    }
+    return ($lines -join [Environment]::NewLine).Trim()
+}
+
+if ([string]::IsNullOrWhiteSpace($SourceCommit)) {
+    $SourceCommit = Read-GitValue @("rev-parse", "HEAD")
+}
+if ([string]::IsNullOrWhiteSpace($SourceBranch)) {
+    $SourceBranch = Read-GitValue @("rev-parse", "--abbrev-ref", "HEAD")
+}
+
 $config = Get-Content -LiteralPath (Join-Path $TauriDir "tauri.conf.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $mainBinaryName = [string]$config.mainBinaryName
 if ([string]::IsNullOrWhiteSpace($mainBinaryName)) {
@@ -52,6 +78,11 @@ $result = [ordered]@{
     schema_version = 1
     kind = "bookreader-windows-migration-fixtures"
     application_version = [string]$config.version
+    build_id = $(if ([string]::IsNullOrWhiteSpace($BuildId)) { $null } else { $BuildId })
+    source = [ordered]@{
+        commit = $SourceCommit
+        branch = $SourceBranch
+    }
     generated_at = (Get-Date).ToUniversalTime().ToString("o")
     passed = $passed
     migration_source_sha256 = (Get-FileHash -LiteralPath (Join-Path $TauriDir "src\lib.rs") -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -61,7 +92,8 @@ $result = [ordered]@{
 }
 $parent = Split-Path -Parent $OutputPath
 if (-not [string]::IsNullOrWhiteSpace($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-Set-Content -LiteralPath $OutputPath -Value ($result | ConvertTo-Json -Depth 8) -Encoding UTF8
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+[IO.File]::WriteAllText([IO.Path]::GetFullPath($OutputPath), ($result | ConvertTo-Json -Depth 8), $utf8WithoutBom)
 Write-Host "[migration-qa] report written to $OutputPath"
 
 if (-not $passed) { exit 1 }

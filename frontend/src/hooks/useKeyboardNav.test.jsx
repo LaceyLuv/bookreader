@@ -4,9 +4,9 @@ import { useRef } from 'react'
 import { useKeyboardNav } from './useKeyboardNav'
 import { KeyboardShortcutsProvider } from './useKeyboardShortcuts'
 
-function Harness({ onNext, onPrev }) {
+function Harness({ onNext, onPrev, enabled = true }) {
     const readerRootRef = useRef(null)
-    useKeyboardNav({ onNext, onPrev, enabled: true, readerRootRef })
+    useKeyboardNav({ onNext, onPrev, enabled, readerRootRef })
 
     return (
         <div>
@@ -28,6 +28,21 @@ test('Space moves to next page when focus is returned to reader root', async () 
 
     expect(onNext).toHaveBeenCalledTimes(1)
     expect(onPrev).not.toHaveBeenCalled()
+})
+
+test('first page key after navigation is enabled uses the latest callback', () => {
+    const staleOnNext = vi.fn()
+    const latestOnNext = vi.fn()
+    const onPrev = vi.fn()
+    const { rerender } = render(<Harness onNext={staleOnNext} onPrev={onPrev} enabled={false} />)
+
+    rerender(<Harness onNext={latestOnNext} onPrev={onPrev} enabled />)
+    const event = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    window.dispatchEvent(event)
+
+    expect(staleOnNext).not.toHaveBeenCalled()
+    expect(latestOnNext).toHaveBeenCalledTimes(1)
+    expect(event.defaultPrevented).toBe(true)
 })
 
 test('Space stays with a focused toolbar button instead of turning the page', async () => {

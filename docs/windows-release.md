@@ -60,24 +60,32 @@ npm run desktop:migration-fixtures
 npm run desktop:fault-smoke
 ```
 
+Git-bound private candidate build:
+
+```powershell
+npm run desktop:release:candidate
+```
+
 Signed public build:
 
 ```powershell
 npm run desktop:release:signed
 ```
 
-The signed build creates a temporary Tauri config overlay, never writes certificate inputs into the repository, builds with Cargo `--locked`, runs the migration fixtures and Windows fault smoke, verifies all signatures and timestamps, and emits SHA-256-bound reports under `reports/release/`. It deletes the temporary overlay in `finally`.
+Both canonical release commands require a clean Git worktree before building and verify that HEAD and the branch remain unchanged through finalization. They build with Cargo `--locked`, pass explicit sidecar/desktop/installer paths to every verification step, run the complete migration fixtures and Windows fault smoke, and emit SHA-256-bound reports under `reports/release/`. The final `release-provenance-*.json` records the exact commit, build session timestamps, tool versions, artifact hashes/sizes/Authenticode state, and hashes of the fault, migration, and readiness reports. It is written atomically only after every binding passes.
 
-The same command also copies the canonical shortcut guide to `src-tauri/target/release/bundle/nsis/글결_<version>_단축키_안내.txt`. Release readiness requires that separate file to be fresh and byte-for-byte identical to the guide bundled through Tauri resources. The TXT is recorded by SHA-256 but is not an Authenticode signing target.
+The candidate command permits unsigned artifacts for private distribution but records `NotSigned` explicitly. The signed public command additionally creates a temporary Tauri config overlay, never writes certificate inputs into the repository, requires valid timestamped signatures from one publisher, and deletes the temporary overlay in `finally`.
+
+Each canonical release command also copies the shortcut guide to `src-tauri/target/release/bundle/nsis/글결_<version>_단축키_안내.txt`. Release readiness requires that separate file to be fresh and byte-for-byte identical to the guide bundled through Tauri resources. The TXT is recorded by SHA-256 but is not an Authenticode signing target.
 
 `release-readiness.ps1` has four profiles:
 
 - `Development`: versions, identifier shape, manual-updater state, downgrade policy, and install scope.
-- `Candidate`: current build artifacts plus the complete required Windows fault matrix.
-- `Public`: candidate gates, the exact migration fixture matrix, and valid, timestamped, single-publisher Authenticode signatures.
+- `Candidate`: current build artifacts plus the complete required Windows fault and migration matrices; unsigned artifacts are allowed only when Authenticode reports `NotSigned` rather than a damaged or indeterminate state.
+- `Public`: candidate gates plus valid, timestamped, single-publisher Authenticode signatures.
 - `Updater`: public gates plus updater keys, HTTPS manifest, migration fixtures, and rollback-drill reports.
 
-Candidate readiness binds the fault report to the exact sidecar and desktop SHA-256 values, application version, report kind, required case names, and artifact build time. Public readiness additionally binds migration fixtures to the desktop SHA-256 and `lib.rs` SHA-256. Updater rollback evidence must match the installer SHA-256, current version, required case set, report kind, and build time. Older or generic `passed: true` JSON cannot satisfy these gates.
+Candidate readiness binds the fault report to the exact packaged sidecar and desktop SHA-256 values and binds migration fixtures to the desktop SHA-256 and `lib.rs` SHA-256. Both reports must also match the application version, build UUID, Git commit, report kind, complete required case names, and artifact build time. Updater rollback evidence must match the installer SHA-256, current version, required case set, report kind, and build time. Older, empty, or generic `passed: true` JSON cannot satisfy these gates.
 
 ## Data directory and one-time migration
 
@@ -104,6 +112,7 @@ An interrupted publish resumes only when the pending journal, source, and stage 
 - authenticated health and rejection without the launch nonce;
 - library API access from that long path;
 - clean process-tree shutdown;
+- a SHA-256 match between the packaged sidecar and the sidecar actually spawned by the desktop;
 - packaged-desktop forced termination followed by parent-watchdog cleanup of every captured sidecar process;
 - missing-sidecar preflight; and
 - fail-closed, nonzero startup when the configured data root is a file.

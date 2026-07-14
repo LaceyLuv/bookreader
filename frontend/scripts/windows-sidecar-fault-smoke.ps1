@@ -2,6 +2,9 @@ param(
     [string]$SidecarPath = "",
     [string]$DesktopPath = "",
     [string]$OutputPath = "",
+    [string]$BuildId = "",
+    [string]$SourceCommit = "",
+    [string]$SourceBranch = "",
     [int]$StartupTimeoutSeconds = 30,
     [switch]$KeepTemporaryFiles
 )
@@ -31,6 +34,28 @@ $previousParentPid = $env:BOOKREADER_PARENT_PID
 $previousDesktopFaultSmoke = $env:BOOKREADER_DESKTOP_FAULT_SMOKE
 $previousDesktopFaultSmokeDataDir = $env:BOOKREADER_DESKTOP_FAULT_SMOKE_DATA_DIR
 
+function Read-GitValue {
+    param([string[]]$Arguments)
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $lines = @(& git -C $RootDir @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    if ($exitCode -ne 0) {
+        throw "Git command failed: git $($Arguments -join ' ')"
+    }
+    return ($lines -join [Environment]::NewLine).Trim()
+}
+
+if ([string]::IsNullOrWhiteSpace($SourceCommit)) {
+    $SourceCommit = Read-GitValue @("rev-parse", "HEAD")
+}
+if ([string]::IsNullOrWhiteSpace($SourceBranch)) {
+    $SourceBranch = Read-GitValue @("rev-parse", "--abbrev-ref", "HEAD")
+}
+
 function Add-Case {
     param([string]$Name, [bool]$Passed, [string]$Detail)
     $script:cases += [ordered]@{ name = $Name; passed = $Passed; detail = $Detail }
@@ -49,7 +74,10 @@ function Stop-ProcessTree {
     if ($null -eq $Process) { return $true }
     try { $Process.Refresh() } catch { return $true }
     if ($Process.HasExited) { return $true }
-    & taskkill.exe /PID $Process.Id /T /F | Out-Null
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
     try { $Process.WaitForExit(10000) | Out-Null } catch {}
     try { $Process.Refresh() } catch { return $true }
     # taskkill can report a nonzero race when a PyInstaller child exits while
@@ -253,6 +281,11 @@ try {
     $desktopProcess = Start-Process -FilePath $DesktopPath -WorkingDirectory (Split-Path -Parent $DesktopPath) -WindowStyle Hidden -PassThru
     $desktopSidecarRecord = Wait-ForNamedDescendant $desktopProcess.Id "bookreader-backend*" $StartupTimeoutSeconds
     Add-Case "desktop_spawned_owned_sidecar" ($null -ne $desktopSidecarRecord) "The packaged desktop launched its owned sidecar under isolated app data."
+    $spawnedSidecarPath = [string]$desktopSidecarRecord.ExecutablePath
+    $spawnedSidecarMatchesReleaseArtifact = -not [string]::IsNullOrWhiteSpace($spawnedSidecarPath) -and
+        (Test-Path -LiteralPath $spawnedSidecarPath -PathType Leaf) -and
+        ((Get-FileHash -LiteralPath $spawnedSidecarPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq (Get-FileHash -LiteralPath $SidecarPath -Algorithm SHA256).Hash.ToLowerInvariant())
+    Add-Case "desktop_sidecar_hash_matches_release_artifact" $spawnedSidecarMatchesReleaseArtifact ("Spawned sidecar: " + $(if ($spawnedSidecarPath) { $spawnedSidecarPath } else { "(missing path)" }))
     $desktopStoresReady = Wait-ForCoreStores $desktopDataDir $StartupTimeoutSeconds
     Add-Case "desktop_isolated_store_initialization" $desktopStoresReady "The packaged desktop initialized core stores only in its dedicated smoke data root."
     $desktopSidecarProcess = Get-Process -Id $desktopSidecarRecord.ProcessId -ErrorAction Stop
@@ -308,6 +341,11 @@ finally {
         schema_version = 1
         kind = "bookreader-windows-fault-smoke"
         application_version = $applicationVersion
+        build_id = $(if ([string]::IsNullOrWhiteSpace($BuildId)) { $null } else { $BuildId })
+        source = [ordered]@{
+            commit = $SourceCommit
+            branch = $SourceBranch
+        }
         generated_at = (Get-Date).ToUniversalTime().ToString("o")
         passed = $passed
         sidecar_sha256 = $(if (Test-Path -LiteralPath $SidecarPath -PathType Leaf) { (Get-FileHash -LiteralPath $SidecarPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null })
@@ -318,7 +356,8 @@ finally {
     }
     $outputParent = Split-Path -Parent $OutputPath
     if (-not [string]::IsNullOrWhiteSpace($outputParent)) { New-Item -ItemType Directory -Path $outputParent -Force | Out-Null }
-    Set-Content -LiteralPath $OutputPath -Value ($result | ConvertTo-Json -Depth 8) -Encoding UTF8
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText([IO.Path]::GetFullPath($OutputPath), ($result | ConvertTo-Json -Depth 8), $utf8WithoutBom)
     Write-Host "[fault-qa] report written to $OutputPath"
 
     if (-not $KeepTemporaryFiles -and (Test-Path -LiteralPath $temporaryRoot)) {

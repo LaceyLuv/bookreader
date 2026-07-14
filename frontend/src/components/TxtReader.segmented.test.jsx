@@ -1732,11 +1732,12 @@ test('keyboard navigation next callback moves TXT reader to the next visible vie
 
     renderReader()
 
-    await screen.findByText('page zero body')
-    const keyboardConfig = mockUseKeyboardNav.mock.calls.at(-1)?.[0]
-    await userEvent.setup()
-    await React.act(async () => {
-        await keyboardConfig.onNext()
+    await waitFor(() => {
+        expect(screen.getByTestId('progress-total-pages').textContent).toBe(String(expectedPages.length))
+        expect(mockUseKeyboardNav.mock.calls.at(-1)?.[0]?.enabled).toBe(true)
+    })
+    await act(async () => {
+        await mockUseKeyboardNav.mock.calls.at(-1)[0].onNext()
     })
 
     await waitFor(() => expect(screen.getByTestId('txt-page-surface').textContent).toBe(getMeasuredPageText(expectedPages[1])))

@@ -19,6 +19,7 @@
         "desktop:release:check": "node scripts/release-policy.mjs --profile development",
         "desktop:fault-smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows-sidecar-fault-smoke.ps1",
         "desktop:migration-fixtures": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows-migration-fixtures.ps1",
+        "desktop:release:candidate": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-windows-release.ps1 -Profile Candidate",
         "desktop:release:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-windows-release.ps1",
         "desktop:package:guide": "node scripts/package-shortcut-guide.mjs",
         "perf:report": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\collect-build-metrics.ps1",
